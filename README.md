@@ -22,7 +22,7 @@ Part of the `football-*-models` family; shared loaders and pitch conventions com
 ```
 src/football_shot_models/   # package: features, models, evaluation
 notebooks/                  # exploration & narrative
-docs/                       # methodology, model cards, roadmap (MkDocs site)
+docs/                       # methodology, model cards, roadmap (Zensical site)
 data/                       # git-ignored
 tests/
 ```
@@ -30,9 +30,8 @@ tests/
 ## Development
 ```bash
 uv sync --all-groups        # expects ../football-core next to this repo
-uv run ruff check .
-uv run pytest
-uv run mkdocs serve
+make check                  # ruff, mypy, pytest, strict docs build
+make docs-serve             # documentation site at http://127.0.0.1:8000
 ```
 
 ## License
