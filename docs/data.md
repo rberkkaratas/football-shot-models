@@ -4,7 +4,7 @@
 | Source | Why | Notes |
 |---|---|---|
 | StatsBomb open data | Public, reproducible; ships StatsBomb's own xG for benchmarking and shot freeze frames (player positions at the moment of the shot) | Limited set of competitions |
-| WhoScored / Opta snapshot | Large volume (~4k matches in the local engine), current leagues | Private; no provider xG; no player positions |
+| WhoScored / Opta CSV archive | 4,025 matches, 11 competitions, 2025-26 and 2026-27 (~104k shots); a season holdout is possible | Private; no provider xG; no player positions; one duplicated match and varying columns handled by `football_core.io.whoscored` |
 
 ## Shot table (planned)
 One row per shot, in the shared 105 x 68 m frame (see the football-core conventions,
