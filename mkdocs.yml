@@ -1,0 +1,36 @@
+site_name: football-shot-models
+site_description: "Shot models for football: expected goals (xG), post-shot xG (xGOT/PSxG) and goalkeeper shot-stopping"
+site_author: R.Berk Karatas
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+
+nav:
+  - Home: index.md
+  - Data: data.md
+  - Methodology: methodology.md
+  - Roadmap: roadmap.md
+  - Model card template: model-card-template.md
+  - References: references.md
