@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -96,6 +97,29 @@ def test_exclusion_log_snapshot(manifest: Path, tmp_path: Path) -> None:
     assert groups == {("sb:11", "sb:4"): 3, ("sb:11", "sb:1"): 1}
     again = data.write_exclusion_log(log, manifest, root=tmp_path)
     assert again.status == "unchanged"
+    # pinned to the source snapshot's name and data digest, not its manifest bytes
+    meta = snapshot.read_manifest(manifest)
+    assert first.manifest.source == snapshot.Source("files", meta.name, meta.data_digest)
+
+
+def test_exclusion_log_ignores_source_environment(manifest: Path, tmp_path: Path) -> None:
+    """A core commit changes only the StatsBomb manifest's ``environment``; the log's manifest
+    must not change with it. A source snapshot of another name is named in the log."""
+    _, log = data.exclude(*xc.fixture_tables()[:2])
+    first = data.write_exclusion_log(log, manifest, root=tmp_path)
+    raw = json.loads(manifest.read_text(encoding="utf-8"))
+    raw["environment"] = {**raw["environment"], "football_core_git": "f" * 40}
+    moved = tmp_path / "elsewhere" / manifest.name
+    moved.parent.mkdir()
+    moved.write_text(json.dumps(raw), encoding="utf-8")
+    again = data.write_exclusion_log(log, moved, root=tmp_path)
+    assert (again.status, again.manifest_written) == ("unchanged", False)
+    assert again.manifest == first.manifest
+    raw["name"], raw["data_dir"] = "statsbomb-open-v9", "../data/snapshots/statsbomb-open-v9"
+    renamed = tmp_path / "elsewhere" / "statsbomb-open-v9.json"
+    renamed.write_text(json.dumps(raw), encoding="utf-8")
+    other = data.write_exclusion_log(log, renamed, root=tmp_path)
+    assert other.manifest.source.uri == "statsbomb-open-v9"
 
 
 def test_exclusion_log_refuses_unignored_data(manifest: Path, tmp_path: Path) -> None:

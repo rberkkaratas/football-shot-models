@@ -37,6 +37,10 @@ snapshot:
 xg-baselines:
 	uv run python -m football_shot_models.baselines
 
-## Regenerate the model cards from the real snapshot and compare them with the committed ones
+## Regenerate the model cards from the real snapshot and compare them with the committed ones.
+## Without the snapshot this fails: a skipped comparison must not look like a reproduction.
 reproduce:
+	@test -d data/snapshots/statsbomb-open-v1 || { \
+		echo "reproduce: no snapshot at data/snapshots/statsbomb-open-v1; run make snapshot first" >&2; \
+		exit 1; }
 	uv run pytest -m slow

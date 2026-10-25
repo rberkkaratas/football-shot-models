@@ -131,10 +131,15 @@ def test_match_family(matches: list[xc.Match], expected: list[str]) -> None:
 @pytest.mark.parametrize("case", ["ok", "empty holdout", "empty dev"])
 def test_split_holdout(case: str) -> None:
     shots, _, _ = xc.fixture_tables()
-    # another Premier League season must stay in dev: the split is on the pair
+    # another Premier League season, and another competition in season sb:27, must stay in
+    # dev: the split is on the pair, not on either id alone
     other = pl.col("shot_id").is_in(["sb:s-m01-00", "sb:s-m01-01"])
+    sibling = pl.col("shot_id").is_in(["sb:s-m03-00", "sb:s-m03-01"])
     shots = shots.with_columns(
         pl.when(other).then(pl.lit("sb:28")).otherwise("season_id").alias("season_id")
+    ).with_columns(
+        pl.when(sibling).then(pl.lit("sb:9")).otherwise("competition_id").alias("competition_id"),
+        pl.when(sibling).then(pl.lit("sb:27")).otherwise("season_id").alias("season_id"),
     )
     shots = shots.sort("shot_id", descending=True)  # input order is kept, whatever it is
     in_pair = (pl.col("competition_id") == "sb:2") & (pl.col("season_id") == "sb:27")
@@ -144,7 +149,7 @@ def test_split_holdout(case: str) -> None:
         assert held.equals(shots.filter(in_pair))
         assert dev.equals(shots.filter(~in_pair))
         assert held.height == 18
-        assert set(dev["shot_id"]) >= {"sb:s-m01-00", "sb:s-m01-01"}
+        assert set(dev["shot_id"]) >= {"sb:s-m01-00", "sb:s-m01-01", "sb:s-m03-00", "sb:s-m03-01"}
     elif case == "empty holdout":
         with pytest.raises(ValueError, match="(?=.*sb:99)(?=.*sb:5)"):
             data.split_holdout(shots, ("sb:99", "sb:5"))

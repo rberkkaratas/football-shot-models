@@ -41,6 +41,9 @@ def test_score_known_values() -> None:
     assert s.auc == pytest.approx(0.75, abs=1e-12)  # 3 of 4 pairs ordered
     assert (s.cal_intercept, s.cal_slope) == metrics.calibration(Y4.astype(np.float64), P4)
     assert metrics.score(Y4, np.full(4, 0.5)).auc == 0.5
+    # y need not be bool: 0 / 1 as int64 or float64 scores the same (spec §4)
+    assert metrics.score(Y4.astype(np.int64), P4) == s
+    assert metrics.score(Y4.astype(np.float64), P4) == s
 
 
 @pytest.mark.parametrize(
@@ -118,11 +121,15 @@ def test_calibration_not_estimable(case: str) -> None:
 
 
 def test_mean_scores() -> None:
+    """Fold means, not medians: every metric is skewed, so a median gives another value."""
     folds = (
-        _scores(n=10, goals=1, xg=1.5, log_loss=0.3, brier=0.06, auc=0.7, cal_intercept=0.1),
-        _scores(n=20, goals=2, xg=2.5, log_loss=0.4, brier=0.08, auc=0.8, cal_intercept=0.2),
-        _scores(n=30, goals=3, xg=3.0, log_loss=0.5, brier=0.10, auc=0.9, cal_intercept=0.6),
-    )
+        _scores(n=10, goals=1, xg=1.5, log_loss=0.1, brier=0.05, auc=0.6, cal_intercept=0.1,
+                cal_slope=0.7),
+        _scores(n=20, goals=2, xg=2.5, log_loss=0.2, brier=0.06, auc=0.9, cal_intercept=0.2,
+                cal_slope=0.8),
+        _scores(n=30, goals=3, xg=3.0, log_loss=0.9, brier=0.13, auc=0.9, cal_intercept=0.6,
+                cal_slope=1.5),
+    )  # fmt: skip
     m = metrics.mean_scores(folds)
     assert (m.n, m.goals) == (60, 6)
     assert m.xg == pytest.approx(7.0)
@@ -135,7 +142,11 @@ def test_mean_scores() -> None:
     with_none = metrics.mean_scores((*folds[:2], replace(folds[2], cal_slope=None)))
     assert with_none.cal_slope is None
     assert with_none.cal_intercept == pytest.approx(0.3)
-    assert metrics.fold_sd(folds, "log_loss") == pytest.approx(0.1)  # ddof=1 (ddof=0: 0.0816)
+    assert metrics.fold_sd(folds, "log_loss") == pytest.approx(0.19**0.5)  # ddof=1, not 0.3559
+    mean, worst = metrics.fold_xg_error(folds)  # fold errors 0.5, 0.25, 0.0
+    assert (mean, worst) == (pytest.approx(0.25), 0.5)
+    with pytest.raises(ValueError):
+        metrics.fold_xg_error(())
 
 
 @settings(deadline=None)
@@ -189,6 +200,7 @@ def test_check_thresholds(scores: metrics.Scores, passed: list[bool]) -> None:
         ("xg_error", "<=", 0.03),
     ]
     checks = metrics.check_thresholds(scores)
+    assert checks == metrics.check_thresholds(scores, metrics.THRESHOLDS)  # the default
     assert [c.threshold for c in checks] == list(metrics.THRESHOLDS)
     assert [c.measured for c in checks] == [
         scores.log_loss,
@@ -197,3 +209,20 @@ def test_check_thresholds(scores: metrics.Scores, passed: list[bool]) -> None:
         scores.xg_error,
     ]
     assert [c.passed for c in checks] == passed
+
+
+def test_check_thresholds_custom_targets() -> None:
+    """MS3 passes its own targets; a misspelt metric or op fails when the target is made."""
+    s = _scores(log_loss=0.26, auc=0.79)
+    targets = (metrics.Threshold("log_loss", "<=", 0.258), metrics.Threshold("auc", ">=", 0.78))
+    checks = metrics.check_thresholds(s, targets)
+    assert [(c.threshold, c.measured, c.passed) for c in checks] == [
+        (targets[0], 0.26, False),
+        (targets[1], 0.79, True),
+    ]
+    assert metrics.check_thresholds(s, ()) == ()
+    with pytest.raises(ValueError, match="unknown metric 'logloss'"):
+        metrics.Threshold("logloss", "<=", 0.3)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="unknown op '<'"):
+        metrics.Threshold("brier", "<", 0.3)  # type: ignore[arg-type]
+    assert metrics.METRICS == ("log_loss", "brier", "auc", "xg_error")

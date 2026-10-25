@@ -14,14 +14,16 @@ constant ``p`` has no slope; perfect separation has no finite one).
 
 Grouped cross-validation reports the **mean over folds** for log loss, Brier and AUC: an AUC
 pooled over folds would compare probabilities from different models. Σ xG and goals are
-summed, so the Σ xG error is pooled.
+summed, so the Σ xG error is pooled. For any model fitted with an intercept the pooled error
+is close to 0 by construction (fold errors of opposite sign cancel), so
+:func:`fold_xg_error` also gives the fold mean and maximum of ``|Σ xG - goals| / goals``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Final, Literal, get_args
 
 import numpy as np
 import numpy.typing as npt
@@ -30,7 +32,11 @@ from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 
 FloatArray = npt.NDArray[np.float64]
 BoolArray = npt.NDArray[np.bool_]
+Outcomes = npt.NDArray[np.bool_ | np.int64 | np.float64]  # goal or not: bool, or 0 / 1
 Op = Literal["<=", ">="]
+Metric = Literal["log_loss", "brier", "auc", "xg_error"]  # Scores values that are never None
+
+METRICS: Final[tuple[Metric, ...]] = get_args(Metric)
 
 EPS: Final[float] = 1e-15
 
@@ -68,11 +74,21 @@ class Scores:
 
 @dataclass(frozen=True)
 class Threshold:
-    """A milestone target: ``metric op value`` (``Scores`` attribute, ``<=`` or ``>=``)."""
+    """A milestone target: ``metric op value``.
 
-    metric: str
+    ``metric`` is one of ``METRICS`` and ``op`` is ``<=`` or ``>=``; anything else is a
+    ``ValueError`` when the threshold is made, not when it is checked.
+    """
+
+    metric: Metric
     op: Op
     value: float
+
+    def __post_init__(self) -> None:
+        if self.metric not in METRICS:
+            raise ValueError(f"unknown metric {self.metric!r}; expected one of {METRICS}")
+        if self.op not in ("<=", ">="):
+            raise ValueError(f"unknown op {self.op!r}; expected '<=' or '>='")
 
 
 @dataclass(frozen=True)
@@ -158,12 +174,29 @@ def calibration(y: FloatArray, p: FloatArray) -> tuple[float | None, float | Non
     )
 
 
-def score(y: BoolArray, p: FloatArray) -> Scores:
+def metric_value(s: Scores, metric: Metric) -> float:
+    """One metric of ``s`` by name, typed (no ``getattr``).
+
+    Examples
+    --------
+    >>> round(metric_value(Scores(100, 10, 10.2, 0.288, 0.082, 0.763, 0.0, 1.0), "xg_error"), 4)
+    0.02
+    """
+    values: dict[Metric, float] = {
+        "log_loss": s.log_loss,
+        "brier": s.brier,
+        "auc": s.auc,
+        "xg_error": s.xg_error,
+    }
+    return values[metric]
+
+
+def score(y: Outcomes, p: FloatArray) -> Scores:
     """Score probabilities against outcomes.
 
     Parameters
     ----------
-    y : numpy.ndarray of bool
+    y : numpy.ndarray of bool, or of 0 / 1 (int64 or float64)
         Goal or not, at least one of each.
     p : numpy.ndarray of float
         Finite probabilities in [0, 1], same length.
@@ -224,11 +257,12 @@ def mean_scores(folds: Sequence[Scores]) -> Scores:
 
     Examples
     --------
-    >>> a = Scores(10, 2, 2.5, 0.30, 0.08, 0.70, 0.1, 1.0)
-    >>> b = Scores(20, 3, 2.5, 0.40, 0.10, 0.80, 0.3, None)
-    >>> m = mean_scores([a, b])
+    >>> a = Scores(10, 2, 2.5, 0.10, 0.08, 0.70, 0.1, 1.0)
+    >>> b = Scores(20, 3, 2.5, 0.20, 0.10, 0.80, 0.3, None)
+    >>> c = Scores(30, 5, 6.0, 0.90, 0.12, 0.90, 0.5, 1.0)
+    >>> m = mean_scores([a, b, c])
     >>> m.n, m.goals, m.xg, round(m.log_loss, 2), round(m.cal_intercept, 2), m.cal_slope
-    (30, 5, 5.0, 0.35, 0.2, None)
+    (60, 10, 11.0, 0.4, 0.3, None)
     """
     if not folds:
         raise ValueError("mean_scores needs at least one fold")
@@ -249,7 +283,7 @@ def mean_scores(folds: Sequence[Scores]) -> Scores:
     )
 
 
-def fold_sd(folds: Sequence[Scores], metric: str) -> float:
+def fold_sd(folds: Sequence[Scores], metric: Metric) -> float:
     """Standard deviation (ddof=1) of one metric over the folds.
 
     Examples
@@ -259,10 +293,31 @@ def fold_sd(folds: Sequence[Scores], metric: str) -> float:
     >>> round(fold_sd([a, b], "log_loss"), 4)
     0.0707
     """
-    return float(np.std([getattr(f, metric) for f in folds], ddof=1))
+    return float(np.std([metric_value(f, metric) for f in folds], ddof=1))
 
 
-def reliability(y: BoolArray, p: FloatArray, bins: int = 10) -> pl.DataFrame:
+def fold_xg_error(folds: Sequence[Scores]) -> tuple[float, float]:
+    """Fold mean and maximum of ``|Σ xG - goals| / goals``: errors that pooling cancels.
+
+    Raises
+    ------
+    ValueError
+        If ``folds`` is empty.
+
+    Examples
+    --------
+    >>> a = Scores(10, 2, 2.2, 0.3, 0.08, 0.7, 0.0, 1.0)  # +10 %
+    >>> b = Scores(10, 2, 1.8, 0.3, 0.08, 0.7, 0.0, 1.0)  # -10 %
+    >>> mean_scores([a, b]).xg_error, [round(v, 4) for v in fold_xg_error([a, b])]
+    (0.0, [0.1, 0.1])
+    """
+    if not folds:
+        raise ValueError("fold_xg_error needs at least one fold")
+    errors = [f.xg_error for f in folds]
+    return float(np.mean(errors)), float(max(errors))
+
+
+def reliability(y: Outcomes, p: FloatArray, bins: int = 10) -> pl.DataFrame:
     """Equal-count bins of ``p`` with their mean prediction and observed goal rate.
 
     A shot's bin is ``(rank - 1) * bins // n``, with ranks by ``p`` and ties in input order, so
@@ -270,7 +325,7 @@ def reliability(y: BoolArray, p: FloatArray, bins: int = 10) -> pl.DataFrame:
 
     Parameters
     ----------
-    y : numpy.ndarray of bool
+    y : numpy.ndarray of bool, or of 0 / 1 (int64 or float64)
         Outcomes.
     p : numpy.ndarray of float
         Probabilities.
@@ -310,18 +365,22 @@ def reliability(y: BoolArray, p: FloatArray, bins: int = 10) -> pl.DataFrame:
     )
 
 
-def check_thresholds(s: Scores) -> tuple[ThresholdCheck, ...]:
-    """Check scores against the milestone ``THRESHOLDS``.
+def check_thresholds(
+    s: Scores, thresholds: Sequence[Threshold] = THRESHOLDS
+) -> tuple[ThresholdCheck, ...]:
+    """Check scores against milestone targets (default: the MS2 ``THRESHOLDS``).
 
     Examples
     --------
     >>> s = Scores(100, 10, 10.2, 0.2880, 0.0821, 0.7628, 0.0, 1.0)
     >>> [(c.threshold.metric, c.passed) for c in check_thresholds(s)]
     [('log_loss', False), ('brier', False), ('auc', True), ('xg_error', True)]
+    >>> [c.passed for c in check_thresholds(s, [Threshold("log_loss", "<=", 0.3)])]
+    [True]
     """
     checks = []
-    for t in THRESHOLDS:
-        measured = float(getattr(s, t.metric))
+    for t in thresholds:
+        measured = metric_value(s, t.metric)
         passed = measured <= t.value if t.op == "<=" else measured >= t.value
         checks.append(ThresholdCheck(t, measured, passed))
     return tuple(checks)

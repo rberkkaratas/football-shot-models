@@ -64,4 +64,6 @@ nav:
       - data: api/data.md
       - features: api/features.md
       - metrics: api/metrics.md
+      - evaluation: api/evaluation.md
+      - cards: api/cards.md
       - baselines: api/baselines.md

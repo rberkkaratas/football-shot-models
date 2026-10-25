@@ -1,4 +1,5 @@
-"""M1.0 leakage guard: the xG allow-list is the C3 ``pre_shot`` role and nothing else (spec §3)."""
+"""M1.0 leakage guard: the xG allow-list is the C3 ``pre_shot`` role minus the columns restricted
+until a follow-up lands, for C3 columns and for the sources of derived features (spec §3)."""
 
 from __future__ import annotations
 
@@ -12,6 +13,8 @@ from football_shot_models import baselines, features
 
 ROLE = {c.name: c.role for c in schema.SHOT_COLUMNS}
 NOT_PRE_SHOT = tuple(name for name, role in ROLE.items() if role != "pre_shot")
+FRAME_ROLE = {c.name: c.role for c in schema.FREEZE_FRAME_COLUMNS}
+RESTRICTED = ("situation",)  # pre_shot in C3, but recorded on outcome for direct set pieces
 
 
 def test_baseline_features_are_pre_shot() -> None:
@@ -28,9 +31,10 @@ def test_baseline_features_are_pre_shot() -> None:
 
 
 def test_allow_list_is_c3_pre_shot() -> None:
-    expected = {name for name, role in ROLE.items() if role == "pre_shot"}
+    expected = {name for name, role in ROLE.items() if role == "pre_shot"} - set(RESTRICTED)
     assert frozenset(expected) == features.XG_ALLOWED
-    assert len(features.XG_ALLOWED) == 21
+    assert len(features.XG_ALLOWED) == 20
+    assert tuple(features.RESTRICTED_UNTIL) == RESTRICTED
     assert "big_chance" not in features.XG_ALLOWED  # restricted: ablation only, null for SB
 
 
@@ -46,6 +50,45 @@ def test_non_pre_shot_column_rejected(column: str) -> None:
             call()
         assert repr(column) in str(err.value)
         assert repr(ROLE[column]) in str(err.value)
+
+
+@pytest.mark.parametrize("column", RESTRICTED)
+def test_restricted_column_rejected(column: str) -> None:
+    """``situation`` is refused with its reason until F5, although C3 calls it pre_shot."""
+    shots = xc.shots_frame([xc.Shot("sb:s1"), xc.Shot("sb:s2", goal=True)])
+    for call in (
+        lambda: features.check_xg_features(["distance_m", column]),
+        lambda: features.design_matrix(shots, ["distance_m", column]),
+    ):
+        with pytest.raises(ValueError, match=rf"'{column}' must not be an xG feature until F5"):
+            call()
+
+
+def _derived(*sources: tuple[str, str]) -> features.DerivedFeature:
+    return features.DerivedFeature("d", sources, lambda t: t["shots"]["shot_id"])
+
+
+@pytest.mark.parametrize(
+    ("source", "needle"),
+    [
+        *((("shots", c), f"'{c}' has role '{ROLE[c]}'") for c in NOT_PRE_SHOT),
+        *(
+            (("freeze_frames", c), f"freeze_frames column '{c}' has role '{r}'")
+            for c, r in FRAME_ROLE.items()
+            if r != "pre_shot"
+        ),
+        *((("shots", c), "must not be an xG feature until") for c in RESTRICTED),
+        (("shots", "gender"), "'gender' is not a column of the C3 shots table"),
+        (("matches", "gender"), "unknown table 'matches'"),
+    ],
+    ids=lambda v: v if isinstance(v, str) and " " not in v else None,
+)
+def test_derived_feature_source_rejected(source: tuple[str, str], needle: str) -> None:
+    """The allow-list extended to derived features: any source that is not an unrestricted
+    pre_shot column of C3 shots or freeze frames is refused when the feature is made."""
+    with pytest.raises(ValueError, match="pre_shot" if "role" in needle else ".") as err:
+        _derived(("shots", "distance_m"), source)
+    assert needle in str(err.value)
 
 
 @pytest.mark.parametrize(
@@ -66,7 +109,8 @@ def test_bad_feature_lists_rejected(bad: object, error: type[Exception], needle:
 
 @given(st.lists(st.sampled_from([*ROLE, "gender", "family", "xg"]), max_size=6))
 def test_property_guard_accepts_exactly_unique_pre_shot(names: list[str]) -> None:
-    ok = all(ROLE.get(n) == "pre_shot" for n in names) and len(set(names)) == len(names)
+    allowed = all(ROLE.get(n) == "pre_shot" and n not in RESTRICTED for n in names)
+    ok = allowed and len(set(names)) == len(names)
     if ok:
         assert features.check_xg_features(names) == tuple(names)
     else:

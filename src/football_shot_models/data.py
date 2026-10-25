@@ -14,16 +14,20 @@ excluded shots. The per-shot log is stored as the git-ignored snapshot ``xg-excl
 only its manifest (counts per competition-season) is committed.
 
 Every match also gets a ``family`` used to segment the model cards: ``women``,
-``team-selected`` (one team plays in at least half the matches of the competition-season, as
-in the Barcelona-only La Liga seasons) or ``league or tournament``. It is derived from the
-matches table alone, with no hand-made list of competitions.
+``team-selected`` (one team plays in at least half the matches of the competition-season) or
+``league or tournament``. It is derived from the matches table alone, with no hand-made list
+of competitions. Team-selected covers the Barcelona-only La Liga seasons and other
+one-club collections, and also, trivially, every one- or two-match competition-season: both
+teams then play in all of its matches. At ``statsbomb-open-v1`` that is 30 of the 56
+team-selected competition-seasons, mostly single finals (18 Champions League finals, three
+World Cup and three Copa del Rey matches), so the family means "curated matches", not
+"one club's season".
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Final
 
 import polars as pl
@@ -290,15 +294,17 @@ def write_exclusion_log(
 ) -> snapshot.SnapshotResult:
     """Store the exclusion log as the git-ignored snapshot ``xg-exclusions-v1``.
 
-    The source is the StatsBomb manifest itself, so the log's manifest pins which snapshot it
-    was derived from. ``write_snapshot`` refuses to write data that git would track.
+    The source is the StatsBomb snapshot's name and data digest, so the log's manifest pins
+    which data it was derived from, and a rerun after a core commit (which changes only the
+    StatsBomb manifest's ``environment``) leaves it unchanged. ``write_snapshot`` refuses to
+    write data that git would track.
 
     Parameters
     ----------
     log : polars.DataFrame
         ``EXCLUSION_SCHEMA`` rows (from :func:`exclude`).
     manifest : str or path
-        The StatsBomb manifest the log was derived from.
+        The StatsBomb manifest the log was derived from (read for its name and digest).
     root : str or path, default "."
         The repo root; data goes to ``data/snapshots/``, the manifest to ``manifests/``.
 
@@ -319,9 +325,8 @@ def write_exclusion_log(
     >>> write_exclusion_log(load_xg_data().exclusions, DEFAULT_MANIFEST).status  # doctest: +SKIP
     'unchanged'
     """
-    source = snapshot.source_from_files(
-        [manifest], root=Path(manifest).parent, uri="statsbomb-open-v1"
-    )
+    meta = snapshot.read_manifest(manifest)
+    source = snapshot.Source("files", uri=meta.name, revision=meta.data_digest)
     return snapshot.write_snapshot(
         EXCLUSIONS_SNAPSHOT,
         {"exclusions": log},

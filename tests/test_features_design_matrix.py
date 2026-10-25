@@ -1,9 +1,10 @@
-"""``design_matrix``: the only way to build a feature matrix (spec §3)."""
+"""``design_matrix``: the only way to build a feature matrix, from C3 or derived features (§3)."""
 
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -77,3 +78,56 @@ def test_design_matrix_no_features_shape() -> None:
     assert x.shape == (3, 0)
     assert x.dtype == np.float64
     assert names == ()
+
+
+def _keeper_depth(seen: list[dict[str, list[str]]]) -> features.DerivedFeature:
+    """Metres from the opponent keeper to the goal line, per shot (a freeze-frame feature)."""
+
+    def fn(tables: object) -> pl.Series:
+        assert isinstance(tables, Mapping)
+        seen.append({t: frame.columns for t, frame in tables.items()})
+        keepers = tables["freeze_frames"].filter(pl.col("is_keeper"))
+        depth = keepers.select("shot_id", depth=105.0 - pl.col("x"))
+        shots = tables["shots"].join(depth, on="shot_id", how="left", maintain_order="left")
+        return shots["depth"]
+
+    sources = (("freeze_frames", "is_keeper"), ("freeze_frames", "x"), ("shots", "x"))
+    return features.DerivedFeature("keeper_depth", sources, fn)
+
+
+def test_derived_feature_reads_only_its_sources() -> None:
+    seen: list[dict[str, list[str]]] = []
+    depth = _keeper_depth(seen)
+    shots = xc.shots_frame(SHOTS)
+    frames = xc.frames_for(shots).with_columns(x=pl.Series([104.0, 103.0, 101.5]))
+    x, names = features.design_matrix(
+        shots, ["distance_m", "keeper_depth"], derived={"keeper_depth": depth}, freeze_frames=frames
+    )
+    assert names == ("distance_m", "keeper_depth")
+    np.testing.assert_allclose(x[:, 1], [1.0, 2.0, 3.5])
+    # fn got shot_id plus the declared columns, nothing else (no is_goal, no provider_xg)
+    assert seen == [{"freeze_frames": ["shot_id", "is_keeper", "x"], "shots": ["shot_id", "x"]}]
+
+
+@pytest.mark.parametrize(
+    ("call", "needle"),
+    [
+        (lambda d: features.design_matrix(xc.shots_frame(SHOTS), ["keeper_depth"], derived=d),
+         "reads freeze_frames"),
+        (lambda d: features.check_xg_features(["keeper_depth"]), "not a column of the C3 shots"),
+        (lambda d: features.check_xg_features(["depth"], {"depth": d["keeper_depth"]}),
+         "registered as 'depth'"),
+        (lambda d: features.DerivedFeature("distance_m", (("shots", "x"),), len), "C3 shot column"),
+        (lambda d: features.DerivedFeature("none", (), len), "needs a tuple"),
+        (lambda d: features.design_matrix(
+            xc.shots_frame(SHOTS), ["short"],
+            derived={"short": features.DerivedFeature(
+                "short", (("shots", "x"),), lambda t: t["shots"]["x"].head(1))}),
+         "must return a Series of 3"),
+    ],
+    ids=["no freeze_frames", "not registered", "key mismatch", "C3 name", "no sources",
+         "wrong length"],
+)  # fmt: skip
+def test_derived_feature_rejects(call: Callable[[dict[str, Any]], object], needle: str) -> None:
+    with pytest.raises(ValueError, match=needle):
+        call({"keeper_depth": _keeper_depth([])})

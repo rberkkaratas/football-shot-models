@@ -8,15 +8,9 @@
   "source": {
     "kind": "files",
     "uri": "statsbomb-open-v1",
-    "revision": "4481f444492488b909f708049b6043ab8bd3c7ed0fc6e47aa3f9ee199c10aa51",
+    "revision": "9b34e93fa3c8300f9d49d107a4fa92dfd4eed55d2cf72d8ba878afd37cc7d0ad",
     "content_sha256": null,
-    "files": [
-      {
-        "path": "statsbomb-open-v1.json",
-        "sha256": "cd29ec7bcfc5bac5dc07d84e09728ad35ddc9161f475d1017f8e7befa33d2fab",
-        "bytes": 41712
-      }
-    ]
+    "files": []
   },
   "tables": [
     {
@@ -517,7 +511,7 @@
     "pandera": "0.34.1",
     "numpy": "2.5.4",
     "football_core": "0.1.0",
-    "football_core_git": "ac62650c606cc8403f39fac8e5ecb0b83a360148",
+    "football_core_git": "fc95d856b06e37f63a6607a4b9c9727cc473ab41",
     "football_core_dirty": false
   }
 }

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +15,7 @@ import pytest
 import xg_cases as xc
 from sklearn.metrics import brier_score_loss, log_loss
 
-from football_shot_models import baselines, metrics
+from football_shot_models import baselines, cards, data, evaluation, metrics
 
 REPO = Path(__file__).resolve().parents[1]
 LICENCE = (
@@ -24,7 +27,9 @@ CAVEAT = (
     "StatsBomb fits it on its own data, which likely includes these matches, and it uses "
     "freeze-frame and other inputs."
 )
-RELIABILITY = "This table stands in for the reliability plot until C7 (F1)."
+RELIABILITY = (
+    "This table stands in for a reliability plot until a reliability chart is added to `viz` (F1)."
+)
 THRESHOLD_NOTE = (
     "Σ xG and calibration on grouped CV are close to their targets by construction for the "
     "base rate and for an unpenalised logistic regression with an intercept; see the hold-out "
@@ -39,7 +44,7 @@ FILTERS = {  # Data > Filters row label: (shots, goals) in the fixture
 THRESHOLD_LINE = re.compile(r"^(log_loss|brier|auc|xg_error) \S+ (<=|>=) \S+: (MET|MISSED)$")
 
 
-def _card(docs: Path, baseline: baselines.Baseline) -> str:
+def _card(docs: Path, baseline: evaluation.ModelSpec) -> str:
     return (docs / f"{baseline.name}.md").read_text(encoding="utf-8")
 
 
@@ -86,7 +91,7 @@ def test_card_headings_follow_template(run_result: tuple[Any, Path]) -> None:
 def test_card_text_rules(run_result: tuple[Any, Path]) -> None:
     evaluations, docs = run_result
     for ev in evaluations[:3]:
-        text = _card(docs, ev.baseline)
+        text = _card(docs, ev.spec)
         assert "sb:" not in text  # no id of any kind
         assert "well calibrated" not in text.lower()
         assert LICENCE in _section(text, "## Data licensing")
@@ -101,7 +106,7 @@ def test_card_text_rules(run_result: tuple[Any, Path]) -> None:
         assert "xg-exclusions-v1" in data
         filters = {r[0]: tuple(r[1:3]) for r in _rows(data) if r[0] in FILTERS}
         assert filters == FILTERS
-    base_metrics = _rows(_section(_card(docs, evaluations[0].baseline), "## Metrics"))
+    base_metrics = _rows(_section(_card(docs, evaluations[0].spec), "## Metrics"))
     skill = [r for r in base_metrics if r[0].lower().startswith("log-loss skill")]
     assert skill and skill[0][1:4] == ["0.0000"] * 3  # skill of the base rate against itself
 
@@ -111,7 +116,7 @@ def test_card_reports_missed_threshold(run_result: tuple[Any, Path]) -> None:
     base, bench = evaluations[0], evaluations[3]
     missed_any = False
     for ev in evaluations[:3]:
-        text = _card(docs, ev.baseline)
+        text = _card(docs, ev.spec)
         log_loss_row = next(r for r in _rows(_section(text, "## Metrics")) if r[0] == "Log loss")
         sd = metrics.fold_sd(ev.folds, "log_loss")
         assert f"{ev.train.log_loss:.4f}" in log_loss_row[1]
@@ -156,7 +161,7 @@ def test_card_segments(run_result: tuple[Any, Path], dev_held: tuple[pl.DataFram
     evaluations, docs = run_result
     dev, _ = dev_held
     ev = evaluations[2]
-    rows = _rows(_section(_card(docs, ev.baseline), "### Segments"))
+    rows = _rows(_section(_card(docs, ev.spec), "### Segments"))
     labels = [r[0] for r in rows]
     found = [next(i for i, lab in enumerate(labels) if re.search(p, lab, re.I)) for p in SEGMENTS]
     assert found == list(range(len(SEGMENTS)))  # FAMILIES, then gender, then body part order
@@ -164,14 +169,78 @@ def test_card_segments(run_result: tuple[Any, Path], dev_held: tuple[pl.DataFram
     assert not any(re.search(r"\bother\b", lab, re.I) for lab in labels)
     shots = [r[1] for r in rows]
     assert shots == ["48", "48", "24", "24", "96", "52", "44", "24"]
-    women = rows[2]  # one class: no goals, but a log loss and a Brier score
+    assert all(len(r) == 9 for r in rows)
+    women = rows[2]  # one class: no goals, but a log loss and a Brier score; no skill
     mask = (dev["family"] == "women").to_numpy()
     p = ev.oof[mask]
     assert women[2] == "0"
     assert women[5] == "n/a"
     assert women[6] == f"{log_loss(np.zeros(p.size), p, labels=[0, 1]):.4f}"
     assert women[7] == f"{brier_score_loss(np.zeros(p.size), p):.4f}"
+    assert women[8] == "n/a"
     assert rows[4][5] != "n/a"
+    # skill against the segment's own goal rate, not the pooled one
+    league = (dev["family"] == "league or tournament").to_numpy()
+    y = dev["is_goal"].to_numpy()[league].astype(float)
+    own = log_loss(y, np.full(y.size, y.mean()), labels=[0, 1])
+    assert rows[0][8] == f"{1 - log_loss(y, ev.oof[league], labels=[0, 1]) / own:.4f}"
+
+
+def test_card_fold_xg_error(run_result: tuple[Any, Path]) -> None:
+    """The pooled CV Σ xG error cancels fold errors of opposite sign, so the card also prints
+    the fold mean and maximum, in the Metrics table and in the threshold row."""
+    evaluations, docs = run_result
+    for ev in evaluations[:3]:
+        mean, worst = metrics.fold_xg_error(ev.folds)
+        assert mean == pytest.approx(np.mean([f.xg_error for f in ev.folds]))
+        text = _card(docs, ev.spec)
+        cell = f"{mean:.2%} (max {worst:.2%})"
+        row = next(r for r in _rows(_section(text, "## Metrics")) if "fold mean" in r[0])
+        assert row == ["abs(Σ xG − goals) / goals, fold mean (max)", "n/a", cell, "n/a"]
+        threshold = _rows(_section(text, "### Milestone thresholds"))[3]
+        assert f"{ev.cv.xg_error:.2%} pooled; fold mean {cell}" == threshold[1]
+
+
+def test_card_context_counts(xg_data: Any, dev_held: tuple[pl.DataFrame, pl.DataFrame]) -> None:
+    """m1 ratify 1: the provenance and population counts, pinned on the fixture."""
+    dev, held = dev_held
+    c = cards.card_context(xg_data, dev, held)
+    assert (c.manifest_name, c.source_revision) == (xc.SNAPSHOT, "0" * 40)
+    assert c.data_digest == xg_data.manifest.data_digest
+    assert c.holdout_label == "Premier League 2015/2016"
+    assert (c.dev_shots, c.dev_matches, c.holdout_shots, c.holdout_matches) == (120, 12, 20, 2)
+    assert (c.competition_seasons, c.male_shots, c.female_shots) == (4, 116, 24)
+    assert c.exclusions == tuple(
+        (r, 1, 1 if r in ("own_goal", "penalty") else 0) for r in data.EXCLUSION_REASONS
+    )
+    # the hold-out pair (2 matches) and the sb:t13 season (4 matches) are team-selected
+    assert (c.team_selected_seasons, c.team_selected_short) == (2, 1)
+
+
+def test_card_model_text(
+    run_result: tuple[Any, Path],
+    xg_data: Any,
+    dev_held: tuple[pl.DataFrame, pl.DataFrame],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """m1 ratify 7: the base-rate card's Features and Model text; the LR card prints the solver
+    settings the fit used, read from make_model(), never a literal."""
+    evaluations, docs = run_result
+    base = _card(docs, evaluations[0].spec)
+    assert _section(base, "## Features").strip() == (
+        "None: every shot gets the goal rate of the training shots."
+    )
+    rate = evaluations[0].train.goals / evaluations[0].train.n
+    model = _section(base, "## Model")
+    assert f"the goal rate of the training shots ({rate:.2%} on all of dev)" in model
+    assert "Nothing else is fitted." in model
+    lr = _card(docs, evaluations[1].spec)
+    assert "LogisticRegression(C=inf, tol=1e-10, max_iter=1000)" in _section(lr, "## Model")
+    monkeypatch.setattr(baselines, "TOL", 1e-8)
+    monkeypatch.setattr(baselines, "MAX_ITER", 50)
+    context = cards.card_context(xg_data, *dev_held)
+    text = baselines.CARDS[evaluations[1].spec.name].model(evaluations[1], context)
+    assert "LogisticRegression(C=inf, tol=1e-08, max_iter=50)" in text[0]
 
 
 def _args(manifest: Path, root: Path, docs: Path) -> list[str]:
@@ -190,17 +259,39 @@ def test_cli_fixture_end_to_end(
     out = capsys.readouterr().out
     assert "sb:" not in out
     evaluations, run_docs = run_result
-    best = baselines.best(evaluations)
-    assert f"best: {best.baseline.name}" in out.splitlines()
+    best = evaluation.best(evaluations)
+    assert f"best: {best.spec.name}" in out.splitlines()
     lines = [m for m in map(THRESHOLD_LINE.match, out.splitlines()) if m]
     checks = metrics.check_thresholds(best.cv)
     assert [m[1] for m in lines] == [t.metric for t in metrics.THRESHOLDS]
     assert [m[3] == "MET" for m in lines] == [c.passed for c in checks]
+    mean, worst = metrics.fold_xg_error(best.folds)
+    assert f"xg_error fold mean {mean:.4f}, max {worst:.4f} (the line above is pooled)" in out
     first = {n: (docs / n).read_bytes() for n in names}
     assert first == {n: (run_docs / n).read_bytes() for n in names}  # no path, date or time
     assert baselines.main(_args(manifest, tmp_path, docs)) == 0
-    assert "unchanged" in capsys.readouterr().out
+    assert "snapshot xg-exclusions-v1: unchanged\n" in capsys.readouterr().out
     assert {n: (docs / n).read_bytes() for n in names} == first
+    # same data, different manifest bytes: say so, as `fc snapshot` does
+    log_manifest = tmp_path / "manifests" / "xg-exclusions-v1.json"
+    raw = json.loads(log_manifest.read_text(encoding="utf-8"))
+    raw["environment"]["football_core_git"] = "f" * 40
+    log_manifest.write_text(json.dumps(raw), encoding="utf-8")
+    assert baselines.main(_args(manifest, tmp_path, docs)) == 0
+    assert "snapshot xg-exclusions-v1: unchanged (manifest updated)\n" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(shutil.which("make") is None, reason="make is not installed")
+def test_make_reproduce_fails_without_snapshot(tmp_path: Path) -> None:
+    """A fresh clone has no snapshot: ``make reproduce`` must fail, not pass with a skip."""
+    out = subprocess.run(
+        ["make", "-C", str(tmp_path), "-f", str(REPO / "Makefile"), "reproduce"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert out.returncode != 0
+    assert "no snapshot at data/snapshots/statsbomb-open-v1" in out.stderr
 
 
 @pytest.mark.parametrize(
