@@ -59,6 +59,11 @@ nav:
       - "Base rate": models/xg-base-rate.md
       - "LR distance + angle": models/xg-lr-distance-angle.md
       - "LR distance + angle + body part": models/xg-lr-distance-angle-body-part.md
+      - "LR splines + body part": models/xg-lr-splines.md
+      - "LR splines + context": models/xg-lr-context.md
+      - "LR splines + context + freeze frames": models/xg-lr-frames.md
+      - "Monotone GBM + Platt": models/xg-gbm.md
+      - "Penalty conversion (Beta-binomial)": models/xg-penalty.md
   - References: references.md
   - API reference:
       - data: api/data.md
@@ -67,3 +72,5 @@ nav:
       - evaluation: api/evaluation.md
       - cards: api/cards.md
       - baselines: api/baselines.md
+      - ablation: api/ablation.md
+      - models: api/models.md

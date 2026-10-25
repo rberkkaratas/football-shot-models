@@ -11,7 +11,7 @@ import xg_cases as xc
 from football_core import schema
 from football_core.io import snapshot
 
-from football_shot_models import data
+from football_shot_models import data, features
 
 
 def test_load_verifies_snapshot(tmp_path: Path) -> None:
@@ -32,22 +32,47 @@ def _duplicate_match(matches: pl.DataFrame) -> pl.DataFrame:
     return pl.concat([matches, matches.filter(pl.col("match_id") == "sb:m06")])
 
 
-@pytest.mark.parametrize(
-    ("variant", "needle"),
-    [
-        ({"builder": "parquet"}, "parquet"),
-        # 12 kept shots in sb:m05; its excluded no-frame shot is not counted
-        ({"matches": _drop_match}, r"^12 kept shot\(s\) without a matches row"),
-        ({"matches": _duplicate_match}, r"^1 duplicate match_id\(s\) in matches"),
-    ],
-    ids=["other builder", "shot without a matches row", "duplicate match_id"],
-)
-def test_load_rejects(variant: dict[str, Any], needle: str, tmp_path: Path) -> None:
-    _, _, matches = xc.fixture_tables()
-    kwargs = {k: v(matches) if callable(v) else v for k, v in variant.items()}
-    manifest = xc.write_fixture_snapshot(tmp_path, **kwargs)
-    with pytest.raises(ValueError, match=needle):
+def test_load_rejects_other_builder(tmp_path: Path) -> None:
+    manifest = xc.write_fixture_snapshot(tmp_path, builder="parquet")
+    with pytest.raises(ValueError, match="parquet"):
         data.load_xg_data(manifest)
+
+
+@pytest.mark.parametrize(
+    ("transform", "table", "check", "count"),
+    [
+        # all 13 shots of sb:m05, the excluded no-frame shot included: core checks every shot
+        (_drop_match, "shots", "match_exists", 13),
+        (_duplicate_match, "matches", "unique", 2),
+    ],
+    ids=["shot without a matches row", "duplicate match_id"],
+)
+def test_snapshot_refuses_bad_matches(
+    transform: Any, table: str, check: str, count: int, tmp_path: Path
+) -> None:
+    """MS3.matches §1.5: shot/match consistency is core's, checked when the snapshot is
+    written, so load_xg_data no longer needs its own orphan and duplicate checks."""
+    _, _, matches = xc.fixture_tables()
+    with pytest.raises(schema.SchemaValidationError) as info:
+        xc.write_fixture_snapshot(tmp_path, matches=transform(matches))
+    assert info.value.table == table
+    (failure,) = [f for f in info.value.failures if f.check == check]
+    assert failure.count == count
+    assert not (tmp_path / "manifests").exists()
+
+
+def test_load_joins_match_features(xg_data: Any) -> None:
+    """Every matches pre_shot column (today gender) is joined onto the shots, typed as core
+    types it, between the C3 columns and family; gender is then usable as a feature."""
+    assert schema.column_names("matches", roles="pre_shot") == ("gender",)
+    assert data.MATCH_FEATURES == ("gender",)
+    shots = xg_data.shots
+    assert shots.columns == [*schema.column_names("shots"), *data.MATCH_FEATURES, "family"]
+    assert shots.schema["gender"] == schema.GENDER
+    assert xg_data.matches.schema == schema.MATCH_SCHEMA
+    matrix, names = features.design_matrix(shots, ["gender"])
+    assert names == ("gender=female",)
+    assert matrix[:, 0].sum() == 24  # 4 women's matches x 6 kept shots
 
 
 def test_load_adds_segments_in_order(xg_data: Any, manifest: Path) -> None:
@@ -156,3 +181,26 @@ def test_split_holdout(case: str) -> None:
     else:
         with pytest.raises(ValueError, match="(?=.*sb:2)(?=.*sb:27)"):
             data.split_holdout(shots.filter(in_pair))
+
+
+def test_load_xg_data_freeze_frames_kept_only(tmp_path: Path, xg_data: Any) -> None:
+    """``XgData.freeze_frames`` is always a C3 freeze-frame DataFrame: the snapshot's frame rows
+    of the kept shots only, in snapshot order. Excluded shots that have frame rows (a direct
+    corner, an in-game penalty) lose them."""
+    import ablation_cases as ac
+
+    manifest = ac.write_ablation_snapshot(tmp_path)
+    xg = data.load_xg_data(manifest)
+    ff = xg.freeze_frames
+    assert isinstance(ff, pl.DataFrame)
+    assert ff.schema == schema.FREEZE_FRAME_SCHEMA
+    raw = snapshot.load_snapshot(manifest, tables=("freeze_frames",))["freeze_frames"]
+    assert raw.filter(pl.col("shot_id").is_in([ac.DIRECT_CORNER_ID, ac.PENALTY_ID])).height > 0
+    reasons = dict(zip(xg.exclusions["shot_id"], xg.exclusions["reason"], strict=True))
+    assert reasons == {ac.DIRECT_CORNER_ID: "direct_corner", ac.PENALTY_ID: "penalty"}
+    kept = xg.shots["shot_id"]
+    assert ff.equals(raw.filter(pl.col("shot_id").is_in(kept.implode())))
+    assert set(ff["shot_id"]) == set(kept)
+    # the shared fixture: one keeper row per kept shot, none for the four excluded shots
+    assert xg_data.freeze_frames.height == xc.KEPT_SHOTS
+    assert set(xg_data.freeze_frames["shot_id"]).isdisjoint(xc.EXCLUDED_IDS)

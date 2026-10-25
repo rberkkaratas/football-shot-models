@@ -39,6 +39,7 @@ FILTERS = {  # Data > Filters row label: (shots, goals) in the fixture
     "own goal (Own Goal Against events; not shots)": ("1", "1"),
     "shoot-out (period 5; all are penalties)": ("1", "0"),
     "penalty (in-game)": ("1", "1"),
+    "direct corner (logged as a shot on outcome)": ("0", "0"),  # MS3.features: none here
     "no freeze frame": ("1", "0"),
 }
 THRESHOLD_LINE = re.compile(r"^(log_loss|brier|auc|xg_error) \S+ (<=|>=) \S+: (MET|MISSED)$")
@@ -69,6 +70,12 @@ def _rows(block: str) -> list[list[str]]:
     ]
     body = [r for r in rows if not all(re.fullmatch(r":?-+:?", c) for c in r)]
     return body[1:]
+
+
+def _header(block: str) -> list[str]:
+    """The header cells of the first table in ``block``."""
+    line = next(x for x in block.splitlines() if x.lstrip().startswith("|"))
+    return [c.strip() for c in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
 
 
 def _fmt(metric: str, value: float) -> str:
@@ -161,29 +168,39 @@ def test_card_segments(run_result: tuple[Any, Path], dev_held: tuple[pl.DataFram
     evaluations, docs = run_result
     dev, _ = dev_held
     ev = evaluations[2]
-    rows = _rows(_section(_card(docs, ev.spec), "### Segments"))
+    block = _section(_card(docs, ev.spec), "### Segments")
+    # MS3.features adds a column (Cal. slope (pooled OOF)): cells are read by header name
+    header = _header(block)
+    ms2 = [
+        "Segment", "Shots", "Goals", "Goal rate", "Σ xG", "Σ xG / goals", "Log loss", "Brier",
+        "Log-loss skill",
+    ]  # fmt: skip
+    assert [h for h in header if h in ms2] == ms2 and "Cal. slope (pooled OOF)" in header
+    col = {name: i for i, name in enumerate(header)}
+    rows = _rows(block)
     labels = [r[0] for r in rows]
     found = [next(i for i, lab in enumerate(labels) if re.search(p, lab, re.I)) for p in SEGMENTS]
     assert found == list(range(len(SEGMENTS)))  # FAMILIES, then gender, then body part order
     assert len(rows) == len(SEGMENTS)  # body_part=other has no shot: no row
     assert not any(re.search(r"\bother\b", lab, re.I) for lab in labels)
-    shots = [r[1] for r in rows]
+    shots = [r[col["Shots"]] for r in rows]
     assert shots == ["48", "48", "24", "24", "96", "52", "44", "24"]
-    assert all(len(r) == 9 for r in rows)
+    assert all(len(r) == len(header) == 10 for r in rows)
     women = rows[2]  # one class: no goals, but a log loss and a Brier score; no skill
     mask = (dev["family"] == "women").to_numpy()
     p = ev.oof[mask]
-    assert women[2] == "0"
-    assert women[5] == "n/a"
-    assert women[6] == f"{log_loss(np.zeros(p.size), p, labels=[0, 1]):.4f}"
-    assert women[7] == f"{brier_score_loss(np.zeros(p.size), p):.4f}"
-    assert women[8] == "n/a"
-    assert rows[4][5] != "n/a"
+    assert women[col["Goals"]] == "0"
+    assert women[col["Σ xG / goals"]] == "n/a"
+    assert women[col["Log loss"]] == f"{log_loss(np.zeros(p.size), p, labels=[0, 1]):.4f}"
+    assert women[col["Brier"]] == f"{brier_score_loss(np.zeros(p.size), p):.4f}"
+    assert women[col["Log-loss skill"]] == "n/a"
+    assert rows[4][col["Σ xG / goals"]] != "n/a"
     # skill against the segment's own goal rate, not the pooled one
     league = (dev["family"] == "league or tournament").to_numpy()
     y = dev["is_goal"].to_numpy()[league].astype(float)
     own = log_loss(y, np.full(y.size, y.mean()), labels=[0, 1])
-    assert rows[0][8] == f"{1 - log_loss(y, ev.oof[league], labels=[0, 1]) / own:.4f}"
+    skill = f"{1 - log_loss(y, ev.oof[league], labels=[0, 1]) / own:.4f}"
+    assert rows[0][col["Log-loss skill"]] == skill
 
 
 def test_card_fold_xg_error(run_result: tuple[Any, Path]) -> None:
@@ -211,8 +228,9 @@ def test_card_context_counts(xg_data: Any, dev_held: tuple[pl.DataFrame, pl.Data
     assert (c.dev_shots, c.dev_matches, c.holdout_shots, c.holdout_matches) == (120, 12, 20, 2)
     assert (c.competition_seasons, c.male_shots, c.female_shots) == (4, 116, 24)
     assert c.exclusions == tuple(
-        (r, 1, 1 if r in ("own_goal", "penalty") else 0) for r in data.EXCLUSION_REASONS
-    )
+        (r, 0 if r == "direct_corner" else 1, 1 if r in ("own_goal", "penalty") else 0)
+        for r in data.EXCLUSION_REASONS
+    )  # the shared fixture has no direct corner (MS3.features adds the reason)
     # the hold-out pair (2 matches) and the sb:t13 season (4 matches) are team-selected
     assert (c.team_selected_seasons, c.team_selected_short) == (2, 1)
 

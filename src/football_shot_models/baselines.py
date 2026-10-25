@@ -132,14 +132,18 @@ LIMITATIONS: Final[tuple[str, ...]] = (
     "over-represent a few clubs. The rule also takes every one- or two-match "
     "competition-season (Champions League, World Cup and Copa del Rey finals, among others), "
     "since both teams then play in all of its matches; see Data.",
-    "Direct corners and wide direct free kicks are logged as Shot events mostly when they "
-    "threaten goal, so they are outcome-selected. They stay in the population, scored by "
-    "geometry only, and `situation` must not become a feature before C3/C4 restrict those "
-    "values (F5).",
+    "Direct corners are logged as Shot events mostly when they threaten goal, so they are "
+    "outcome-selected and excluded (see Filters). Wide direct free kicks are selected the same "
+    "way; they stay in the population, scored by geometry only (F5).",
     "`situation` is unused (`play_pattern` spans the possession, C4 F3).",
     "Penalties are a separate model (M1.5).",
 )
-CHANGELOG: Final[tuple[str, ...]] = ("v1 (MS2): first baseline.",)
+CHANGELOG: Final[tuple[str, ...]] = (
+    "v1 (MS2): first baseline.",
+    "v2 (MS3): direct corners excluded (logged on outcome), all numbers re-measured; Segments "
+    "show the pooled-OOF calibration slope.",
+    "v3 (MS3, M1.4): the benchmark table shows calibration slopes.",
+)
 
 
 def _base_rate_model(ev: Evaluation, c: CardContext) -> list[str]:
@@ -196,7 +200,15 @@ CARDS: Final[dict[str, CardText]] = {spec.name: _text(spec) for spec in BASELINE
 # ---- command line -------------------------------------------------------------------------
 
 
-def _summary(ev: Evaluation) -> str:
+def summary_line(ev: Evaluation) -> str:
+    """One line of CV and hold-out scores, for the command-line output.
+
+    Examples
+    --------
+    >>> summary_line(ev)  # doctest: +SKIP
+    'xg-base-rate: cv log_loss 0.3190 brier 0.0896 auc 0.5000 xg_error 0.00% | hold-out ...'
+    """
+
     def part(s: Scores) -> str:
         return (
             f"log_loss {fmt(s.log_loss)} brier {fmt(s.brier)} auc {fmt(s.auc)} "
@@ -255,7 +267,7 @@ def run(
         status = "unchanged (manifest updated)"  # the same wording as `fc snapshot`
     print(f"snapshot {data.EXCLUSIONS_SNAPSHOT}: {status}")
     for ev in (*evaluations, benchmark):
-        print(_summary(ev))
+        print(summary_line(ev))
     top = best(evaluations)
     print(f"best: {top.spec.name}")
     for check in check_thresholds(top.cv):

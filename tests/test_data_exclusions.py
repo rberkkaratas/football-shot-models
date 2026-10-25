@@ -1,9 +1,11 @@
-"""Exclusions and the exclusion log (spec §2): own goals, shoot-outs, penalties, no freeze frame."""
+"""Exclusions and the exclusion log (spec §2; MS3.features §5): own goals, shoot-outs, penalties,
+direct corners, no freeze frame."""
 
 from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import polars as pl
@@ -18,8 +20,10 @@ CASES = {
     "own_goal": xc.Shot("sb:s1", goal=True, own_goal=True),
     "shootout": xc.Shot("sb:s1", penalty=True, period=5, minute=120),
     "penalty": xc.Shot("sb:s1", penalty=True, goal=True),
+    "direct_corner": xc.Shot("sb:s1", x=104.9, y=0.4, goal=True, situation="direct_corner"),
     "no_freeze_frame": OPEN_PLAY,
 }
+REASONS = ("own_goal", "shootout", "penalty", "direct_corner", "no_freeze_frame")
 
 
 def _reason(shot: xc.Shot, frame_ids: list[str]) -> str | None:
@@ -32,7 +36,7 @@ def _reason(shot: xc.Shot, frame_ids: list[str]) -> str | None:
 
 @pytest.mark.parametrize("reason", [*CASES, "kept"])
 def test_exclusion_reason(reason: str) -> None:
-    assert data.EXCLUSION_REASONS == ("own_goal", "shootout", "penalty", "no_freeze_frame")
+    assert data.EXCLUSION_REASONS == REASONS  # MS3.features: direct_corner after penalty
     if reason == "kept":
         assert _reason(OPEN_PLAY, ["sb:s1", "sb:other"]) is None
     elif reason == "no_freeze_frame":
@@ -49,6 +53,24 @@ def test_exclusion_precedence() -> None:
     shots = xc.shots_frame([xc.Shot("sb:a"), xc.Shot("sb:b")])
     reasons = shots.select(data.exclusion_reason(pl.Series("shot_id", [], dtype=pl.String)))
     assert reasons.to_series().to_list() == ["no_freeze_frame", "no_freeze_frame"]
+
+
+def test_exclusion_direct_corner() -> None:
+    """StatsBomb logs a direct corner as a shot on its outcome, so it leaves the population
+    with its own reason, before ``no_freeze_frame``; the rule is on ``situation``, not on the
+    spot (a corner-phase shot and a direct free kick from the same spot are kept)."""
+    assert (
+        data.EXCLUSION_REASONS.index("direct_corner") == data.EXCLUSION_REASONS.index("penalty") + 1
+    )
+    corner = CASES["direct_corner"]
+    assert _reason(corner, ["sb:s1"]) == "direct_corner"
+    assert _reason(corner, []) == "direct_corner"  # not "no_freeze_frame"
+    for situation in ("from_corner", "direct_free_kick", "open_play"):
+        assert _reason(replace(corner, situation=situation), ["sb:s1"]) is None
+    shots = xc.shots_frame([corner, replace(corner, shot_id="sb:s2", situation="from_corner")])
+    kept, log = data.exclude(shots, pl.DataFrame({"shot_id": ["sb:s1", "sb:s2"]}))
+    assert kept["shot_id"].to_list() == ["sb:s2"]
+    assert log.select("shot_id", "reason", "is_goal").rows() == [("sb:s1", "direct_corner", True)]
 
 
 def test_exclude_partitions() -> None:

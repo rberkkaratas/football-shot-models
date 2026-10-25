@@ -2,13 +2,13 @@
   "manifest_version": 1,
   "name": "xg-exclusions-v1",
   "builder": null,
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "data_dir": "../data/snapshots/xg-exclusions-v1",
-  "data_digest": "f5f556c807ca655a730b593a3da0d98d547c4b6e9c4cae379181948a38ed64ce",
+  "data_digest": "3d16d203c583551361464f572fa009a2062000d1587cae0605e95e8b0b920d65",
   "source": {
     "kind": "files",
     "uri": "statsbomb-open-v1",
-    "revision": "9b34e93fa3c8300f9d49d107a4fa92dfd4eed55d2cf72d8ba878afd37cc7d0ad",
+    "revision": "31146e70cefb5fe39056b8ef24216724a5d5162601decb2e214c0608b2eb3e78",
     "content_sha256": null,
     "files": []
   },
@@ -16,8 +16,8 @@
     {
       "name": "exclusions",
       "file": "exclusions.parquet",
-      "rows": 1868,
-      "matches": 1267,
+      "rows": 1901,
+      "matches": 1287,
       "schema": null,
       "sort_by": [
         "shot_id"
@@ -41,7 +41,7 @@
         },
         {
           "name": "reason",
-          "dtype": "Enum(categories=['own_goal', 'shootout', 'penalty', 'no_freeze_frame'])"
+          "dtype": "Enum(categories=['own_goal', 'shootout', 'penalty', 'direct_corner', 'no_freeze_frame'])"
         },
         {
           "name": "is_goal",
@@ -116,8 +116,8 @@
         {
           "competition_id": "sb:11",
           "season_id": "sb:27",
-          "rows": 126,
-          "matches": 100,
+          "rows": 127,
+          "matches": 101,
           "first_date": null,
           "last_date": null
         },
@@ -132,8 +132,8 @@
         {
           "competition_id": "sb:11",
           "season_id": "sb:38",
-          "rows": 12,
-          "matches": 9,
+          "rows": 13,
+          "matches": 10,
           "first_date": null,
           "last_date": null
         },
@@ -188,7 +188,7 @@
         {
           "competition_id": "sb:12",
           "season_id": "sb:27",
-          "rows": 149,
+          "rows": 151,
           "matches": 124,
           "first_date": null,
           "last_date": null
@@ -196,8 +196,8 @@
         {
           "competition_id": "sb:1238",
           "season_id": "sb:108",
-          "rows": 55,
-          "matches": 37,
+          "rows": 58,
+          "matches": 39,
           "first_date": null,
           "last_date": null
         },
@@ -220,8 +220,8 @@
         {
           "competition_id": "sb:135",
           "season_id": "sb:281",
-          "rows": 49,
-          "matches": 41,
+          "rows": 53,
+          "matches": 44,
           "first_date": null,
           "last_date": null
         },
@@ -284,16 +284,16 @@
         {
           "competition_id": "sb:182",
           "season_id": "sb:281",
-          "rows": 67,
-          "matches": 58,
+          "rows": 69,
+          "matches": 59,
           "first_date": null,
           "last_date": null
         },
         {
           "competition_id": "sb:2",
           "season_id": "sb:27",
-          "rows": 129,
-          "matches": 109,
+          "rows": 130,
+          "matches": 110,
           "first_date": null,
           "last_date": null
         },
@@ -324,8 +324,8 @@
         {
           "competition_id": "sb:37",
           "season_id": "sb:281",
-          "rows": 40,
-          "matches": 35,
+          "rows": 41,
+          "matches": 36,
           "first_date": null,
           "last_date": null
         },
@@ -340,24 +340,24 @@
         {
           "competition_id": "sb:37",
           "season_id": "sb:42",
-          "rows": 29,
-          "matches": 27,
+          "rows": 31,
+          "matches": 28,
           "first_date": null,
           "last_date": null
         },
         {
           "competition_id": "sb:37",
           "season_id": "sb:90",
-          "rows": 53,
-          "matches": 44,
+          "rows": 54,
+          "matches": 45,
           "first_date": null,
           "last_date": null
         },
         {
           "competition_id": "sb:43",
           "season_id": "sb:106",
-          "rows": 67,
-          "matches": 26,
+          "rows": 69,
+          "matches": 27,
           "first_date": null,
           "last_date": null
         },
@@ -380,8 +380,8 @@
         {
           "competition_id": "sb:49",
           "season_id": "sb:107",
-          "rows": 53,
-          "matches": 42,
+          "rows": 55,
+          "matches": 44,
           "first_date": null,
           "last_date": null
         },
@@ -412,8 +412,8 @@
         {
           "competition_id": "sb:55",
           "season_id": "sb:282",
-          "rows": 46,
-          "matches": 22,
+          "rows": 50,
+          "matches": 25,
           "first_date": null,
           "last_date": null
         },
@@ -444,15 +444,15 @@
         {
           "competition_id": "sb:7",
           "season_id": "sb:27",
-          "rows": 124,
-          "matches": 108,
+          "rows": 127,
+          "matches": 110,
           "first_date": null,
           "last_date": null
         },
         {
           "competition_id": "sb:72",
           "season_id": "sb:107",
-          "rows": 78,
+          "rows": 79,
           "matches": 31,
           "first_date": null,
           "last_date": null
@@ -460,7 +460,7 @@
         {
           "competition_id": "sb:72",
           "season_id": "sb:30",
-          "rows": 41,
+          "rows": 42,
           "matches": 28,
           "first_date": null,
           "last_date": null
@@ -476,7 +476,7 @@
         {
           "competition_id": "sb:9",
           "season_id": "sb:27",
-          "rows": 16,
+          "rows": 18,
           "matches": 12,
           "first_date": null,
           "last_date": null
@@ -495,8 +495,8 @@
   "files": [
     {
       "path": "exclusions.parquet",
-      "sha256": "1e674d003c45787f48efadb20683dc80055548ecb3ef64cdf558ea8913d2947b",
-      "bytes": 51017
+      "sha256": "00d0239bc99cee137ccbdbd8601d324e893ab58d7060248bf715c497a32f6c47",
+      "bytes": 51929
     }
   ],
   "parquet": {
@@ -511,7 +511,7 @@
     "pandera": "0.34.1",
     "numpy": "2.5.4",
     "football_core": "0.1.0",
-    "football_core_git": "fc95d856b06e37f63a6607a4b9c9727cc473ab41",
+    "football_core_git": "47d32c52a18d2d533fe6ff2f0dbd4fcb74a7e94a",
     "football_core_dirty": false
   }
 }

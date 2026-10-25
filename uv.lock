@@ -307,6 +307,7 @@ dev = [
     { name = "mypy" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "threadpoolctl" },
 ]
 docs = [
     { name = "mkdocstrings", extra = ["python"] },
@@ -326,6 +327,7 @@ dev = [
     { name = "mypy", specifier = ">=1.13.0" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = ">=0.8.0" },
+    { name = "threadpoolctl", specifier = ">=3.7.0" },
 ]
 docs = [
     { name = "mkdocstrings", extras = ["python"], specifier = ">=1.0.0" },

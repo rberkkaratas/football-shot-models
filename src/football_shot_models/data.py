@@ -6,7 +6,9 @@ do not belong in that question and are removed with a logged reason, never silen
 - **own goals** are 100 % goals by definition (StatsBomb logs them as Own Goal Against
   events, not shots), so keeping them would leak the label;
 - **shoot-out kicks** (period 5) are not match play;
-- **in-game penalties** get their own model later (M1.5);
+- **in-game penalties** get their own model (M1.5, ``XgData.penalties``);
+- **direct corners**: StatsBomb logs a corner as a shot mostly when it threatens goal (all
+  33 sit on the goal line's corner arc and 18 are goals), so they are selected on outcome;
 - **shots without a freeze frame**, so that every M1.x model sees the same shots.
 
 The reasons are checked in that order and the first match wins, so they partition the
@@ -31,6 +33,7 @@ from dataclasses import dataclass
 from typing import Final
 
 import polars as pl
+from football_core import schema
 from football_core.io import snapshot
 
 StrPath = str | os.PathLike[str]
@@ -41,7 +44,7 @@ EXCLUSIONS_SNAPSHOT: Final[str] = "xg-exclusions-v1"
 TEAM_SELECTED_SHARE: Final[float] = 0.5
 FAMILIES: Final = ("league or tournament", "team-selected", "women")
 FAMILY: Final = pl.Enum(FAMILIES)
-EXCLUSION_REASONS: Final = ("own_goal", "shootout", "penalty", "no_freeze_frame")
+EXCLUSION_REASONS: Final = ("own_goal", "shootout", "penalty", "direct_corner", "no_freeze_frame")
 EXCLUSION_REASON: Final = pl.Enum(EXCLUSION_REASONS)
 EXCLUSION_SCHEMA: Final[pl.Schema] = pl.Schema(
     {
@@ -53,6 +56,7 @@ EXCLUSION_SCHEMA: Final[pl.Schema] = pl.Schema(
         "is_goal": pl.Boolean(),
     }
 )
+MATCH_FEATURES: Final = schema.column_names("matches", roles="pre_shot")  # joined onto shots
 _PAIR: Final = ("competition_id", "season_id")
 
 
@@ -63,10 +67,19 @@ class XgData:
     Attributes
     ----------
     shots : polars.DataFrame
-        Kept shots: the C3 columns plus ``gender`` and ``family`` (segments only, never
-        features), sorted by ``shot_id``.
+        Kept shots: the C3 columns, then the matches ``pre_shot`` columns
+        (``MATCH_FEATURES``, today ``gender``), then ``family`` (a segment, never a feature),
+        sorted by ``shot_id``.
+    freeze_frames : polars.DataFrame
+        The snapshot's freeze-frame rows of the kept shots only (C3 freeze-frame columns), in
+        snapshot order; always a DataFrame, empty for a provider without frames.
     exclusions : polars.DataFrame
         One ``EXCLUSION_SCHEMA`` row per excluded shot, sorted by ``shot_id``.
+    penalties : polars.DataFrame
+        The excluded shots whose reason is ``penalty`` (in-game) or ``shootout``, for the
+        penalty model: the C3 columns (``player_id`` included), then ``reason``,
+        ``MATCH_FEATURES`` and ``family``, sorted by ``shot_id``; empty, with the same
+        columns, when there are none.
     matches : polars.DataFrame
         The snapshot's matches table, unchanged.
     manifest : football_core.io.snapshot.Manifest
@@ -74,7 +87,9 @@ class XgData:
     """
 
     shots: pl.DataFrame
+    freeze_frames: pl.DataFrame
     exclusions: pl.DataFrame
+    penalties: pl.DataFrame
     matches: pl.DataFrame
     manifest: snapshot.Manifest
 
@@ -90,17 +105,19 @@ def exclusion_reason(frame_shot_ids: pl.Series) -> pl.Expr:
     Returns
     -------
     polars.Expr
-        An ``EXCLUSION_REASON`` expression over ``is_own_goal``, ``period``, ``is_penalty``
-        and ``shot_id``.
+        An ``EXCLUSION_REASON`` expression over ``is_own_goal``, ``period``, ``is_penalty``,
+        ``situation`` and ``shot_id``.
 
     Examples
     --------
-    >>> shots = pl.DataFrame({"shot_id": ["sb:a", "sb:b", "sb:c", "sb:d", "sb:e"],
-    ...                       "is_own_goal": [True, False, False, False, False],
-    ...                       "period": pl.Series([1, 5, 2, 1, 1], dtype=pl.Int8),
-    ...                       "is_penalty": [False, True, True, False, False]})
-    >>> shots.select(exclusion_reason(pl.Series(["sb:e"]))).to_series().to_list()
-    ['own_goal', 'shootout', 'penalty', 'no_freeze_frame', None]
+    >>> shots = pl.DataFrame({"shot_id": ["sb:a", "sb:b", "sb:c", "sb:d", "sb:e", "sb:f"],
+    ...                       "is_own_goal": [True, False, False, False, False, False],
+    ...                       "period": pl.Series([1, 5, 2, 1, 1, 1], dtype=pl.Int8),
+    ...                       "is_penalty": [False, True, True, False, False, False],
+    ...                       "situation": ["open_play", "penalty", "penalty", "direct_corner",
+    ...                                     "open_play", "open_play"]})
+    >>> shots.select(exclusion_reason(pl.Series(["sb:d", "sb:f"]))).to_series().to_list()
+    ['own_goal', 'shootout', 'penalty', 'direct_corner', 'no_freeze_frame', None]
     """
     return (
         pl.when(pl.col("is_own_goal"))
@@ -109,6 +126,8 @@ def exclusion_reason(frame_shot_ids: pl.Series) -> pl.Expr:
         .then(pl.lit("shootout"))
         .when(pl.col("is_penalty"))
         .then(pl.lit("penalty"))
+        .when(pl.col("situation") == "direct_corner")
+        .then(pl.lit("direct_corner"))
         .when(~pl.col("shot_id").is_in(frame_shot_ids.implode()))
         .then(pl.lit("no_freeze_frame"))
         .otherwise(None)
@@ -138,6 +157,7 @@ def exclude(shots: pl.DataFrame, freeze_frames: pl.DataFrame) -> tuple[pl.DataFr
     ...                       "competition_id": ["sb:2", "sb:2"], "season_id": ["sb:27"] * 2,
     ...                       "period": pl.Series([1, 1], dtype=pl.Int8),
     ...                       "is_own_goal": [False, True], "is_penalty": [False, False],
+    ...                       "situation": ["open_play", "open_play"],
     ...                       "is_goal": [False, True]})
     >>> kept, log = exclude(shots, pl.DataFrame({"shot_id": ["sb:b"]}))
     >>> kept["shot_id"].to_list(), log.select("shot_id", "reason").rows()
@@ -206,6 +226,19 @@ def match_family(matches: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def is_holdout(holdout: tuple[str, str] = HOLDOUT) -> pl.Expr:
+    """True for rows of the held-out ``(competition_id, season_id)``: both must match.
+
+    Examples
+    --------
+    >>> pairs = pl.DataFrame({"competition_id": ["sb:2", "sb:2", "sb:11"],
+    ...                       "season_id": ["sb:27", "sb:44", "sb:27"]})
+    >>> pairs.select(is_holdout()).to_series().to_list()
+    [True, False, False]
+    """
+    return (pl.col("competition_id") == holdout[0]) & (pl.col("season_id") == holdout[1])
+
+
 def split_holdout(
     shots: pl.DataFrame, holdout: tuple[str, str] = HOLDOUT
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -234,7 +267,7 @@ def split_holdout(
     >>> [f.height for f in split_holdout(shots)]
     [1, 1]
     """
-    is_held = (pl.col("competition_id") == holdout[0]) & (pl.col("season_id") == holdout[1])
+    is_held = is_holdout(holdout)
     dev, held = shots.filter(~is_held), shots.filter(is_held)
     for side, frame in (("hold-out", held), ("development", dev)):
         if frame.height == 0:
@@ -243,7 +276,10 @@ def split_holdout(
 
 
 def load_xg_data(manifest: StrPath = DEFAULT_MANIFEST) -> XgData:
-    """Verify and load the StatsBomb snapshot, apply the exclusions and add the segments.
+    """Verify and load the StatsBomb snapshot, apply the exclusions and add match columns.
+
+    Shot/match consistency is not rechecked here: ``write_snapshot`` validated the shots
+    against the matches table, and the manifest pins those files.
 
     Parameters
     ----------
@@ -253,21 +289,24 @@ def load_xg_data(manifest: StrPath = DEFAULT_MANIFEST) -> XgData:
     Returns
     -------
     XgData
-        The kept shots (with ``gender`` and ``family``), the exclusion log, the matches and
-        the manifest.
+        The kept shots (with ``MATCH_FEATURES`` and ``family``), their freeze-frame rows, the
+        exclusion log, the in-game and shoot-out penalties (the same match columns, plus
+        ``reason``), the matches and the manifest.
 
     Raises
     ------
     ValueError
-        Another builder; kept shots without a matches row; duplicate ``match_id`` in matches.
+        A snapshot written by another builder.
     football_core.io.snapshot.ManifestError, football_core.io.snapshot.SnapshotVerificationError
         From core, unchanged: a bad manifest, or a data file that does not hash as recorded.
 
     Examples
     --------
     >>> data = load_xg_data()  # doctest: +SKIP
-    >>> data.shots.height  # doctest: +SKIP
-    99746
+    >>> data.shots.height, data.freeze_frames.height  # doctest: +SKIP
+    (99713, 1304989)
+    >>> data.penalties.group_by("reason").len().sort("reason").rows()  # doctest: +SKIP
+    [('shootout', 363), ('penalty', 1118)]
     """
     meta = snapshot.read_manifest(manifest)
     if meta.builder != "statsbomb":
@@ -277,16 +316,29 @@ def load_xg_data(manifest: StrPath = DEFAULT_MANIFEST) -> XgData:
     tables = snapshot.load_snapshot(manifest, tables=("shots", "freeze_frames", "matches"))
     matches = tables["matches"]
     kept, log = exclude(tables["shots"], tables["freeze_frames"])
-    orphans = kept.filter(~pl.col("match_id").is_in(matches["match_id"].implode())).height
-    if orphans:
-        raise ValueError(f"{orphans} kept shot(s) without a matches row")
-    ids = matches["match_id"]
-    duplicates = ids.filter(ids.is_duplicated()).n_unique()
-    if duplicates:
-        raise ValueError(f"{duplicates} duplicate match_id(s) in matches")
-    segments = matches.select("match_id", "gender").join(match_family(matches), on="match_id")
-    shots = kept.join(segments, on="match_id", how="inner", maintain_order="left")
-    return XgData(shots=shots, exclusions=log, matches=matches, manifest=meta)
+    # m:1 keeps a hand-built snapshot with a duplicated match_id from multiplying shots.
+    segments = matches.select("match_id", *MATCH_FEATURES).join(
+        match_family(matches), on="match_id"
+    )
+    shots = kept.join(segments, on="match_id", how="inner", validate="m:1", maintain_order="left")
+    frames = tables["freeze_frames"].join(
+        shots.select("shot_id"), on="shot_id", how="semi", maintain_order="left"
+    )
+    kicks = log.filter(pl.col("reason").is_in(["penalty", "shootout"])).select("shot_id", "reason")
+    penalties = (
+        tables["shots"]
+        .join(kicks, on="shot_id", how="inner", validate="1:1")
+        .join(segments, on="match_id", how="inner", validate="m:1")
+        .sort("shot_id")
+    )
+    return XgData(
+        shots=shots,
+        freeze_frames=frames,
+        exclusions=log,
+        penalties=penalties,
+        matches=matches,
+        manifest=meta,
+    )
 
 
 def write_exclusion_log(

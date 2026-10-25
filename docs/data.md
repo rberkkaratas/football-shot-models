@@ -11,9 +11,11 @@ The models read the canonical C3 shot and freeze-frame tables of football-core: 
 shot in the shared 105 x 68 m frame, every column with a dtype, nullability, allowed values and
 a role (`pre_shot`, `outcome`, `post_shot`, …). The column list lives in one place,
 `football_core.schema` (see football-core's schema docs and
-`../football-core/docs/conventions.md`), and the leakage guard reads the roles from it.
+`../football-core/docs/conventions.md`), and the leakage guard reads the roles from it. Each
+shot is joined to its row of the canonical matches table (schema 1.1), whose only `pre_shot`
+column, `gender`, the guard allows (`data.MATCH_FEATURES`).
 
-## Filters (xG population, M1.1)
+## Filters (xG population, M1.1, MS3)
 `football_shot_models.data` removes shots from the xG population with a logged reason, never
 silently. The reasons are checked in this order and the first match wins:
 
@@ -22,15 +24,17 @@ silently. The reasons are checked in this order and the first match wins:
 | `own_goal` | Own Goal Against events are not shots and are 100 % goals | 387 |
 | `shootout` | Period 5 is not match play | 363 |
 | `penalty` | In-game penalties get their own model (M1.5) | 1,118 |
+| `direct_corner` | StatsBomb logs a direct corner as a shot on outcome (MS3) | 33 |
 | `no_freeze_frame` | Every M1.x model must see the same shots | 0 |
 
-That leaves 99,746 non-penalty shots in periods 1–4 (extra time, direct free kicks and corners
+That leaves 99,713 non-penalty shots in periods 1–4 (extra time, direct free kicks and corners
 included). The per-shot log is the git-ignored snapshot `xg-exclusions-v1`; only its manifest
 (counts per competition-season) is committed.
 
-**Hold-out:** Premier League 2015/16 (380 matches, 9,817 shots), one of the four full 2015/16
+**Hold-out:** Premier League 2015/16 (380 matches, 9,816 shots), one of the four full 2015/16
 men's league seasons (Ligue 1: 377 of 380 matches in the snapshot); the other three stay in dev
-(3,581 matches, 89,929 shots).
+(3,581 matches, 89,897 shots). The penalty model uses the excluded `penalty` shots (1,118 kicks)
+and reports the `shootout` kicks (363) apart.
 
 **Match families** (card segments only, never features), derived from the matches table:
 `women`; `team-selected`, where one team plays at least half the matches of a

@@ -26,6 +26,7 @@ dev = [
     "mypy>=1.13.0",
     "pytest>=9.1.1",
     "ruff>=0.8.0",
+    "threadpoolctl>=3.7.0",
 ]
 docs = [
     "mkdocstrings[python]>=1.0.0",
@@ -45,7 +46,7 @@ python_version = "3.12"
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["sklearn", "sklearn.*"]  # scikit-learn ships no py.typed
+module = ["sklearn", "sklearn.*", "scipy", "scipy.*"]  # neither ships a py.typed
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

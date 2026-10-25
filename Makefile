@@ -1,4 +1,4 @@
-.PHONY: check lint format typecheck test docs docs-notebooks docs-serve snapshot xg-baselines reproduce
+.PHONY: check lint format typecheck test docs docs-notebooks docs-serve snapshot xg-baselines xg-models reproduce
 
 ## Run every quality gate (CI runs the same target)
 check: lint typecheck test docs
@@ -36,6 +36,11 @@ snapshot:
 ## Evaluate the M1.1 xG baselines on the snapshot and write docs/models/xg-*.md
 xg-baselines:
 	uv run python -m football_shot_models.baselines
+
+## Evaluate every xG model (baselines, M1.2/M1.3 steps, M1.4 GBM) and the M1.5 penalty model;
+## write the step, GBM and penalty cards (about 8 min)
+xg-models:
+	uv run python -m football_shot_models.models
 
 ## Regenerate the model cards from the real snapshot and compare them with the committed ones.
 ## Without the snapshot this fails: a skipped comparison must not look like a reproduction.

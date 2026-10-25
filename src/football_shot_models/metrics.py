@@ -17,10 +17,22 @@ pooled over folds would compare probabilities from different models. Σ xG and g
 summed, so the Σ xG error is pooled. For any model fitted with an intercept the pooled error
 is close to 0 by construction (fold errors of opposite sign cancel), so
 :func:`fold_xg_error` also gives the fold mean and maximum of ``|Σ xG - goals| / goals``.
+
+**Comparing two models.** :func:`bootstrap_gain` gives the log-loss gain of one model over
+another on the same shots, with a 95 % percentile interval from resampling **matches**: shots
+in one match share the keepers, the game state and the annotators, so resampling shots would
+treat them as independent and give too narrow an interval.
+
+**A rate with an interval.** :func:`beta_interval` treats ``goals`` of ``n`` kicks as
+binomial draws of one conversion probability with a Beta prior (Jeffreys, Beta(1/2, 1/2), by
+default). The posterior is Beta(prior + goals, prior + misses); its mean is the model's
+probability and its 2.5 % and 97.5 % quantiles give the interval. Unlike the normal
+approximation it stays inside [0, 1] and is defined for 0 or ``n`` goals.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final, Literal, get_args
@@ -28,6 +40,7 @@ from typing import Final, Literal, get_args
 import numpy as np
 import numpy.typing as npt
 import polars as pl
+from scipy import stats
 from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 
 FloatArray = npt.NDArray[np.float64]
@@ -39,6 +52,8 @@ Metric = Literal["log_loss", "brier", "auc", "xg_error"]  # Scores values that a
 METRICS: Final[tuple[Metric, ...]] = get_args(Metric)
 
 EPS: Final[float] = 1e-15
+N_BOOT: Final[int] = 2000
+SEED: Final[int] = 0
 
 
 @dataclass(frozen=True)
@@ -71,6 +86,11 @@ class Scores:
         """``|Σ xG - goals| / goals``, a fraction."""
         return abs(self.xg - self.goals) / self.goals
 
+    @property
+    def xg_signed_error(self) -> float:
+        """``(Σ xG - goals) / goals``: positive when the model predicts too many goals."""
+        return (self.xg - self.goals) / self.goals
+
 
 @dataclass(frozen=True)
 class Threshold:
@@ -98,6 +118,23 @@ class ThresholdCheck:
     threshold: Threshold
     measured: float
     passed: bool
+
+
+@dataclass(frozen=True)
+class Check:
+    """One MS3 milestone check, as the card prints it: free text plus a result.
+
+    Attributes
+    ----------
+    target, measured : str
+        The target with its bound, and what was measured.
+    result : {"met", "missed", "n/a"}
+        ``n/a`` when the check cannot be judged (a group too small, a slope not estimable).
+    """
+
+    target: str
+    measured: str
+    result: Literal["met", "missed", "n/a"]
 
 
 THRESHOLDS: Final[tuple[Threshold, ...]] = (
@@ -384,3 +421,181 @@ def check_thresholds(
         passed = measured <= t.value if t.op == "<=" else measured >= t.value
         checks.append(ThresholdCheck(t, measured, passed))
     return tuple(checks)
+
+
+@dataclass(frozen=True)
+class GainCI:
+    """A log-loss gain and its bootstrap interval.
+
+    Attributes
+    ----------
+    gain : float
+        Mean over shots of the reference's log loss minus the new model's; positive means the
+        new model is better.
+    low, high : float
+        The 2.5 % and 97.5 % percentiles of the resampled gains.
+    n_boot, groups : int
+        Resamples drawn and groups (matches) resampled.
+    """
+
+    gain: float
+    low: float
+    high: float
+    n_boot: int
+    groups: int
+
+
+def bootstrap_gain(
+    y: Outcomes,
+    p_ref: FloatArray,
+    p_new: FloatArray,
+    groups: npt.NDArray[np.generic],
+    *,
+    n_boot: int = N_BOOT,
+    seed: int = SEED,
+) -> GainCI:
+    """Log-loss gain of ``p_new`` over ``p_ref``, with a match-bootstrap 95 % interval.
+
+    Each shot's gain is its log loss (probabilities clipped at ``EPS``) under ``p_ref`` minus
+    under ``p_new``. A resample draws the groups with replacement (multinomial weights), and
+    its gain is the weighted sum of the shot gains over the weighted shot count, so a match
+    with many shots counts for its shots. The interval is the percentile interval of the
+    ``n_boot`` resamples; it says which matches happened to be sampled, not how a refit would
+    vary.
+
+    Parameters
+    ----------
+    y : numpy.ndarray of bool, or of 0 / 1
+        Outcomes, 1-D.
+    p_ref, p_new : numpy.ndarray of float
+        Probabilities in [0, 1] of the reference and the new model, the shape of ``y``.
+    groups : numpy.ndarray
+        The resampling unit per shot (``match_id``), the shape of ``y``; no null or NaN.
+    n_boot : int, default N_BOOT
+        Resamples, at least 1.
+    seed : int, default SEED
+        Seed of ``numpy.random.default_rng``.
+
+    Returns
+    -------
+    GainCI
+
+    Raises
+    ------
+    ValueError
+        ``y`` not 1-D or a value other than 0 / 1 (NaN included); a shape that differs from
+        ``y``'s; a probability NaN or outside [0, 1]; a null or NaN group; ``n_boot < 1``; fewer
+        than two groups (an empty input included).
+
+    Examples
+    --------
+    >>> y = np.array([1, 0, 0, 1, 0, 0])
+    >>> p_ref = np.full(6, 1 / 3)
+    >>> p_new = np.array([0.6, 0.2, 0.2, 0.5, 0.3, 0.3])
+    >>> ci = bootstrap_gain(y, p_ref, p_new, np.array(["sb:1", "sb:1", "sb:2", "sb:2", "sb:3",
+    ...                                                  "sb:3"]))
+    >>> round(ci.gain, 4), ci.groups, ci.low <= ci.gain <= ci.high
+    (0.2426, 3, True)
+    >>> bootstrap_gain(y, p_ref, p_ref, np.arange(6)).gain
+    0.0
+    """
+    y = np.asarray(y, dtype=np.float64)
+    if y.ndim != 1 or not np.all((y == 0.0) | (y == 1.0)):
+        raise ValueError(f"y must be 1-D with values 0 / 1 only (no NaN), got shape {y.shape}")
+    for p in (p_ref, p_new):
+        if p.shape != y.shape:
+            raise ValueError(f"p_ref and p_new must have y's shape {y.shape}, got {p.shape}")
+        if not np.all((p >= 0.0) & (p <= 1.0)):
+            raise ValueError("probabilities must be in [0, 1] (no NaN)")
+    if groups.shape != y.shape:
+        raise ValueError(f"groups has shape {groups.shape}, expected {y.shape}")
+    if bad := sum(k is None or k != k for k in groups.tolist()):  # k != k: NaN
+        raise ValueError(f"groups has {bad} null or NaN key(s)")
+    if n_boot < 1:
+        raise ValueError(f"n_boot must be >= 1, got {n_boot}")
+
+    def loss(p: FloatArray) -> FloatArray:
+        q = np.clip(p, EPS, 1.0 - EPS)
+        out: FloatArray = -(y * np.log(q) + (1.0 - y) * np.log1p(-q))
+        return out
+
+    diff = loss(p_ref) - loss(p_new)
+    _, inv = np.unique(groups, return_inverse=True)
+    m = int(inv.max()) + 1 if inv.size else 0
+    if m < 2:
+        raise ValueError(f"the bootstrap needs at least 2 groups (matches), got {m}")
+    d = np.bincount(inv, weights=diff, minlength=m)
+    n = np.bincount(inv, minlength=m).astype(np.float64)
+    w = np.random.default_rng(seed).multinomial(m, np.full(m, 1.0 / m), size=n_boot)
+    gains = (w @ d) / (w @ n)
+    low, high = np.quantile(gains, [0.025, 0.975])
+    return GainCI(float(diff.mean()), float(low), float(high), n_boot, m)
+
+
+JEFFREYS: Final[tuple[float, float]] = (0.5, 0.5)
+LEVEL: Final[float] = 0.95
+
+
+@dataclass(frozen=True)
+class Rate:
+    """A conversion rate with its Beta posterior.
+
+    Attributes
+    ----------
+    n, goals : int
+        Kicks and goals.
+    rate : float
+        ``goals / n``, the observed rate.
+    mean : float
+        The posterior mean: the model's P(goal).
+    low, high : float
+        The equal-tailed ``LEVEL`` posterior interval.
+    """
+
+    n: int
+    goals: int
+    rate: float  # goals / n
+    mean: float  # posterior mean: the model's P(goal)
+    low: float
+    high: float
+
+
+def beta_interval(goals: int, n: int, *, prior: tuple[float, float] = JEFFREYS) -> Rate:
+    """Posterior mean and equal-tailed 95 % interval of a binomial rate under a Beta prior.
+
+    Parameters
+    ----------
+    goals, n : int
+        Successes and trials (numpy integers accepted, bools refused).
+    prior : tuple of float, default JEFFREYS
+        The Beta prior's two shape parameters, finite and positive.
+
+    Returns
+    -------
+    Rate
+
+    Raises
+    ------
+    ValueError
+        A bool or non-int ``goals`` / ``n``; ``n < 1``; ``goals`` outside ``0..n``; a prior
+        that is not two finite positive numbers.
+
+    Examples
+    --------
+    >>> r = beta_interval(853, 1118)
+    >>> round(r.mean, 4), round(r.low, 4), round(r.high, 4)
+    (0.7627, 0.7374, 0.7872)
+    >>> round(beta_interval(0, 10).mean, 4)
+    0.0455
+    """
+    for name, v in (("goals", goals), ("n", n)):
+        if isinstance(v, bool) or not isinstance(v, int | np.integer):
+            raise ValueError(f"{name} must be an int, got {v!r}")
+    if n < 1 or not 0 <= goals <= n:
+        raise ValueError(f"need n >= 1 and 0 <= goals <= n, got goals={goals}, n={n}")
+    a0, b0 = prior
+    if not (math.isfinite(a0) and math.isfinite(b0) and a0 > 0 and b0 > 0):
+        raise ValueError(f"prior must be two finite positive numbers, got {prior!r}")
+    a, b = a0 + goals, b0 + n - goals
+    low, high = stats.beta.ppf([(1 - LEVEL) / 2, (1 + LEVEL) / 2], a, b)
+    return Rate(int(n), int(goals), goals / n, a / (a + b), float(low), float(high))

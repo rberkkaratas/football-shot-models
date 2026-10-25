@@ -24,7 +24,6 @@ from pathlib import Path
 import polars as pl
 from football_core import pitch, schema
 from football_core.io import snapshot
-from football_core.io.statsbomb import MATCH_SCHEMA
 
 SNAPSHOT = "statsbomb-open-v1"
 HOLDOUT = ("sb:2", "sb:27")
@@ -53,6 +52,7 @@ class Shot:
     own_goal: bool = False
     provider_xg: float | None = 0.1
     match_date: dt.date = dt.date(2019, 1, 1)
+    situation: str | None = None  # None: "penalty" if penalty else "open_play"
 
 
 @dataclass(frozen=True)
@@ -102,7 +102,7 @@ def shots_frame(shots: Sequence[Shot]) -> pl.DataFrame:
         "angle_rad": angle,
         "visible_area": [None] * n,
         "body_part": [None if s.own_goal else s.body_part for s in shots],
-        "situation": ["penalty" if s.penalty else "open_play" for s in shots],
+        "situation": [s.situation or ("penalty" if s.penalty else "open_play") for s in shots],
         "assist_type": [None] * n,
         "technique": [None] * n,
         "outcome": outcome,
@@ -144,23 +144,25 @@ def frames_for(shots: pl.DataFrame) -> pl.DataFrame:
 
 
 def matches_frame(matches: Sequence[Match]) -> pl.DataFrame:
-    """A ``matches`` table with the StatsBomb loader's ``MATCH_SCHEMA`` (scores are 0)."""
+    """A canonical ``matches`` table (``schema.MATCH_SCHEMA``; scores are 0, no 360 files)."""
     n = len(matches)
     cols: dict[str, list[object]] = {
         "match_id": [m.match_id for m in matches],
+        "provider": ["statsbomb"] * n,
         "competition_id": [m.competition_id for m in matches],
         "season_id": [m.season_id for m in matches],
+        "match_date": [m.match_date for m in matches],
         "home_team_id": [m.home for m in matches],
         "away_team_id": [m.away for m in matches],
         "competition_name": [m.competition_name for m in matches],
         "season_name": [m.season_name for m in matches],
         "gender": [m.gender for m in matches],
-        "match_date": [m.match_date for m in matches],
         "home_score": [0] * n,
         "away_score": [0] * n,
         "has_360": [False] * n,
+        "schema_version": [schema.SCHEMA_VERSION] * n,
     }
-    return pl.DataFrame(cols, schema=MATCH_SCHEMA, strict=True)
+    return pl.DataFrame(cols, schema=schema.MATCH_SCHEMA, strict=True)
 
 
 # --- The fixture snapshot ---------------------------------------------------------------------

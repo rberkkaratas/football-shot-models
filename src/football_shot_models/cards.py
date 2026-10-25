@@ -7,12 +7,18 @@ The parts that belong to one model (its role, intended use, features, model desc
 limitations and changelog) come from a :class:`CardText` written next to the model's spec, so
 a new model brings its own text instead of inheriting the M1.1 wording.
 
+A card can also carry the log-loss gains of its model over other models
+(:class:`~football_shot_models.evaluation.Comparison` rows, with match-bootstrap intervals),
+can leave out the milestone thresholds when they do not apply to it, and can carry a verdict
+sentence and the MS3 milestone checks (:class:`~football_shot_models.metrics.Check` rows).
+
 A card prints only numbers it computes, holds aggregates only (never a data row or an id) and
 carries no date or time, so rerunning on the same snapshot gives identical bytes.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal
@@ -24,10 +30,17 @@ import sklearn
 from sklearn.metrics import brier_score_loss, log_loss
 
 from football_shot_models import data
-from football_shot_models.evaluation import Evaluation, best, labels
+from football_shot_models.evaluation import Comparison, Evaluation, best, labels
 from football_shot_models.metrics import (
+    N_BOOT,
+    SEED,
+    THRESHOLDS,
+    Check,
+    GainCI,
     Metric,
     Scores,
+    Threshold,
+    calibration,
     check_thresholds,
     fold_sd,
     fold_xg_error,
@@ -77,6 +90,8 @@ class CardText:
         coefficients and the solver settings, read from the code that fitted them.
     limitations, changelog : tuple of str
         One bullet each.
+    best_label : str, default "baseline"
+        What the overview calls the best of the evaluations ("This is the best baseline").
     """
 
     role: str
@@ -85,6 +100,7 @@ class CardText:
     model: Callable[[Evaluation, CardContext], Sequence[str]]
     limitations: tuple[str, ...]
     changelog: tuple[str, ...]
+    best_label: str = "baseline"
 
 
 def card_context(xg: data.XgData, dev: pl.DataFrame, held: pl.DataFrame) -> CardContext:
@@ -95,9 +111,9 @@ def card_context(xg: data.XgData, dev: pl.DataFrame, held: pl.DataFrame) -> Card
     >>> card_context(xg, dev, held).competition_seasons  # doctest: +SKIP
     80
     """
-    label = xg.matches.filter(
-        (pl.col("competition_id") == data.HOLDOUT[0]) & (pl.col("season_id") == data.HOLDOUT[1])
-    ).select(pl.concat_str("competition_name", "season_name", separator=" "))
+    label = xg.matches.filter(data.is_holdout()).select(
+        pl.concat_str("competition_name", "season_name", separator=" ")
+    )
     log = xg.exclusions
     gender = xg.shots["gender"]
     pair = ("competition_id", "season_id")
@@ -136,12 +152,14 @@ def card_context(xg: data.XgData, dev: pl.DataFrame, held: pl.DataFrame) -> Card
 
 TASK: Final[str] = (
     "binary classification: P(goal | shot) for non-penalty shots in periods 1–4 (extra time "
-    "included; direct free kicks and corners included; own goals and shoot-outs excluded)"
+    "included; direct free kicks and corners from open play or set pieces included; direct "
+    "corners, own goals and shoot-outs excluded)"
 )
 FILTER_LABELS: Final[dict[str, str]] = {
     "own_goal": "own goal (Own Goal Against events; not shots)",
     "shootout": "shoot-out (period 5; all are penalties)",
     "penalty": "penalty (in-game)",
+    "direct_corner": "direct corner (logged as a shot on outcome)",
     "no_freeze_frame": "no freeze frame",
 }
 VALIDATION: Final[str] = (
@@ -213,7 +231,10 @@ def _split(ev: Evaluation, split: Split) -> Scores:
 
 
 def _segment(dev: pl.DataFrame, oof: FloatArray, column: str, value: str) -> dict[str, float]:
-    """Pooled out-of-fold numbers of one segment; empty dict when it has no shots."""
+    """Pooled out-of-fold numbers of one segment; empty dict when it has no shots.
+
+    ``cal_slope`` is NaN when the slope is not estimable.
+    """
     mask = (dev[column].cast(pl.String) == value).to_numpy()
     if not mask.any():
         return {}
@@ -232,6 +253,7 @@ def _segment(dev: pl.DataFrame, oof: FloatArray, column: str, value: str) -> dic
         "log_loss": loss,
         "brier": float(brier_score_loss(y, p)),
         "skill": float("nan") if one_class else 1.0 - loss / base,
+        "cal_slope": float("nan") if (slope := calibration(y, p)[1]) is None else slope,
     }
 
 
@@ -245,8 +267,8 @@ def _segments(dev: pl.DataFrame) -> tuple[tuple[str, str], ...]:
     )
 
 
-def _seg_skill(s: dict[str, float]) -> str:
-    return "n/a" if np.isnan(s["skill"]) else fmt(s["skill"])
+def _seg_skill(s: dict[str, float], key: str = "skill") -> str:
+    return "n/a" if np.isnan(s[key]) else fmt(s[key])
 
 
 def _skill(metric: Metric, ev: Evaluation, base: Evaluation, split: Split) -> str:
@@ -323,10 +345,90 @@ def _metrics_section(ev: Evaluation, base: Evaluation) -> list[str]:
     ]
 
 
+def _signed(x: float) -> str:
+    """A gain with its sign, kept unless the value is exactly 0: -0.000004 prints ``-0.0000``."""
+    return "+0.0000" if x == 0.0 else f"{x:+.4f}"
+
+
+def gain_cell(g: GainCI) -> str:
+    """A gain and its interval as a card cell.
+
+    Examples
+    --------
+    >>> gain_cell(GainCI(0.0035, 0.0028, -0.000004, 2000, 9))
+    '+0.0035 [+0.0028, -0.0000]'
+    """
+    return f"{_signed(g.gain)} [{_signed(g.low)}, {_signed(g.high)}]"
+
+
+def side(g: GainCI) -> str:
+    """Where a gain's interval lies: ``"lies above 0"``, ``"lies below 0"`` or ``"includes 0"``.
+
+    A bound equal to 0 counts as including 0.
+
+    Raises
+    ------
+    ValueError
+        A NaN bound.
+
+    Examples
+    --------
+    >>> side(GainCI(0.0014, -0.0005, 0.0034, 2000, 380))
+    'includes 0'
+    >>> side(GainCI(0.0035, 0.0028, 0.0043, 2000, 1500))
+    'lies above 0'
+    """
+    if math.isnan(g.low) or math.isnan(g.high):
+        raise ValueError(f"gain interval has a NaN bound: [{g.low}, {g.high}]")
+    return "lies above 0" if g.low > 0 else "lies below 0" if g.high < 0 else "includes 0"
+
+
+CHECKS_NOTE: Final[str] = (
+    "Thresholds re-baselined by the PM: targets are relative to the same shots."
+)
+
+
+def _checks_section(checks: Sequence[Check]) -> list[str]:
+    if not checks:
+        return []
+    return [
+        "### Milestone checks (MS3)",
+        "",
+        CHECKS_NOTE,
+        "",
+        "| Target | Measured | Result |",
+        "|---|---|---|",
+        *(f"| {c.target} | {c.measured} | {c.result} |" for c in checks),
+        "",
+    ]
+
+
+def _gain_section(comparisons: Sequence[Comparison]) -> list[str]:
+    return [
+        "### Log-loss gain (95% match-bootstrap CI)",
+        "",
+        "Gain = log loss of the reference minus this model, pooled out of fold over all dev "
+        "shots (CV) and over the hold-out; positive means this model is better. The 95% "
+        f"interval is the percentile interval of {N_BOOT:,} resamples of matches (seed {SEED}) "
+        "for the fixed fold models: it covers which matches were sampled, not refitting.",
+        "",
+        "| Comparison | CV gain [95% CI] | Hold-out gain [95% CI] |",
+        "|---|---|---|",
+        *(f"| {c.label} | {gain_cell(c.cv)} | {gain_cell(c.holdout)} |" for c in comparisons),
+        "",
+    ]
+
+
 def _thresholds_section(
-    ev: Evaluation, base: Evaluation, benchmark: Evaluation, dev: pl.DataFrame
+    ev: Evaluation,
+    base: Evaluation,
+    benchmark: Evaluation,
+    dev: pl.DataFrame,
+    thresholds: Sequence[Threshold],
 ) -> list[str]:
-    cv, held = check_thresholds(ev.cv), check_thresholds(ev.holdout)
+    if not thresholds:
+        return []
+    cv, held = check_thresholds(ev.cv, thresholds), check_thresholds(ev.holdout, thresholds)
     lines = [
         "### Milestone thresholds",
         "",
@@ -345,7 +447,7 @@ def _thresholds_section(
     lines += ["", THRESHOLD_NOTE]
     if not all(c.passed for c in cv):
         lines += ["", _why(ev, base, benchmark, dev)]
-    return lines
+    return [*lines, ""]
 
 
 def _segments_section(ev: Evaluation, dev: pl.DataFrame) -> list[str]:
@@ -357,8 +459,8 @@ def _segments_section(ev: Evaluation, dev: pl.DataFrame) -> list[str]:
         "`n/a` for a segment with one class.",
         "",
         "| Segment | Shots | Goals | Goal rate | Σ xG | Σ xG / goals | Log loss | Brier "
-        "| Log-loss skill |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| Log-loss skill | Cal. slope (pooled OOF) |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for column, value in _segments(dev):
         if not (s := _segment(dev, ev.oof, column, value)):
@@ -367,7 +469,7 @@ def _segments_section(ev: Evaluation, dev: pl.DataFrame) -> list[str]:
         lines.append(
             f"| {column} = {value} | {shots:,} | {goals:,} | {pct(goals / shots)} | "
             f"{fmt(s['xg'])} | {_ratio(s['xg'], goals)} | {fmt(s['log_loss'])} | "
-            f"{fmt(s['brier'])} | {_seg_skill(s)} |"
+            f"{fmt(s['brier'])} | {_seg_skill(s)} | {_seg_skill(s, 'cal_slope')} |"
         )
     return lines
 
@@ -380,6 +482,10 @@ def render_card(
     benchmark: Evaluation,
     dev: pl.DataFrame,
     context: CardContext,
+    thresholds: Sequence[Threshold] = THRESHOLDS,
+    comparisons: Sequence[Comparison] = (),
+    verdict: str | None = None,
+    checks: Sequence[Check] = (),
 ) -> str:
     """The model card of one model, following ``docs/model-card-template.md``.
 
@@ -397,6 +503,16 @@ def render_card(
         The development shots ``ev`` was evaluated on (for the segments).
     context : CardContext
         Provenance and population counts.
+    thresholds : sequence of Threshold, default THRESHOLDS
+        The milestone targets; empty leaves out the "Milestone thresholds" section.
+    comparisons : sequence of Comparison, default ()
+        Log-loss gains of this model over others; non-empty adds the "Log-loss gain" section
+        after the metrics table.
+    verdict : str, optional
+        The overview sentence after the role; replaces "This is the best ..." (the headline
+        model's verdict, :func:`football_shot_models.models.verdict`).
+    checks : sequence of Check, default ()
+        Non-empty adds the "Milestone checks (MS3)" section where the thresholds go.
 
     Returns
     -------
@@ -412,23 +528,26 @@ def render_card(
     """
     base = evaluations[0]
     top = best(evaluations)
-    is_best = (
-        "This is the best baseline (lowest grouped-CV log loss)."
-        if top is ev
-        else f"Not the best baseline; that is {top.spec.title}."
-    )
+    label = text.best_label
+    if verdict is None:
+        verdict = (
+            f"This is the best {label} (lowest grouped-CV log loss)."
+            if top is ev
+            else f"Not the best {label}; that is {top.spec.title}."
+        )
     c = context
     filters = [
         f"| {FILTER_LABELS[reason]} | {shots:,} | {goals:,} |"
         for reason, shots, goals in c.exclusions
     ]
     benchmarks = [
-        "| Model | CV log loss | CV Brier | CV AUC | Hold-out log loss | Hold-out Brier "
-        "| Hold-out AUC |",
-        "|---|---|---|---|---|---|---|",
+        "| Model | CV log loss | CV Brier | CV AUC | CV cal. slope | Hold-out log loss "
+        "| Hold-out Brier | Hold-out AUC | Hold-out cal. slope |",
+        "|---|---|---|---|---|---|---|---|---|",
         *(
             f"| {e.spec.title} | {fmt(e.cv.log_loss)} | {fmt(e.cv.brier)} | {fmt(e.cv.auc)} | "
-            f"{fmt(e.holdout.log_loss)} | {fmt(e.holdout.brier)} | {fmt(e.holdout.auc)} |"
+            f"{fmt(e.cv.cal_slope)} | {fmt(e.holdout.log_loss)} | {fmt(e.holdout.brier)} | "
+            f"{fmt(e.holdout.auc)} | {fmt(e.holdout.cal_slope)} |"
             for e in (*evaluations, benchmark)
         ),
     ]
@@ -438,10 +557,10 @@ def render_card(
         f"# Model card: {ev.spec.title}",
         "",
         "## Overview",
-        f"- **Name / version:** `{ev.spec.name}` v1",
+        f"- **Name / version:** `{ev.spec.name}` v{len(text.changelog)}",
         f"- **Task:** {TASK}",
         "- **Status:** experimental",
-        f"- {text.role} {is_best}",
+        f"- {text.role} {verdict}",
         "",
         "## Intended use",
         text.intended_use,
@@ -482,8 +601,9 @@ def render_card(
         "",
         "Skill is `1 − metric / base-rate metric` on the same shots and column.",
         "",
-        *_thresholds_section(ev, base, benchmark, dev),
-        "",
+        *(_gain_section(comparisons) if comparisons else []),
+        *_thresholds_section(ev, base, benchmark, dev, thresholds),
+        *_checks_section(checks),
         "### Reliability",
         "",
         "Ten equal-count bins of the out-of-fold predictions.",
