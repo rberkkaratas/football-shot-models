@@ -1,4 +1,4 @@
-.PHONY: check lint format typecheck test docs docs-notebooks docs-serve
+.PHONY: check lint format typecheck test docs docs-notebooks docs-serve snapshot xg-baselines reproduce
 
 ## Run every quality gate (CI runs the same target)
 check: lint typecheck test docs
@@ -28,3 +28,15 @@ docs: docs-notebooks
 
 docs-serve: docs-notebooks
 	uv run zensical serve
+
+## Freeze StatsBomb open data (football-core's raw checkout) as the 'statsbomb-open-v1' snapshot
+snapshot:
+	uv run fc snapshot statsbomb-open-v1 --builder statsbomb --input ../football-core/data/raw/statsbomb/open-data
+
+## Evaluate the M1.1 xG baselines on the snapshot and write docs/models/xg-*.md
+xg-baselines:
+	uv run python -m football_shot_models.baselines
+
+## Regenerate the model cards from the real snapshot and compare them with the committed ones
+reproduce:
+	uv run pytest -m slow

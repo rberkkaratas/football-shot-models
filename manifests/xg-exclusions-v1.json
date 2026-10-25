@@ -1,0 +1,523 @@
+{
+  "manifest_version": 1,
+  "name": "xg-exclusions-v1",
+  "builder": null,
+  "schema_version": "1.0",
+  "data_dir": "../data/snapshots/xg-exclusions-v1",
+  "data_digest": "f5f556c807ca655a730b593a3da0d98d547c4b6e9c4cae379181948a38ed64ce",
+  "source": {
+    "kind": "files",
+    "uri": "statsbomb-open-v1",
+    "revision": "4481f444492488b909f708049b6043ab8bd3c7ed0fc6e47aa3f9ee199c10aa51",
+    "content_sha256": null,
+    "files": [
+      {
+        "path": "statsbomb-open-v1.json",
+        "sha256": "cd29ec7bcfc5bac5dc07d84e09728ad35ddc9161f475d1017f8e7befa33d2fab",
+        "bytes": 41712
+      }
+    ]
+  },
+  "tables": [
+    {
+      "name": "exclusions",
+      "file": "exclusions.parquet",
+      "rows": 1868,
+      "matches": 1267,
+      "schema": null,
+      "sort_by": [
+        "shot_id"
+      ],
+      "columns": [
+        {
+          "name": "shot_id",
+          "dtype": "String"
+        },
+        {
+          "name": "match_id",
+          "dtype": "String"
+        },
+        {
+          "name": "competition_id",
+          "dtype": "String"
+        },
+        {
+          "name": "season_id",
+          "dtype": "String"
+        },
+        {
+          "name": "reason",
+          "dtype": "Enum(categories=['own_goal', 'shootout', 'penalty', 'no_freeze_frame'])"
+        },
+        {
+          "name": "is_goal",
+          "dtype": "Boolean"
+        }
+      ],
+      "groups": [
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:1",
+          "rows": 9,
+          "matches": 8,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:2",
+          "rows": 11,
+          "matches": 9,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:21",
+          "rows": 8,
+          "matches": 8,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:22",
+          "rows": 10,
+          "matches": 9,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:23",
+          "rows": 20,
+          "matches": 15,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:24",
+          "rows": 11,
+          "matches": 9,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:25",
+          "rows": 15,
+          "matches": 10,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:26",
+          "rows": 16,
+          "matches": 15,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:27",
+          "rows": 126,
+          "matches": 100,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:37",
+          "rows": 1,
+          "matches": 1,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:38",
+          "rows": 12,
+          "matches": 9,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:39",
+          "rows": 11,
+          "matches": 9,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:4",
+          "rows": 12,
+          "matches": 8,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:40",
+          "rows": 15,
+          "matches": 13,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:41",
+          "rows": 14,
+          "matches": 13,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:42",
+          "rows": 14,
+          "matches": 11,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:11",
+          "season_id": "sb:90",
+          "rows": 19,
+          "matches": 13,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:12",
+          "season_id": "sb:27",
+          "rows": 149,
+          "matches": 124,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:1238",
+          "season_id": "sb:108",
+          "rows": 55,
+          "matches": 37,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:1267",
+          "season_id": "sb:107",
+          "rows": 86,
+          "matches": 23,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:131",
+          "season_id": "sb:281",
+          "rows": 60,
+          "matches": 48,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:135",
+          "season_id": "sb:281",
+          "rows": 49,
+          "matches": 41,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:1470",
+          "season_id": "sb:274",
+          "rows": 1,
+          "matches": 1,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:16",
+          "season_id": "sb:23",
+          "rows": 11,
+          "matches": 1,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:16",
+          "season_id": "sb:24",
+          "rows": 1,
+          "matches": 1,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:16",
+          "season_id": "sb:25",
+          "rows": 1,
+          "matches": 1,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:16",
+          "season_id": "sb:27",
+          "rows": 10,
+          "matches": 1,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:16",
+          "season_id": "sb:37",
+          "rows": 9,
+          "matches": 1,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:16",
+          "season_id": "sb:4",
+          "rows": 1,
+          "matches": 1,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:182",
+          "season_id": "sb:281",
+          "rows": 67,
+          "matches": 58,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:2",
+          "season_id": "sb:27",
+          "rows": 129,
+          "matches": 109,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:2",
+          "season_id": "sb:44",
+          "rows": 16,
+          "matches": 14,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:223",
+          "season_id": "sb:282",
+          "rows": 50,
+          "matches": 10,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:35",
+          "season_id": "sb:75",
+          "rows": 2,
+          "matches": 2,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:37",
+          "season_id": "sb:281",
+          "rows": 40,
+          "matches": 35,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:37",
+          "season_id": "sb:4",
+          "rows": 37,
+          "matches": 36,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:37",
+          "season_id": "sb:42",
+          "rows": 29,
+          "matches": 27,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:37",
+          "season_id": "sb:90",
+          "rows": 53,
+          "matches": 44,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:43",
+          "season_id": "sb:106",
+          "rows": 67,
+          "matches": 26,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:43",
+          "season_id": "sb:3",
+          "rows": 80,
+          "matches": 31,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:43",
+          "season_id": "sb:51",
+          "rows": 2,
+          "matches": 1,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:49",
+          "season_id": "sb:107",
+          "rows": 53,
+          "matches": 42,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:49",
+          "season_id": "sb:3",
+          "rows": 9,
+          "matches": 9,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:53",
+          "season_id": "sb:106",
+          "rows": 14,
+          "matches": 12,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:53",
+          "season_id": "sb:315",
+          "rows": 54,
+          "matches": 15,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:55",
+          "season_id": "sb:282",
+          "rows": 46,
+          "matches": 22,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:55",
+          "season_id": "sb:43",
+          "rows": 66,
+          "matches": 23,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:7",
+          "season_id": "sb:108",
+          "rows": 12,
+          "matches": 10,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:7",
+          "season_id": "sb:235",
+          "rows": 14,
+          "matches": 11,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:7",
+          "season_id": "sb:27",
+          "rows": 124,
+          "matches": 108,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:72",
+          "season_id": "sb:107",
+          "rows": 78,
+          "matches": 31,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:72",
+          "season_id": "sb:30",
+          "rows": 41,
+          "matches": 28,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:87",
+          "season_id": "sb:279",
+          "rows": 1,
+          "matches": 1,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:9",
+          "season_id": "sb:27",
+          "rows": 16,
+          "matches": 12,
+          "first_date": null,
+          "last_date": null
+        },
+        {
+          "competition_id": "sb:9",
+          "season_id": "sb:281",
+          "rows": 11,
+          "matches": 10,
+          "first_date": null,
+          "last_date": null
+        }
+      ]
+    }
+  ],
+  "files": [
+    {
+      "path": "exclusions.parquet",
+      "sha256": "1e674d003c45787f48efadb20683dc80055548ecb3ef64cdf558ea8913d2947b",
+      "bytes": 51017
+    }
+  ],
+  "parquet": {
+    "compression": "zstd",
+    "compression_level": 3,
+    "statistics": true,
+    "row_group_size": 100000
+  },
+  "environment": {
+    "python": "3.12.13",
+    "polars": "2.0.0",
+    "pandera": "0.34.1",
+    "numpy": "2.5.4",
+    "football_core": "0.1.0",
+    "football_core_git": "ac62650c606cc8403f39fac8e5ecb0b83a360148",
+    "football_core_dirty": false
+  }
+}

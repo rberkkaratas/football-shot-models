@@ -53,5 +53,15 @@ nav:
   - Data: data.md
   - Methodology: methodology.md
   - Roadmap: roadmap.md
+  - Modules: modules.md
   - Model card template: model-card-template.md
+  - Model cards:
+      - "Base rate": models/xg-base-rate.md
+      - "LR distance + angle": models/xg-lr-distance-angle.md
+      - "LR distance + angle + body part": models/xg-lr-distance-angle-body-part.md
   - References: references.md
+  - API reference:
+      - data: api/data.md
+      - features: api/features.md
+      - metrics: api/metrics.md
+      - baselines: api/baselines.md

@@ -8,7 +8,10 @@ authors = [
     { name = "R.Berk Karatas", email = "rberkk@protonmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = ["football-core"]
+dependencies = [
+    "football-core",
+    "scikit-learn>=1.9.1",
+]
 
 [tool.uv.sources]
 football-core = { path = "../football-core", editable = true }
@@ -41,6 +44,11 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 python_version = "3.12"
 strict = true
 
+[[tool.mypy.overrides]]
+module = ["sklearn", "sklearn.*"]  # scikit-learn ships no py.typed
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-q"
+testpaths = ["tests", "src"]
+addopts = "-q --doctest-modules -m 'not slow'"
+markers = ["slow: needs the real snapshot; run with make reproduce"]
