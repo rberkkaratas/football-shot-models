@@ -265,17 +265,21 @@ def _phase(t: Tables) -> pl.Series:
     return t["shots"].select(expr).to_series()
 
 
-# The archive has no pull-back qualifier, so a cutback level would be a constant-0 indicator.
+# The WhoScored archive has no pull-back qualifier, so a cutback level would be a constant-0
+# indicator there.
 ASSISTS: Final = tuple(a for a in schema.ASSIST_TYPES if a != "cutback")
 ASSIST: Final = pl.Enum(ASSISTS)
 
 
 def _assist(t: Tables) -> pl.Series:
+    """``assist``, the WhoScored / Opta encoding of ``assist_type``: its levels without
+    ``cutback``, which Opta cannot record. A StatsBomb spec reads ``assist_type`` itself."""
     col = t["shots"]["assist_type"].cast(pl.String)
     if bad := int(col.is_in(["cutback"]).sum()):
         raise ValueError(
-            f"derived feature 'assist': {bad} cutback value(s); the archive has no pull-back "
-            "qualifier (C5 census), so a cutback level would be a constant-0 column"
+            f"derived feature 'assist' is the WhoScored / Opta encoding of assist_type: {bad} "
+            "cutback value(s), which the WhoScored archive cannot record (no pull-back "
+            "qualifier, C5 census); a StatsBomb spec reads assist_type itself"
         )
     return col.cast(ASSIST)
 

@@ -130,7 +130,7 @@ def test_penalty_row_labels() -> None:
     not start with the in-game all row."""
     from football_shot_models import penalties
 
-    rows = penalties.penalty_rows(mc.penalties_frame())
+    rows = penalties.penalty_rows(mc.penalties_frame(), holdout=data.is_holdout())
     assert [r.label for r in rows] == [
         "In-game: all", "In-game: dev", "In-game: hold-out", "In-game: men", "In-game: women",
         "In-game: league or tournament", "In-game: team-selected",
@@ -145,16 +145,24 @@ def test_penalty_row_labels() -> None:
 @pytest.mark.parametrize(
     ("column", "row", "holdout", "match"),
     [
-        ("competition_id", 2, None, "hold-out mask has 1 null"),  # sb:k03, a hold-out-season kick
-        ("season_id", 0, None, "hold-out mask has 1 null"),  # sb:k01, a hold-out-competition kick
+        (
+            "competition_id",
+            2,
+            data.is_holdout(),
+            "hold-out mask has 1 null",
+        ),  # sb:k03, a hold-out-season kick
+        (
+            "season_id",
+            0,
+            data.is_holdout(),
+            "hold-out mask has 1 null",
+        ),  # sb:k01, a hold-out-competition kick
         ("season_id", 5, pl.col("season_id") == "sb:44", "hold-out mask has 1 null"),  # custom
-        ("reason", 4, None, "reason has 1 null"),
+        ("reason", 4, data.is_holdout(), "reason has 1 null"),
     ],
     ids=["null competition", "null season", "null in a custom mask", "null reason"],
 )
-def test_penalty_rows_null_holdout_key(
-    column: str, row: int, holdout: pl.Expr | None, match: str
-) -> None:
+def test_penalty_rows_null_holdout_key(column: str, row: int, holdout: pl.Expr, match: str) -> None:
     """R6: a null in the hold-out mask raises instead of dropping the kick from both dev and the
     hold-out; a null ``reason`` raises too."""
     from football_shot_models import penalties
@@ -196,7 +204,7 @@ def test_penalty_check_margin_forms(
     from football_shot_models import penalties
 
     frame = mc.penalties_frame()
-    rows = penalties.penalty_rows(frame)
+    rows = penalties.penalty_rows(frame, holdout=data.is_holdout())
     pooled = dataclasses.replace(rows[0], rate=metrics.Rate(1118, 853, 853 / 1118, mean, low, high))
     card = _card((pooled, *rows[1:]), frame)
     (row,) = [r for r in _rows(card) if r[0].startswith("posterior mean in [0.76, 0.80]")]
@@ -212,7 +220,7 @@ def test_penalty_benchmarks_statsbomb_constant() -> None:
     frame = mc.penalties_frame()
     for i in range(3):  # sb:k01-k03, the hold-out kicks
         frame = mc.set_value(frame, "provider_xg", i, 0.9)
-    rows = penalties.penalty_rows(frame)
+    rows = penalties.penalty_rows(frame, holdout=data.is_holdout())
     assert rows[2].provider_xg == pytest.approx(0.9) and rows[0].provider_xg != pytest.approx(0.9)
     loss = -(2 * math.log(0.9) + math.log(0.1)) / 3
     bench = _rows(_section(_card(rows, frame), "## Benchmarks"))
@@ -227,7 +235,7 @@ def test_penalty_benchmarks_statsbomb_constant() -> None:
         ]
     held_only = tuple(k for k in mc.PEN_KICKS if k[1] in ("sb:m01", "sb:m02") or k[2] == 5)
     frame = mc.penalties_frame(held_only)
-    card = _card(penalties.penalty_rows(frame), frame)
+    card = _card(penalties.penalty_rows(frame, holdout=data.is_holdout()), frame)
     for title in ("## Validation design", "## Benchmarks"):
         assert "The dev has no in-game penalties." in _section(card, title)
 

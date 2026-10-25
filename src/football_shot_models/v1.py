@@ -338,6 +338,7 @@ def run(
         score(y0, p_r).log_loss,
         bootstrap_gain(y0, p0, p_r, g0),
     )
+    head_over_remove = bootstrap_gain(y0, p_r, head.holdout_p[mask], g0)
     pairs = (*dict.fromkeys(((da, head), (da, best_lr))), (best_lr, abl))  # no repeated row
     gains = tuple(
         compare(f"{new.spec.title} over {ref.spec.title}", ref, new, dev, held)
@@ -369,7 +370,8 @@ def run(
         context=context, train_seasons=TRAIN_SEASONS, test_seasons=TEST_SEASONS,
         dropped_assist=dropped, baselines=base, steps=steps, gbm=gbm_ev, best_lr=best_lr,
         head=head, ablation=abl, gbm_gain=gbm_gain, gains=gains, v0=model, coverage=coverage,
-        v0_scores=score(y0, p0), v0_gains=v0_gains, add=add, remove=remove, groups=groups,
+        v0_scores=score(y0, p0), v0_gains=v0_gains, add=add, remove=remove,
+        head_over_remove=head_over_remove, groups=groups,
         v0_groups=v0_groups, penalties=kicks, penalty_losses=_penalties(kicks, model),
         checks=checks, reasons=reasons,
         train_competitions=tuple(sorted(set(comps["competition_name"].to_list()))),

@@ -1,17 +1,20 @@
-"""The xG modelling population: the StatsBomb snapshot, minus the shots xG must not see.
+"""The xG modelling population: a provider snapshot (StatsBomb or WhoScored), minus the shots
+xG must not see.
 
 xG answers "how likely is this shot to go in, from where and how it was struck". Some shots
 do not belong in that question and are removed with a logged reason, never silently:
 
-- **own goals** are 100 % goals by definition (StatsBomb logs them as Own Goal Against
-  events, not shots), so keeping them would leak the label;
+- **own goals** are 100 % goals by definition, so keeping them would leak the label
+  (StatsBomb logs them as Own Goal Against events; Opta marks the goal with q28);
 - **shoot-out kicks** (period 5) are not match play;
 - **in-game penalties** get their own model (M1.5, ``XgData.penalties``);
-- **direct corners**: StatsBomb logs a corner as a shot mostly when it threatens goal (all
-  33 sit on the goal line's corner arc and 18 are goals), so they are selected on outcome;
+- **direct corners** are selected on outcome: StatsBomb logs a corner as a shot mostly when it
+  threatens goal (all 33 sit on the goal line's corner arc and 18 are goals), and Opta tags
+  them with q263;
 - **shots without a freeze frame**, so that every M1.x model sees the same shots. Whether a
-  provider records frames is a constant per snapshot builder (:data:`FRAMES_BY_BUILDER`); for
-  a provider without them this reason is switched off, never inferred from an empty table.
+  provider records frames is a constant per snapshot builder (:data:`FRAMES_BY_BUILDER`):
+  StatsBomb does, WhoScored does not, so for WhoScored this reason is switched off, never
+  inferred from an empty table.
 
 The reasons are checked in that order and the first match wins, so they partition the
 excluded shots. The per-shot log is stored as the git-ignored snapshot ``xg-exclusions-v1``;

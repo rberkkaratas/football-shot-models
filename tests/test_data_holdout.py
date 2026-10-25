@@ -150,7 +150,9 @@ def test_penalty_rows_holdout_object() -> None:
     keys = [(r.rate.n, r.rate.goals, r.matches) for r in by_object]
     assert keys[1:3] == [(9, 6, 5), (1, 1, 1)]  # not the default pair's (7, 5, 4), (3, 2, 2)
     pair = data.pair_holdout(xc.fixture_tables()[2])
-    assert penalties.penalty_rows(frame, holdout=pair) == penalties.penalty_rows(frame)
+    assert penalties.penalty_rows(frame, holdout=pair) == penalties.penalty_rows(
+        frame, holdout=data.is_holdout()
+    )
     by_season = data.Holdout(pl.col("season_name") == "2015/2016", PL_LABEL)
     with pytest.raises(ValueError, match="^penalties: .*a column the frame lacks") as info:
         penalties.penalty_rows(frame, holdout=by_season)

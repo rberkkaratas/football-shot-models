@@ -214,6 +214,12 @@ def test_v1_run_fixture(v1r: dict[str, Any]) -> None:
     assert r.remove.label == f"v0's inputs refitted on train without {q}"
     p_remove = legacy.refit_v0(dev, held, ("big_chance",))
     assert r.remove.test_log_loss == pytest.approx(metrics.score(y, p_remove).log_loss, abs=1e-12)
+    # run4-ms4 #12: the headline against the remove refit, v0's information without q214
+    over = metrics.bootstrap_gain(y, p_remove, r.head.holdout_p, groups)
+    got = r.head_over_remove
+    assert (got.gain, got.low, got.high) == pytest.approx((over.gain, over.low, over.high),
+                                                          abs=1e-12)  # fmt: skip
+    assert got.gain != r.v0_gains[0][1].gain  # not the gain over v0 itself
     # checks and reasons
     assert r.checks == v1.v1_checks(r.head, r.gbm, r.gbm_gain, da, r.v0_gains[0][1], cov)
     assert len(r.checks) == 5 and [c.result for c in r.checks[3:]] == ["met", "met"]
@@ -228,6 +234,15 @@ def test_v1_run_fixture(v1r: dict[str, Any]) -> None:
     shots["Fixture League A"] -= 1  # the null-assist test shot (ws:m01)
     assert [g.shots for g in r.groups] == [shots[k] for k in sorted(comps)]
     assert [g.shots for g in r.v0_groups] == [g.shots for g in r.groups]
+    # run4-ms4 #15: the values, against by_group on an independently joined key
+    comp = held.join(
+        v1r["xg"].matches.select("match_id", "competition_name"),
+        on="match_id", how="left", maintain_order="left",
+    )["competition_name"].cast(pl.String)  # fmt: skip
+    assert comp.to_list() != sorted(comp.to_list())  # shot order is not competition order
+    seg = models.MIN_SEGMENT_SHOTS
+    assert r.groups == metrics.by_group(y, r.head.holdout_p, comp, groups, seg)
+    assert r.v0_groups == metrics.by_group(y, p0, comp, groups, seg)
     # the card
     lines = card.splitlines()
     for name in SECTIONS:
@@ -249,6 +264,15 @@ def test_v1_run_fixture(v1r: dict[str, Any]) -> None:
         x for x in models_block.splitlines() if x.startswith("|") and legacy.V0_TITLE in x
     )
     assert "n/a (test-only benchmark)" in v0_row
+    head_row = next(x for x in models_block.splitlines()
+                    if x.startswith(f"| **{r.head.spec.title}** |"))  # fmt: skip
+    assert r.head.holdout.xg_signed_error != 0.0 and r.v0_scores.xg_signed_error != 0.0
+    assert head_row.endswith(f"| {r.head.holdout.xg_signed_error:+.2%} |"), head_row
+    assert v0_row.endswith(f"| {r.v0_scores.xg_signed_error:+.2%} |"), v0_row
+    over_row = (f"| {r.head.spec.title} over {r.remove.label} (test only, counterfactual "
+                f"reference in place of v0) | {cards.gain_cell(r.head_over_remove)} | "
+                f"{cards.side(r.head_over_remove)} |")  # fmt: skip
+    assert over_row in _block(card, "Gains").splitlines()
     table = cards.checks_table(r.checks, CHECKS_TITLE, "note")
     assert all(x in lines for x in table if x.startswith("|") or CHECKS_TITLE in x)
     assert all(reason in card for reason in r.reasons)
@@ -259,6 +283,15 @@ def test_v1_run_fixture(v1r: dict[str, Any]) -> None:
     n = len(r.groups)
     assert (f"{k} of {n} signed-error intervals exclude 0; {j} of {n} slope intervals "
             "exclude 1") in by_comp  # fmt: skip
+    g, o = r.groups[0], r.v0_groups[0]
+    assert g.signed_error is not None and o.signed_error is not None
+    assert g.error_ci is not None and o.error_ci is not None and g.signed_error != o.signed_error
+    line = next(x for x in by_comp.splitlines() if x.startswith(f"| {g.key} |"))
+    assert line.startswith(
+        f"| {g.key} | {g.shots:,} | {g.goals:,} | {g.xg:.1f} | {g.signed_error:+.2%} "
+        f"[{g.error_ci[0]:+.2%}, {g.error_ci[1]:+.2%}] | {cards.fmt(g.cal_slope)} "
+    ), line
+    assert line.endswith(f"| {o.signed_error:+.2%} [{o.error_ci[0]:+.2%}, {o.error_ci[1]:+.2%}] |")
     assert re.search(r"private WhoScored ?/ ?Opta archive, never committed or redistributed", card)
     assert re.search(r"\bws:", card) is None  # a word boundary: "Rows:" is not an id
     assert "xg_model.json" not in card
@@ -271,6 +304,9 @@ def test_v1_run_fixture(v1r: dict[str, Any]) -> None:
     assert (f"WhoScored test season, {held.height:,} shots, goal rate {rate:.4f}; not comparable "
             "with the StatsBomb block") in block  # fmt: skip
     assert block in v1r["stdout"] and all(x in v1r["stdout"] for x in r.reasons)
+    assert (f"Over {r.remove.label} (a labelled counterfactual: v0's information without big "
+            f"chance) its gain is {cards.gain_cell(r.head_over_remove)}, an interval that "
+            f"{cards.side(r.head_over_remove)}.") in block  # fmt: skip
 
 
 def test_v1_headline_on_cv(v1r: dict[str, Any]) -> None:
@@ -333,7 +369,10 @@ def test_v1_miss_reason() -> None:
     prints both computed values; a row other than 1 or 2 is a ``ValueError`` even when met."""
     _, release, _ = _mods()
     add, rem = _cf(ADD, 0.2608, 0.0006), _cf(REMOVE, 0.2797, -0.0182)
-    both = " Both are labelled counterfactual refits, never candidates."
+    both = (
+        " Both labelled counterfactual refits agree that q214 accounts for the gap: adding "
+        "it alone meets the bound, and removing it from v0's inputs misses it."
+    )
     assert release.miss_reason(1, True, add, rem, 0.275) == (
         f"{ADD}: test log loss 0.2608 (meets it); {REMOVE}: test log loss 0.2797 (misses it)."
         + both
@@ -586,6 +625,33 @@ def test_ratify_card_wording(v1r: dict[str, Any]) -> None:
     assert f"v0 is scored on the {r.coverage.covered:,} test shots it covers." in models_block
     first = next(x for x in models_block.splitlines() if legacy.V0_TITLE in x)
     assert first.startswith(f"| {legacy.V0_TITLE} |")
+
+
+def test_card_facts_computed(
+    v1r: dict[str, Any], v1r_gbm: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run4-ms4 #4: the CV fold count comes from ``evaluation.N_SPLITS``; the men-only and
+    gender lines print only with 0 women's shots, else computed lines; the Overview verdict
+    names the split "test", never "hold-out"."""
+    _, release, _ = _mods()
+    r = v1r["run"]
+    card = release.v1_card(r)
+    assert f"Grouped {evaluation.N_SPLITS}-fold CV" in card
+    assert r.context.female_shots == 0
+    assert f"- Men's competitions only ({r.context.male_shots:,} shots, 0 women's): " in card
+    assert "shots are women's, so it is one value." in card
+    gbm_card = v1r_gbm["card"]
+    assert v1r_gbm["run"].head is v1r_gbm["run"].gbm  # the verdict's split branch
+    assert "on the test it is " in _block(gbm_card, "Overview")
+    assert "hold-out" not in _block(gbm_card, "Overview") + _block(card, "Overview")
+    monkeypatch.setattr(evaluation, "N_SPLITS", 7)
+    assert "Grouped 7-fold CV" in release.v1_card(r)
+    mixed = dataclasses.replace(r, context=dataclasses.replace(r.context, female_shots=12))
+    text = release.v1_card(mixed)
+    assert "Men's competitions only" not in text and "one value" not in text
+    men = r.context.male_shots
+    assert f"- Men's and women's competitions ({men:,} men's shots, 12 women's): " in text
+    assert f"`gender` is not a feature; 12 of {men + 12:,} shots are women's." in text
 
 
 def test_ratify_readme_na(v1r: dict[str, Any]) -> None:

@@ -106,10 +106,11 @@ def headline(
     return (gbm if gain.cv.low > 0 else best_lr), gain
 
 
-def verdict(ev: Evaluation, head: Evaluation, gain: Comparison) -> str:
+def verdict(ev: Evaluation, head: Evaluation, gain: Comparison, *, split: str = "hold-out") -> str:
     """The card overview sentence of ``ev``: is it the headline model, and why.
 
-    ``gain`` is :func:`headline`'s comparison (the GBM over the best LR).
+    ``gain`` is :func:`headline`'s comparison (the GBM over the best LR); ``split`` names the
+    scored-once split as the card calls it (the MS3 cards "hold-out", the v1 card "test").
 
     Examples
     --------
@@ -121,7 +122,7 @@ def verdict(ev: Evaluation, head: Evaluation, gain: Comparison) -> str:
     if ev is head and _is_gbm(head):
         return (
             f"This is the headline model: its CV log-loss gain over {lr} is {cv}, a 95% "
-            f"interval that lies above 0; on the hold-out it is {gain_cell(gain.holdout)}, an "
+            f"interval that lies above 0; on the {split} it is {gain_cell(gain.holdout)}, an "
             f"interval that {side(gain.holdout)}."
         )
     if ev is head:

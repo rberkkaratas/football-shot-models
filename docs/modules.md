@@ -59,7 +59,9 @@ make xg-v1           # uv run python -m football_shot_models.v1 -> docs/models/x
 make reproduce       # regenerate every card and both README blocks and compare them byte for
                      # byte (fails, rather than skips, without either snapshot or v0)
 make reproduce-public  # the StatsBomb cards only, without the private data
-make reproduce-cold  # the reproduction of record: FSM_CACHE=off, every fit runs
+make reproduce-cold  # the reproduction of record: FSM_CACHE=off, every fit runs (needs the
+                     # private data, as reproduce does)
+make reproduce-public-cold  # the cold public reproduction: FSM_CACHE=off reproduce-public
 ```
 
 The prediction cache (`data/cache`, git-ignored) is keyed by the snapshot's data digest and a

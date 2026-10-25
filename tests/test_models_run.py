@@ -166,7 +166,7 @@ def test_models_run_penalties_and_stdout(models_run: dict[str, Any]) -> None:
     g = _gains(r)
     models, run = g["models"], r["run"]
     pens = r["xg"].penalties
-    assert run.penalties == penalties.penalty_rows(pens)
+    assert run.penalties == penalties.penalty_rows(pens, holdout=data.is_holdout())
     assert run.spread == penalties.exchangeability(pens)
     context = cards.card_context(r["xg"], r["dev"], r["held"])
     assert _card(r, "xg-penalty") == penalties.penalty_card(run.penalties, run.spread, context)

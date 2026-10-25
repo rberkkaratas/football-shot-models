@@ -10,7 +10,10 @@ name and data digest (the pin), counts and metrics.
 "at least as good as v0" row, :func:`miss_reason` prints two labelled counterfactual refits
 next to each other: *add* (the best LR plus Opta big chance alone) and *remove* (v0's own
 inputs refitted on train without it). The line reports both numbers and whether each meets
-the bound; it never types a cause.
+the bound; it names big chance as the reason only when both refits agree (adding it meets
+the bound, removing it misses), and otherwise says the run does not isolate the reason. The
+card and the README block also print the headline's gain over the *remove* refit, the legacy
+information set without big chance.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from typing import Final
 from football_core import schema
 from football_core.io import whoscored
 
-from football_shot_models import ablation, cards, features, gbm, legacy, models
+from football_shot_models import ablation, cards, evaluation, features, gbm, legacy, models
 from football_shot_models.cards import fmt, gain_cell, pct, side
 from football_shot_models.evaluation import Comparison, Evaluation, ModelSpec
 from football_shot_models.metrics import N_BOOT, SEED, Check, GainCI, GroupRow, Scores
@@ -72,8 +75,10 @@ class V1Run:
 
     ``v0_gains`` pairs a spec name with its test gain over v0 on the covered shots: the
     headline, LR distance + angle, the best LR, the GBM and the ablation, each once.
-    ``train_competitions`` names the competitions with a train match; ``reliability`` holds
-    the test season's ten bins (bin, shots, mean xG, goal rate).
+    ``head_over_remove`` is the headline's test gain over the *remove* counterfactual (v0's
+    inputs refitted without big chance) on the same shots. ``train_competitions`` names the
+    competitions with a train match; ``reliability`` holds the test season's ten bins (bin,
+    shots, mean xG, goal rate).
     """
 
     context: cards.CardContext
@@ -94,6 +99,7 @@ class V1Run:
     v0_gains: tuple[tuple[str, GainCI], ...]
     add: Counterfactual
     remove: Counterfactual
+    head_over_remove: GainCI
     groups: tuple[GroupRow, ...]
     v0_groups: tuple[GroupRow, ...]
     penalties: tuple[PenaltyRow, ...]
@@ -115,7 +121,9 @@ def miss_reason(
 
     Row 1 judges each counterfactual's test log loss against ``bound``; row 2 its point gain
     over v0 (>= 0). The line prints both values with "meets it" / "misses it", then one of
-    three closing sentences chosen by which of them meets the bound.
+    three closing sentences chosen by which of them meets the bound: when adding big chance
+    meets it and removing it misses, both refits agree and big chance is named as the reason;
+    otherwise the line says the run does not isolate or identify one.
 
     Returns
     -------
@@ -132,9 +140,11 @@ def miss_reason(
     >>> g = GainCI(0.0004, -0.0002, 0.0010, 2000, 587)
     >>> add = Counterfactual("add", 0.2611, g)
     >>> rem = Counterfactual("remove", 0.2797, GainCI(-0.0182, -0.0211, -0.0154, 2000, 587))
-    >>> miss_reason(1, True, add, rem, 0.275)
-    'add: test log loss 0.2611 (meets it); remove: test log loss 0.2797 (misses it). Both are \
-labelled counterfactual refits, never candidates.'
+    >>> line = miss_reason(1, True, add, rem, 0.275)
+    >>> line.split(". ")[0]
+    'add: test log loss 0.2611 (meets it); remove: test log loss 0.2797 (misses it)'
+    >>> line.split(". ")[1].split(":")[0]
+    'Both labelled counterfactual refits agree that q214 accounts for the gap'
     >>> miss_reason(1, False, add, rem, 0.275) is None
     True
     """
@@ -152,7 +162,10 @@ labelled counterfactual refits, never candidates.'
     line = f"{add.label}: {shown[0]} ({word[0]}); {remove.label}: {shown[1]} ({word[1]})."
     q = f"q{whoscored.BIG_CHANCE}"
     if meets == [True, False]:
-        return line + " Both are labelled counterfactual refits, never candidates."
+        return line + (
+            f" Both labelled counterfactual refits agree that {q} accounts for the gap: adding "
+            f"it alone meets the bound, and removing it from v0's inputs misses it."
+        )
     if meets[0]:
         return line + f" Removing {q} does not reproduce the miss: this run does not isolate it."
     return line + f" Adding {q} does not meet the bound: this run does not identify the reason."
@@ -263,6 +276,14 @@ def _model(ev: Evaluation, c: cards.CardContext) -> list[str]:
     ]
 
 
+def _gender_line(c: cards.CardContext, feats: Mapping[str, None]) -> str:
+    total = c.male_shots + c.female_shots
+    if c.female_shots == 0:
+        return f"`gender` is left out: 0 of {total:,} shots are women's, so it is one value."
+    used = "is" if "gender" in feats else "is not"
+    return f"`gender` {used} a feature; {c.female_shots:,} of {total:,} shots are women's."
+
+
 def _evaluations(r: V1Run) -> tuple[Evaluation, ...]:
     return (*r.baselines, *r.steps, r.gbm, r.ablation)
 
@@ -363,7 +384,7 @@ def v1_card(r: V1Run) -> str:
         f"- **Task:** {cards.TASK}",
         "- **Status:** experimental",
         f"- M1.6 / M1.7: the WhoScored xG model of record. Headline model: {head.spec.title}. "
-        f"{models.verdict(head, head, r.gbm_gain)}",
+        f"{models.verdict(head, head, r.gbm_gain, split='test')}",
         "",
         "## Intended use",
         INTENDED_USE,
@@ -374,8 +395,13 @@ def v1_card(r: V1Run) -> str:
         "- No freeze frames: it sees no keeper or defender positions at the strike.",
         f"- It does not read Opta big chance (q{whoscored.BIG_CHANCE}); {legacy.V0_TITLE} and the "
         "labelled ablation do.",
-        f"- Men's competitions only ({c.male_shots:,} shots, {c.female_shots:,} women's): "
-        f"{len(r.train_competitions)} in train, {len(test_comps)} in test"
+        (
+            f"- Men's competitions only ({c.male_shots:,} shots, 0 women's): "
+            if c.female_shots == 0
+            else f"- Men's and women's competitions ({c.male_shots:,} men's shots, "
+            f"{c.female_shots:,} women's): "
+        )
+        + f"{len(r.train_competitions)} in train, {len(test_comps)} in test"
         + "".join(f"; {x}" for x in only)
         + ".",
         f"- One train season ({', '.join(r.train_seasons)}: {c.dev_matches:,} matches) and the "
@@ -412,7 +438,8 @@ def v1_card(r: V1Run) -> str:
         "",
         "## Split",
         f"Train: season(s) {', '.join(r.train_seasons)}; test: {', '.join(r.test_seasons)}. "
-        "Every train match precedes every test match (checked). Grouped 5-fold CV by `match_id` "
+        "Every train match precedes every test match (checked). "
+        f"Grouped {evaluation.N_SPLITS}-fold CV by `match_id` "
         "on train only (**Validation**); **Train** is the fit on all of train, scored "
         "in-sample; **Test** is the test season, scored once by that fit and never used to "
         "choose. Any tuning (the GBM's grid, Platt) runs inside each fit on its training rows.",
@@ -422,8 +449,7 @@ def v1_card(r: V1Run) -> str:
         "|---|---|---|",
         *(FEATURE_ROWS[f] for f in (*feats, "big_chance") if f in FEATURE_ROWS),
         "",
-        f"`gender` is left out: {c.female_shots:,} of {c.male_shots + c.female_shots:,} shots are "
-        "women's, so it is one value.",
+        _gender_line(c, feats),
         "",
         "## Model",
         *_model(head, c),
@@ -459,6 +485,8 @@ def v1_card(r: V1Run) -> str:
         *(f"| {titles[n]} | {gain_cell(g)} | {side(g)} |" for n, g in r.v0_gains),
         f"| {r.remove.label} (test only, counterfactual) | {gain_cell(r.remove.gain_over_v0)} | "
         f"{side(r.remove.gain_over_v0)} |",
+        f"| {head.spec.title} over {r.remove.label} (test only, counterfactual reference in "
+        f"place of v0) | {gain_cell(r.head_over_remove)} | {side(r.head_over_remove)} |",
         "",
         "## Checks",
         *cards.checks_table(
@@ -549,7 +577,9 @@ def summary_block(r: V1Run) -> str:
         "",
         f"Headline model: {r.head.spec.title}. On the {r.coverage.covered:,} test shots v0 "
         f"covers, its gain over v0 is {gain_cell(head_gain)}, an interval that "
-        f"{side(head_gain)}.",
+        f"{side(head_gain)}. Over {r.remove.label} (a labelled counterfactual: v0's "
+        f"information without big chance) its gain is {gain_cell(r.head_over_remove)}, an "
+        f"interval that {side(r.head_over_remove)}.",
         "",
         f"Penalties (in-game): P(goal) {pen.mean:.4f} [95% interval {pen.low:.4f}, "
         f"{pen.high:.4f}] from {pen.n:,} train kicks; constant log loss on the test kicks "

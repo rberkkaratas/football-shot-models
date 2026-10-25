@@ -56,7 +56,7 @@ class PenaltyRow:
 
 
 def penalty_rows(
-    penalties: pl.DataFrame, *, holdout: data.Holdout | pl.Expr | None = None
+    penalties: pl.DataFrame, *, holdout: data.Holdout | pl.Expr
 ) -> tuple[PenaltyRow, ...]:
     """The penalty model (the first row) and its breakdown; shoot-outs in their own rows.
 
@@ -69,10 +69,11 @@ def penalty_rows(
     penalties : polars.DataFrame
         ``XgData.penalties``: ``reason``, ``is_goal``, ``gender``, ``family``, ``match_id``,
         ``provider_xg`` and the columns ``holdout`` reads.
-    holdout : data.Holdout or polars.Expr, optional
-        True for hold-out kicks; default ``data.is_holdout()`` (the full competition-season
-        pair, so shots and penalties share one key). A run passes the same
-        :class:`~football_shot_models.data.Holdout` it split the shots with.
+    holdout : data.Holdout or polars.Expr
+        True for hold-out kicks. Required, with no default: a run passes the same
+        :class:`~football_shot_models.data.Holdout` it split the shots with, so shots and
+        penalties share one key. A provider-specific default would match nothing on another
+        provider's frame and pool the hold-out kicks into ``dev`` without an error.
 
     Returns
     -------
@@ -97,9 +98,10 @@ def penalty_rows(
     ...     "competition_id": ["sb:2", "sb:11", "sb:11", "sb:11"],
     ...     "season_id": ["sb:27"] * 4,
     ...     "provider_xg": [0.78, 0.78, 0.78, None]})
-    >>> [(r.label, r.rate.n, r.matches) for r in penalty_rows(kicks)][:3]
+    >>> rows = penalty_rows(kicks, holdout=data.is_holdout())  # the pair (sb:2, sb:27)
+    >>> [(r.label, r.rate.n, r.matches) for r in rows][:3]
     [('In-game: all', 3, 2), ('In-game: dev', 2, 1), ('In-game: hold-out', 1, 1)]
-    >>> penalty_rows(kicks)[-1].label, penalty_rows(kicks)[-1].provider_xg
+    >>> rows[-1].label, rows[-1].provider_xg
     ('Shoot-out: men', None)
     """
     for col in ("reason", "is_goal", "gender", "family", "match_id"):
@@ -107,9 +109,7 @@ def penalty_rows(
             raise ValueError(f"penalties: {col} has {nulls} null value(s)")
     if other := sorted(set(penalties["reason"].cast(pl.String)) - {"penalty", "shootout"}):
         raise ValueError(f"penalties: reason {other} is not 'penalty' or 'shootout'")
-    held = data.holdout_mask(
-        penalties, data.is_holdout() if holdout is None else holdout, "penalties"
-    )
+    held = data.holdout_mask(penalties, holdout, "penalties")
     frame = penalties.with_columns(_held=held)
     game, shoot = (frame.filter(pl.col("reason") == r) for r in ("penalty", "shootout"))
     if game.height == 0:
@@ -248,7 +248,8 @@ def penalty_card(rows: Sequence[PenaltyRow], spread: Spread, context: CardContex
 
     Examples
     --------
-    >>> card = penalty_card(penalty_rows(xg.penalties), exchangeability(xg.penalties),
+    >>> rows = penalty_rows(xg.penalties, holdout=ho)  # doctest: +SKIP
+    >>> card = penalty_card(rows, exchangeability(xg.penalties),
     ...                     card_context(xg, dev, held))  # doctest: +SKIP
     >>> card.splitlines()[0]  # doctest: +SKIP
     '# Model card: Penalty conversion (Beta-binomial)'

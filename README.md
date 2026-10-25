@@ -8,13 +8,14 @@ Building, evaluating and documenting **shot models** for football from first pri
 | 2 | **xGOT / PSxG**: post-shot xG | Given where the shot ended up in the goal mouth, how likely was it to go in? |
 | 3 | **Goals prevented / GSAx** | How many goals did a goalkeeper save compared with an average keeper facing the same shots? |
 
-> **Status:** milestone 4 done: xG v1 on a private WhoScored / Opta archive, trained on 2025-26
-> and tested on 2026-27 ([card](docs/models/xg-v1.md)). The headline monotone GBM gets a test
-> log loss of 0.2771 (target 0.275, missed) against 0.2971 for distance + angle, with a test
-> calibration slope of 0.979. The legacy v0, which reads Opta's big-chance tag, does better on
-> the same test shots (0.2615; gain −0.0156 [−0.0183, −0.0127], missed); the card puts two
-> labelled counterfactual refits next to that gap. Milestone 3 (the StatsBomb xG model, headline
-> monotone GBM at grouped-CV log loss 0.2638) is below. See [`docs/roadmap.md`](docs/roadmap.md).
+> **Status:** milestone 4 built: xG v1 on a private WhoScored / Opta archive, trained on 2025-26
+> and tested on 2026-27 ([card](docs/models/xg-v1.md); its results are the generated v1 block
+> below, none typed here). Two of its check rows are missed, each with a computed reason on the
+> card: the test log-loss bound, and the gain over the legacy v0, which reads Opta's big-chance
+> tag (q214, a column v1's leakage rule bars). The block also gives the headline's gain over
+> v0's own inputs refitted without q214, a labelled counterfactual. Whether the v0 element is
+> met, re-baselined or missed is a PM ruling, pending. Milestone 3 (the StatsBomb xG model) is
+> below. See [`docs/roadmap.md`](docs/roadmap.md).
 
 ### Results (MS3, every model and StatsBomb xG on the same shots)
 
@@ -51,7 +52,7 @@ Match xG = Σ non-penalty xG (headline model) + P(goal | in-game penalty) × in-
 | LR splines + context + big chance (labelled ablation) | 0.2559 | 0.2611 | 0.7974 | 0.9728 | +0.72% | +0.0004 [-0.0002, +0.0010] |
 | Legacy v0 (uses Opta big chance q214) | n/a (test-only) | 0.2615 | 0.7978 | 0.9794 | +0.90% | n/a (reference) |
 
-Headline model: Monotone GBM + Platt. On the 16,164 test shots v0 covers, its gain over v0 is -0.0156 [-0.0183, -0.0127], an interval that lies below 0.
+Headline model: Monotone GBM + Platt. On the 16,164 test shots v0 covers, its gain over v0 is -0.0156 [-0.0183, -0.0127], an interval that lies below 0. Over v0's inputs refitted on train without q214 (a labelled counterfactual: v0's information without big chance) its gain is +0.0027 [+0.0013, +0.0039], an interval that lies above 0.
 
 Penalties (in-game): P(goal) 0.7775 [95% interval 0.7500, 0.8038] from 918 train kicks; constant log loss on the test kicks 0.4674 (v0 0.4668).
 

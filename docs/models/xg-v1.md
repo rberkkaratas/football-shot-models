@@ -4,7 +4,7 @@
 - **Name / version:** `xg-v1` v1
 - **Task:** binary classification: P(goal | shot) for non-penalty shots in periods 1–4 (extra time included; direct free kicks and corners from open play or set pieces included; direct corners, own goals and shoot-outs excluded)
 - **Status:** experimental
-- M1.6 / M1.7: the WhoScored xG model of record. Headline model: Monotone GBM + Platt. This is the headline model: its CV log-loss gain over LR splines + context is +0.0009 [+0.0005, +0.0013], a 95% interval that lies above 0; on the hold-out it is +0.0013 [+0.0005, +0.0022], an interval that lies above 0.
+- M1.6 / M1.7: the WhoScored xG model of record. Headline model: Monotone GBM + Platt. This is the headline model: its CV log-loss gain over LR splines + context is +0.0009 [+0.0005, +0.0013], a 95% interval that lies above 0; on the test it is +0.0013 [+0.0005, +0.0022], an interval that lies above 0.
 
 ## Intended use
 xG for WhoScored / Opta shot events: P(goal) of a non-penalty shot from its location, body part, phase of play, assisting event and Opta's 1-on-1 tag. For research and opposition analysis on this archive, and for comparing with the legacy v0 on the same test shots; not for rating players or teams without that comparison, not for penalties (a separate probability, below), and not for other providers' data without re-fitting.
@@ -125,6 +125,7 @@ Test gain over Legacy v0 (uses Opta big chance q214) on the 16,164 covered test 
 | LR splines + context | -0.0169 [-0.0197, -0.0139] | lies below 0 |
 | LR splines + context + big chance (labelled ablation) | +0.0004 [-0.0002, +0.0010] | includes 0 |
 | v0's inputs refitted on train without q214 (test only, counterfactual) | -0.0182 [-0.0211, -0.0154] | lies below 0 |
+| Monotone GBM + Platt over v0's inputs refitted on train without q214 (test only, counterfactual reference in place of v0) | +0.0027 [+0.0013, +0.0039] | lies above 0 |
 
 ## Checks
 ### Milestone checks (MS4)
@@ -139,8 +140,8 @@ Targets from the MS4 brief, judged on the test season (2026/2027). The last two 
 | GBM headline iff its CV gain over LR splines + context has a 95% interval above 0 | CV +0.0009 [+0.0005, +0.0013]; headline Monotone GBM + Platt | met |
 | Big chance only in the labelled ablation, never in the headline | headline features: distance_m, angle_rad, body_part, phase, assist, one_on_one | met |
 
-- the best LR (LR splines + context) plus q214 alone: test log loss 0.2611 (meets it); v0's inputs refitted on train without q214: test log loss 0.2797 (misses it). Both are labelled counterfactual refits, never candidates.
-- the best LR (LR splines + context) plus q214 alone: gain over v0 +0.0004 [-0.0002, +0.0010] (meets it); v0's inputs refitted on train without q214: gain over v0 -0.0182 [-0.0211, -0.0154] (misses it). Both are labelled counterfactual refits, never candidates.
+- the best LR (LR splines + context) plus q214 alone: test log loss 0.2611 (meets it); v0's inputs refitted on train without q214: test log loss 0.2797 (misses it). Both labelled counterfactual refits agree that q214 accounts for the gap: adding it alone meets the bound, and removing it from v0's inputs misses it.
+- the best LR (LR splines + context) plus q214 alone: gain over v0 +0.0004 [-0.0002, +0.0010] (meets it); v0's inputs refitted on train without q214: gain over v0 -0.0182 [-0.0211, -0.0154] (misses it). Both labelled counterfactual refits agree that q214 accounts for the gap: adding it alone meets the bound, and removing it from v0's inputs misses it.
 
 ## Reliability
 Ten equal-count bins of the headline model's test predictions.

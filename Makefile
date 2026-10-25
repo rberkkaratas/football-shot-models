@@ -1,5 +1,5 @@
 .PHONY: check lint format typecheck test docs docs-notebooks docs-serve snapshot xg-baselines xg-models reproduce \
-	reproduce-cold reproduce-public snapshot-whoscored legacy-v0 xg-v1
+	reproduce-cold reproduce-public reproduce-public-cold snapshot-whoscored legacy-v0 xg-v1
 
 ## Run every quality gate (CI runs the same target)
 check: lint typecheck test docs
@@ -89,3 +89,7 @@ reproduce-public:
 ## The reproduction of record: every fit runs, the prediction cache is neither read nor written
 reproduce-cold:
 	FSM_CACHE=off $(MAKE) reproduce
+
+## The public reproduction of record (no private data): reproduce-public with every fit run
+reproduce-public-cold:
+	FSM_CACHE=off $(MAKE) reproduce-public
