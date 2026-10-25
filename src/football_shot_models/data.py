@@ -9,11 +9,19 @@ do not belong in that question and are removed with a logged reason, never silen
 - **in-game penalties** get their own model (M1.5, ``XgData.penalties``);
 - **direct corners**: StatsBomb logs a corner as a shot mostly when it threatens goal (all
   33 sit on the goal line's corner arc and 18 are goals), so they are selected on outcome;
-- **shots without a freeze frame**, so that every M1.x model sees the same shots.
+- **shots without a freeze frame**, so that every M1.x model sees the same shots. Whether a
+  provider records frames is a constant per snapshot builder (:data:`FRAMES_BY_BUILDER`); for
+  a provider without them this reason is switched off, never inferred from an empty table.
 
 The reasons are checked in that order and the first match wins, so they partition the
 excluded shots. The per-shot log is stored as the git-ignored snapshot ``xg-exclusions-v1``;
 only its manifest (counts per competition-season) is committed.
+
+The hold-out is one value, a :class:`Holdout` (a row expression and the cards' label), built
+once per run and handed to every reader that splits a frame: :func:`split_holdout`, the penalty
+rows and the card context. StatsBomb holds out one competition-season (:func:`pair_holdout`);
+a provider with seasons in time order holds out whole seasons (:func:`season_holdout`), with
+every train match before every test match.
 
 Every match also gets a ``family`` used to segment the model cards: ``women``,
 ``team-selected`` (one team plays in at least half the matches of the competition-season) or
@@ -29,9 +37,12 @@ World Cup and three Copa del Rey matches), so the family means "curated matches"
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Final
 
+import numpy as np
 import polars as pl
 from football_core import schema
 from football_core.io import snapshot
@@ -57,6 +68,10 @@ EXCLUSION_SCHEMA: Final[pl.Schema] = pl.Schema(
     }
 )
 MATCH_FEATURES: Final = schema.column_names("matches", roles="pre_shot")  # joined onto shots
+# Does the builder's provider record freeze frames? Without them no_freeze_frame is not a reason.
+FRAMES_BY_BUILDER: Final[Mapping[str, bool]] = MappingProxyType(
+    {"statsbomb": True, "whoscored": False}
+)
 _PAIR: Final = ("competition_id", "season_id")
 
 
@@ -94,13 +109,15 @@ class XgData:
     manifest: snapshot.Manifest
 
 
-def exclusion_reason(frame_shot_ids: pl.Series) -> pl.Expr:
+def exclusion_reason(frame_shot_ids: pl.Series | None) -> pl.Expr:
     """First matching reason, in EXCLUSION_REASONS order; null for a kept shot.
 
     Parameters
     ----------
-    frame_shot_ids : polars.Series
-        The ``shot_id`` values that have freeze-frame rows.
+    frame_shot_ids : polars.Series or None
+        The ``shot_id`` values that have freeze-frame rows; ``None`` for a provider without
+        freeze frames, which drops the ``no_freeze_frame`` reason (an empty Series keeps it and
+        tags every shot that reaches it).
 
     Returns
     -------
@@ -118,8 +135,10 @@ def exclusion_reason(frame_shot_ids: pl.Series) -> pl.Expr:
     ...                                     "open_play", "open_play"]})
     >>> shots.select(exclusion_reason(pl.Series(["sb:d", "sb:f"]))).to_series().to_list()
     ['own_goal', 'shootout', 'penalty', 'direct_corner', 'no_freeze_frame', None]
+    >>> shots.select(exclusion_reason(None)).to_series().to_list()
+    ['own_goal', 'shootout', 'penalty', 'direct_corner', None, None]
     """
-    return (
+    chain = (
         pl.when(pl.col("is_own_goal"))
         .then(pl.lit("own_goal"))
         .when(pl.col("period") == 5)
@@ -128,22 +147,27 @@ def exclusion_reason(frame_shot_ids: pl.Series) -> pl.Expr:
         .then(pl.lit("penalty"))
         .when(pl.col("situation") == "direct_corner")
         .then(pl.lit("direct_corner"))
-        .when(~pl.col("shot_id").is_in(frame_shot_ids.implode()))
-        .then(pl.lit("no_freeze_frame"))
-        .otherwise(None)
-        .cast(EXCLUSION_REASON)
     )
+    if frame_shot_ids is not None:
+        chain = chain.when(~pl.col("shot_id").is_in(frame_shot_ids.implode())).then(
+            pl.lit("no_freeze_frame")
+        )
+    return chain.otherwise(None).cast(EXCLUSION_REASON)
 
 
-def exclude(shots: pl.DataFrame, freeze_frames: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
+def exclude(
+    shots: pl.DataFrame, freeze_frames: pl.DataFrame | None
+) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Split C3 shots into the xG population and an exclusion log.
 
     Parameters
     ----------
     shots : polars.DataFrame
         C3 shots.
-    freeze_frames : polars.DataFrame
-        C3 freeze frames; only their ``shot_id`` is read.
+    freeze_frames : polars.DataFrame or None
+        C3 freeze frames; only their ``shot_id`` is read. ``None`` states that the provider
+        records no frames, so ``no_freeze_frame`` is not a reason (no default: a caller says
+        so, it never gets it by omission).
 
     Returns
     -------
@@ -163,7 +187,8 @@ def exclude(shots: pl.DataFrame, freeze_frames: pl.DataFrame) -> tuple[pl.DataFr
     >>> kept["shot_id"].to_list(), log.select("shot_id", "reason").rows()
     (['sb:b'], [('sb:a', 'own_goal')])
     """
-    reason = exclusion_reason(freeze_frames["shot_id"].unique())
+    ids = None if freeze_frames is None else freeze_frames["shot_id"].unique()
+    reason = exclusion_reason(ids)
     tagged = shots.with_columns(_reason=reason).sort("shot_id")
     kept = tagged.filter(pl.col("_reason").is_null()).drop("_reason")
     log = tagged.filter(pl.col("_reason").is_not_null()).select(
@@ -239,17 +264,184 @@ def is_holdout(holdout: tuple[str, str] = HOLDOUT) -> pl.Expr:
     return (pl.col("competition_id") == holdout[0]) & (pl.col("season_id") == holdout[1])
 
 
+@dataclass(frozen=True, eq=False)  # dataclass eq on a pl.Expr raises; compare with `is`
+class Holdout:
+    """Which rows are held out, and how the cards name them.
+
+    Attributes
+    ----------
+    expr : polars.Expr
+        True for held-out rows; evaluated on every frame that is split (shots, penalties).
+    label : str
+        The cards' hold-out label, computed from the data, never typed.
+
+    Examples
+    --------
+    >>> ho = Holdout(pl.col("match_id").is_in(pl.Series(["ws:9"]).implode()), "2026/2027")
+    >>> holdout_mask(pl.DataFrame({"match_id": ["ws:1", "ws:9"]}), ho, "shots").to_list()
+    [False, True]
+    """
+
+    expr: pl.Expr
+    label: str
+
+
+def pair_holdout(matches: pl.DataFrame, pair: tuple[str, str] = HOLDOUT) -> Holdout:
+    """The hold-out of one ``(competition_id, season_id)`` pair, labelled from ``matches``.
+
+    The label is ``competition_name + " " + season_name`` of the first matching match, or
+    ``"n/a"`` when no match has the pair.
+
+    Examples
+    --------
+    >>> matches = pl.DataFrame({"competition_id": ["sb:2"], "season_id": ["sb:27"],
+    ...                         "competition_name": ["Premier League"],
+    ...                         "season_name": ["2015/2016"]})
+    >>> pair_holdout(matches).label, pair_holdout(matches, ("sb:9", "sb:1")).label
+    ('Premier League 2015/2016', 'n/a')
+    """
+    named = matches.filter(is_holdout(pair)).select(
+        pl.concat_str("competition_name", "season_name", separator=" ")
+    )
+    return Holdout(is_holdout(pair), str(named.item(0, 0)) if named.height else "n/a")
+
+
+def holdout_mask(frame: pl.DataFrame, holdout: Holdout | pl.Expr, what: str) -> pl.Series:
+    """The hold-out's Boolean mask on ``frame``, one value per row, never null.
+
+    Parameters
+    ----------
+    frame : polars.DataFrame
+        The frame to split.
+    holdout : Holdout or polars.Expr
+        The hold-out, or its row expression.
+    what : str
+        The frame's name, which starts every error message.
+
+    Returns
+    -------
+    polars.Series
+        Boolean, ``frame.height`` values (a literal broadcasts).
+
+    Raises
+    ------
+    ValueError
+        The expression reads a column the frame lacks or fails in polars (a length-changing
+        expression, a dtype mismatch); the mask is not Boolean or holds a null.
+
+    Examples
+    --------
+    >>> shots = pl.DataFrame({"competition_id": ["sb:2", None], "season_id": ["sb:27"] * 2})
+    >>> holdout_mask(shots.head(1), is_holdout(), "shots").to_list()
+    [True]
+    >>> holdout_mask(shots, is_holdout(), "shots")
+    Traceback (most recent call last):
+    ...
+    ValueError: shots: the hold-out mask has 1 null value(s)
+    """
+    expr = holdout.expr if isinstance(holdout, Holdout) else holdout
+    try:
+        mask = frame.with_columns(expr.alias("_held"))["_held"]
+    except pl.exceptions.ColumnNotFoundError as e:
+        raise ValueError(f"{what}: the hold-out reads a column the frame lacks ({e})") from None
+    except pl.exceptions.PolarsError as e:  # ShapeError, ComputeError, InvalidOperationError
+        kind = type(e).__name__
+        raise ValueError(f"{what}: the hold-out expression fails ({kind}: {e})") from None
+    if mask.dtype != pl.Boolean():
+        raise ValueError(f"{what}: the hold-out mask is {mask.dtype}, not Boolean")
+    if nulls := mask.null_count():
+        raise ValueError(f"{what}: the hold-out mask has {nulls} null value(s)")
+    return mask
+
+
+def season_holdout(matches: pl.DataFrame, train: Sequence[str], test: Sequence[str]) -> Holdout:
+    """Hold out the matches of the ``test`` seasons, after checking the time order.
+
+    Every match must belong to a listed season, so the development data is exactly the
+    ``train`` seasons: a season added to the archive later is an error, never silent training
+    data. The last train match must be strictly before the first test match.
+
+    Parameters
+    ----------
+    matches : polars.DataFrame
+        The matches table (``match_id``, ``season_name``, ``match_date``).
+    train, test : sequence of str
+        ``season_name`` values, non-empty and disjoint.
+
+    Returns
+    -------
+    Holdout
+        ``match_id`` in the test matches; labelled by the test season names present, sorted
+        and joined by ``", "``.
+
+    Raises
+    ------
+    ValueError
+        A bare ``str`` or an empty sequence; a season in both; a ``season_name`` outside
+        ``train`` and ``test``, or null; a null ``match_date``; a listed season with no match;
+        a last train date not before the first test date (both dates in the message).
+
+    Examples
+    --------
+    >>> from datetime import date
+    >>> m = pl.DataFrame({"match_id": ["ws:1", "ws:2", "ws:3"],
+    ...                   "season_name": ["2025/2026", "2026", "2026/2027"],
+    ...                   "match_date": [date(2025, 8, 2), date(2026, 7, 4), date(2026, 8, 7)]})
+    >>> ho = season_holdout(m, ("2025/2026", "2026"), ("2026/2027",))
+    >>> ho.label, m.select(ho.expr).to_series().to_list()
+    ('2026/2027', [False, False, True])
+    >>> season_holdout(m, ("2026",), ("2025/2026", "2026/2027"))
+    Traceback (most recent call last):
+    ...
+    ValueError: the last train match (2026-07-04) is not before the first test match (2025-08-02)
+    """
+    for name, seasons in (("train", train), ("test", test)):
+        if isinstance(seasons, str) or not seasons:
+            raise ValueError(
+                f"{name} must be a non-empty sequence of season names, got {seasons!r}"
+            )
+    if both := sorted(set(train) & set(test)):
+        raise ValueError(f"season(s) {both} are in both train and test")
+    names = matches["season_name"]
+    if other := sorted(set(names.drop_nulls()) - set(train) - set(test)):
+        raise ValueError(
+            f"matches hold season(s) {other} outside train {list(train)} and test {list(test)}"
+        )
+    if nulls := names.null_count():
+        raise ValueError(f"season_name has {nulls} null value(s)")
+    if nulls := matches["match_date"].null_count():
+        raise ValueError(f"match_date has {nulls} null value(s); the date order needs every date")
+    held = names.is_in(list(test))
+    for side, seasons, rows in (
+        ("train", train, matches.filter(~held)),
+        ("test", test, matches.filter(held)),
+    ):
+        if missing := sorted(set(seasons) - set(rows["season_name"])):
+            raise ValueError(f"{side} season(s) {missing} have no match")
+    days = matches["match_date"].cast(pl.Int32).to_numpy()  # physical days: total on any Date
+    mask = held.to_numpy()
+    last, first = days[~mask].max(), days[mask].min()
+    if not last < first:
+        last_d, first_d = (str(np.datetime64(int(d), "D")) for d in (last, first))
+        raise ValueError(
+            f"the last train match ({last_d}) is not before the first test match ({first_d})"
+        )
+    test_ids = matches.filter(held)["match_id"]
+    label = ", ".join(sorted(set(matches.filter(held)["season_name"])))
+    return Holdout(pl.col("match_id").is_in(test_ids.implode()), label)
+
+
 def split_holdout(
-    shots: pl.DataFrame, holdout: tuple[str, str] = HOLDOUT
+    shots: pl.DataFrame, holdout: tuple[str, str] | Holdout = HOLDOUT
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Split shots into development data and one held-out competition-season.
+    """Split shots into development data and the held-out rows.
 
     Parameters
     ----------
     shots : polars.DataFrame
-        Shots with ``competition_id`` and ``season_id``.
-    holdout : tuple of str, default HOLDOUT
-        The ``(competition_id, season_id)`` to hold out.
+        Shots with the columns the hold-out reads.
+    holdout : tuple of str or Holdout, default HOLDOUT
+        A ``(competition_id, season_id)`` pair to hold out, or a :class:`Holdout`.
 
     Returns
     -------
@@ -259,7 +451,8 @@ def split_holdout(
     Raises
     ------
     ValueError
-        If either side is empty; the message names the pair.
+        Either side is empty (the message names the pair or the label); a null hold-out key
+        or another :func:`holdout_mask` error (a row is never dropped from both sides).
 
     Examples
     --------
@@ -267,16 +460,17 @@ def split_holdout(
     >>> [f.height for f in split_holdout(shots)]
     [1, 1]
     """
-    is_held = is_holdout(holdout)
-    dev, held = shots.filter(~is_held), shots.filter(is_held)
+    ho = holdout if isinstance(holdout, Holdout) else Holdout(is_holdout(holdout), repr(holdout))
+    mask = holdout_mask(shots, ho, "shots")
+    dev, held = shots.filter(~mask), shots.filter(mask)
     for side, frame in (("hold-out", held), ("development", dev)):
         if frame.height == 0:
-            raise ValueError(f"hold-out {holdout}: the {side} set is empty")
+            raise ValueError(f"hold-out {ho.label}: the {side} set is empty")
     return dev, held
 
 
-def load_xg_data(manifest: StrPath = DEFAULT_MANIFEST) -> XgData:
-    """Verify and load the StatsBomb snapshot, apply the exclusions and add match columns.
+def load_xg_data(manifest: StrPath = DEFAULT_MANIFEST, *, builder: str = "statsbomb") -> XgData:
+    """Verify and load a snapshot, apply the exclusions and add match columns.
 
     Shot/match consistency is not rechecked here: ``write_snapshot`` validated the shots
     against the matches table, and the manifest pins those files.
@@ -284,7 +478,11 @@ def load_xg_data(manifest: StrPath = DEFAULT_MANIFEST) -> XgData:
     Parameters
     ----------
     manifest : str or path, default DEFAULT_MANIFEST
-        Manifest of a snapshot written by the ``statsbomb`` builder.
+        Manifest of a snapshot written by ``builder``.
+    builder : str, default "statsbomb"
+        The snapshot builder, a key of :data:`FRAMES_BY_BUILDER`, which says whether
+        ``no_freeze_frame`` is an exclusion reason. The snapshot holds a ``freeze_frames``
+        table either way (empty for a provider without frames).
 
     Returns
     -------
@@ -296,7 +494,8 @@ def load_xg_data(manifest: StrPath = DEFAULT_MANIFEST) -> XgData:
     Raises
     ------
     ValueError
-        A snapshot written by another builder.
+        A ``builder`` not in :data:`FRAMES_BY_BUILDER` (checked before the manifest is read);
+        a snapshot written by another builder.
     football_core.io.snapshot.ManifestError, football_core.io.snapshot.SnapshotVerificationError
         From core, unchanged: a bad manifest, or a data file that does not hash as recorded.
 
@@ -308,14 +507,19 @@ def load_xg_data(manifest: StrPath = DEFAULT_MANIFEST) -> XgData:
     >>> data.penalties.group_by("reason").len().sort("reason").rows()  # doctest: +SKIP
     [('shootout', 363), ('penalty', 1118)]
     """
-    meta = snapshot.read_manifest(manifest)
-    if meta.builder != "statsbomb":
+    if builder not in FRAMES_BY_BUILDER:
         raise ValueError(
-            f"snapshot {meta.name!r} was written by builder {meta.builder!r}; expected 'statsbomb'"
+            f"unknown builder {builder!r}; expected one of {sorted(FRAMES_BY_BUILDER)}"
+        )
+    meta = snapshot.read_manifest(manifest)
+    if meta.builder != builder:
+        raise ValueError(
+            f"snapshot {meta.name!r} was written by builder {meta.builder!r}; expected {builder!r}"
         )
     tables = snapshot.load_snapshot(manifest, tables=("shots", "freeze_frames", "matches"))
     matches = tables["matches"]
-    kept, log = exclude(tables["shots"], tables["freeze_frames"])
+    frames_or_none = tables["freeze_frames"] if FRAMES_BY_BUILDER[builder] else None
+    kept, log = exclude(tables["shots"], frames_or_none)
     # m:1 keeps a hand-built snapshot with a duplicated match_id from multiplying shots.
     segments = matches.select("match_id", *MATCH_FEATURES).join(
         match_family(matches), on="match_id"

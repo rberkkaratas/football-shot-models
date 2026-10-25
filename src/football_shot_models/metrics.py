@@ -423,6 +423,58 @@ def check_thresholds(
     return tuple(checks)
 
 
+def group_weights(
+    groups: npt.NDArray[np.generic], n_boot: int, seed: int
+) -> tuple[npt.NDArray[np.intp], npt.NDArray[np.int64]]:
+    """The match bootstrap's draws: each shot's group index and the resampling weights.
+
+    A resample draws the ``m`` groups with replacement, so its weights are one multinomial
+    draw of ``m`` over ``m`` equal cells. :func:`bootstrap_gain` and :func:`by_group` both
+    use these weights, so a seed gives the same resamples in both.
+
+    Parameters
+    ----------
+    groups : numpy.ndarray
+        The resampling unit per shot (``match_id``); no null or NaN, one key type.
+    n_boot : int
+        Resamples, at least 1.
+    seed : int
+        Seed of ``numpy.random.default_rng``.
+
+    Returns
+    -------
+    inverse : numpy.ndarray
+        The index of each shot's group among the sorted unique groups.
+    weights : numpy.ndarray
+        Shape ``(n_boot, m)``: how often each group is drawn in each resample.
+
+    Raises
+    ------
+    ValueError
+        A null or NaN group, groups of mixed types, ``n_boot`` a bool or ``< 1``, fewer than
+        two groups.
+
+    Examples
+    --------
+    >>> inv, w = group_weights(np.array(["ws:2", "ws:1", "ws:2"]), 4, 0)
+    >>> inv.tolist(), w.shape, w.sum(axis=1).tolist()
+    ([1, 0, 1], (4, 2), [2, 2, 2, 2])
+    """
+    if bad := sum(k is None or k != k for k in groups.tolist()):  # k != k: NaN
+        raise ValueError(f"groups has {bad} null or NaN key(s)")
+    if isinstance(n_boot, bool) or n_boot < 1:
+        raise ValueError(f"n_boot must be an int >= 1, got {n_boot!r}")
+    try:
+        _, inv = np.unique(groups, return_inverse=True)
+    except TypeError as e:  # e.g. int and str keys together: not comparable
+        raise ValueError(f"groups must be keys of one type (match_id), got: {e}") from e
+    m = int(inv.max()) + 1 if inv.size else 0
+    if m < 2:
+        raise ValueError(f"the bootstrap needs at least 2 groups (matches), got {m}")
+    w = np.random.default_rng(seed).multinomial(m, np.full(m, 1.0 / m), size=n_boot)
+    return inv, w
+
+
 @dataclass(frozen=True)
 class GainCI:
     """A log-loss gain and its bootstrap interval.
@@ -509,10 +561,6 @@ def bootstrap_gain(
             raise ValueError("probabilities must be in [0, 1] (no NaN)")
     if groups.shape != y.shape:
         raise ValueError(f"groups has shape {groups.shape}, expected {y.shape}")
-    if bad := sum(k is None or k != k for k in groups.tolist()):  # k != k: NaN
-        raise ValueError(f"groups has {bad} null or NaN key(s)")
-    if isinstance(n_boot, bool) or n_boot < 1:
-        raise ValueError(f"n_boot must be an int >= 1, got {n_boot!r}")
 
     def loss(p: FloatArray) -> FloatArray:
         q = np.clip(p, EPS, 1.0 - EPS)
@@ -520,19 +568,146 @@ def bootstrap_gain(
         return out
 
     diff = loss(p_ref) - loss(p_new)
-    try:
-        _, inv = np.unique(groups, return_inverse=True)
-    except TypeError as e:  # e.g. int and str keys together: not comparable
-        raise ValueError(f"groups must be keys of one type (match_id), got: {e}") from e
-    m = int(inv.max()) + 1 if inv.size else 0
-    if m < 2:
-        raise ValueError(f"the bootstrap needs at least 2 groups (matches), got {m}")
+    inv, w = group_weights(groups, n_boot, seed)
+    m = w.shape[1]
     d = np.bincount(inv, weights=diff, minlength=m)
     n = np.bincount(inv, minlength=m).astype(np.float64)
-    w = np.random.default_rng(seed).multinomial(m, np.full(m, 1.0 / m), size=n_boot)
     gains = (w @ d) / (w @ n)
     low, high = np.quantile(gains, [0.025, 0.975])
     return GainCI(float(diff.mean()), float(low), float(high), n_boot, m)
+
+
+@dataclass(frozen=True)
+class GroupRow:
+    """Σ xG error and calibration of one group (a competition), with match-bootstrap intervals.
+
+    Attributes
+    ----------
+    key : str
+        The group.
+    shots, goals : int
+        Shots and goals.
+    xg : float
+        Σ p.
+    signed_error : float or None
+        ``(Σ xG - goals) / goals``; ``None`` with 0 goals.
+    error_ci : tuple of float or None
+        Its 95 % interval over match resamples within the group.
+    cal_slope : float or None
+        Calibration slope; ``None`` under ``min_shots`` shots or when not estimable.
+    slope_ci : tuple of float or None
+        Its 95 % interval.
+    """
+
+    key: str
+    shots: int
+    goals: int
+    xg: float
+    signed_error: float | None
+    error_ci: tuple[float, float] | None
+    cal_slope: float | None
+    slope_ci: tuple[float, float] | None
+
+
+def _interval(values: FloatArray) -> tuple[float, float]:
+    low, high = np.quantile(values, [0.025, 0.975])
+    return float(low), float(high)
+
+
+def by_group(
+    y: Outcomes,
+    p: FloatArray,
+    keys: pl.Series,
+    groups: npt.NDArray[np.generic],
+    min_shots: int,
+    *,
+    n_boot: int = N_BOOT,
+    seed: int = SEED,
+) -> tuple[GroupRow, ...]:
+    """Σ xG error and calibration slope per key, each with a match-bootstrap 95 % interval.
+
+    Within each key, a resample draws that key's matches with replacement
+    (:func:`group_weights`); the interval is the 2.5-97.5 percentile of the resampled values.
+    An interval is ``None`` when its point value is, when the key has fewer than 2 matches, or
+    when any resample has no goal (error) or no estimable slope (slope).
+
+    Parameters
+    ----------
+    y : numpy.ndarray of bool, or of 0 / 1
+        Outcomes, 1-D.
+    p : numpy.ndarray of float
+        Probabilities in [0, 1], the shape of ``y``.
+    keys : polars.Series
+        The group of each shot, ``String``, no null.
+    groups : numpy.ndarray
+        The resampling unit of each shot (``match_id``).
+    min_shots : int
+        A key with fewer shots gets no slope.
+    n_boot, seed : int, default N_BOOT, SEED
+        Resamples and seed.
+
+    Returns
+    -------
+    tuple of GroupRow
+        One per key, sorted by key.
+
+    Raises
+    ------
+    ValueError
+        ``keys`` not a String Series (a list or a bare ``str`` included) or holding a null;
+        ``y`` not 0 / 1; lengths that differ; a probability outside [0, 1] or NaN; no shot.
+
+    Examples
+    --------
+    >>> y = np.array([1, 0, 0, 1, 0, 0])
+    >>> p = np.array([0.5, 0.2, 0.3, 0.4, 0.1, 0.2])
+    >>> keys = pl.Series(["A", "A", "A", "A", "B", "B"])
+    >>> rows = by_group(y, p, keys, np.array(["ws:1", "ws:1", "ws:2", "ws:2", "ws:3", "ws:4"]),
+    ...                 min_shots=10, n_boot=50)
+    >>> [(r.key, r.shots, r.goals, round(r.signed_error, 2)) for r in rows if r.goals]
+    [('A', 4, 2, -0.3)]
+    >>> rows[1].signed_error, rows[1].error_ci, rows[0].cal_slope
+    (None, None, None)
+    """
+    if not isinstance(keys, pl.Series) or keys.dtype != pl.String:
+        got = keys.dtype if isinstance(keys, pl.Series) else type(keys).__name__
+        raise ValueError(f"keys must be a polars String Series, got {got}")
+    yf = np.asarray(y, dtype=np.float64)
+    if yf.ndim != 1 or not np.all((yf == 0.0) | (yf == 1.0)):
+        raise ValueError(f"y must be 1-D with values 0 / 1 only (no NaN), got shape {yf.shape}")
+    if not yf.size:
+        raise ValueError("by_group needs at least one shot")
+    if p.shape != yf.shape or keys.len() != yf.size or groups.shape != yf.shape:
+        raise ValueError(
+            f"p, keys and groups must have y's length {yf.size}, got {p.shape}, "
+            f"{keys.len()}, {groups.shape}"
+        )
+    if not np.all((p >= 0.0) & (p <= 1.0)):
+        raise ValueError("probabilities must be in [0, 1] (no NaN)")
+    if nulls := keys.null_count():
+        raise ValueError(f"keys has {nulls} null value(s)")
+    rows = []
+    for key in sorted(set(keys.to_list())):
+        m = (keys == key).to_numpy()
+        yk, pk, gk = yf[m], p[m], groups[m]
+        goals = int(yk.sum())
+        err = None if goals == 0 else float((pk.sum() - goals) / goals)
+        slope = calibration(yk, pk)[1] if yk.size >= min_shots else None
+        err_ci = slope_ci = None
+        if (err is not None or slope is not None) and np.unique(gk).size >= 2:
+            inv, w = group_weights(gk, n_boot, seed)
+            g_goals = w @ np.bincount(inv, weights=yk)
+            if err is not None and np.all(g_goals > 0):
+                err_ci = _interval((w @ np.bincount(inv, weights=pk) - g_goals) / g_goals)
+            if slope is not None:
+                idx = np.arange(yk.size)
+                draws = [calibration(yk[i], pk[i])[1] for i in (np.repeat(idx, b[inv]) for b in w)]
+                if all(s is not None for s in draws):
+                    slope_ci = _interval(np.array(draws, dtype=np.float64))
+        rows.append(
+            GroupRow(key, int(m.sum()), goals, float(pk.sum()), err, err_ci, slope, slope_ci)
+        )
+    return tuple(rows)
 
 
 JEFFREYS: Final[tuple[float, float]] = (0.5, 0.5)

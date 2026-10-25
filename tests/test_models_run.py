@@ -8,6 +8,8 @@ plus penalties, with a fixture-sized GBM grid swapped in for ``models.GBM``.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import re
 import subprocess
@@ -121,6 +123,8 @@ def test_models_run_gbm_card(models_run: dict[str, Any]) -> None:
     """§3.4: the GBM card's overview (verdict, then the StatsBomb sentence), features with the
     fitted sign map's lines, settings from the dev fit, gain rows over the best LR and
     StatsBomb, and the wide-DFK and training-mix limitations."""
+    from football_shot_models.gbm import MONOTONE
+
     r = models_run
     g = _gains(r)
     models, gbm = g["models"], g["gbm"]
@@ -134,13 +138,13 @@ def test_models_run_gbm_card(models_run: dict[str, Any]) -> None:
     feats = _section(card, "## Features")
     for f in models.GBM_FEATURES:
         assert ablation.FEATURE_ROWS[f] in feats, f
-    for column, sign in models.MONOTONE.items():
+    for column, sign in MONOTONE.items():
         word = "non-increasing" if sign < 0 else "non-decreasing"
         assert _sign_line(column, f"{word} — {models.MONOTONE_REASONS[column]}", feats)
     assert ARC in feats
     assert [c[0] for c in gbm.coefficients] == [
         "max_leaf_nodes", "iterations", "platt_intercept", "platt_slope",
-        *(f"monotone:{c}" for c in models.MONOTONE),
+        *(f"monotone:{c}" for c in MONOTONE),
     ]  # fmt: skip
     model = _section(card, "## Model")
     assert "Tuning and calibration see only the rows of the fit they belong to" in model
@@ -156,14 +160,16 @@ def test_models_run_gbm_card(models_run: dict[str, Any]) -> None:
 def test_models_run_penalties_and_stdout(models_run: dict[str, Any]) -> None:
     """§3.3, §3.4: the penalty rows and spread of ``XgData.penalties``, the penalty card from
     them, one summary line per evaluation and the summary table on stdout."""
+    from football_shot_models import penalties
+
     r = models_run
     g = _gains(r)
     models, run = g["models"], r["run"]
     pens = r["xg"].penalties
-    assert run.penalties == models.penalty_rows(pens)
-    assert run.spread == models.exchangeability(pens)
+    assert run.penalties == penalties.penalty_rows(pens)
+    assert run.spread == penalties.exchangeability(pens)
     context = cards.card_context(r["xg"], r["dev"], r["held"])
-    assert _card(r, "xg-penalty") == models.penalty_card(run.penalties, run.spread, context)
+    assert _card(r, "xg-penalty") == penalties.penalty_card(run.penalties, run.spread, context)
     out = r["stdout"]
     for ev in (*run.evaluations, run.benchmark):
         assert baselines.summary_line(ev) in out
@@ -249,11 +255,13 @@ def real_run(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     """One ``models.run`` on the real snapshot (about 8 min), shared by the four slow tests."""
     if not (REPO / "data" / "snapshots" / xc.SNAPSHOT).is_dir():
         pytest.skip("needs the real snapshot (make snapshot)")
-    from football_shot_models import models
+    from football_shot_models import cache, models
 
     manifest = REPO / "manifests" / f"{xc.SNAPSHOT}.json"
     docs = tmp_path_factory.mktemp("real") / "models"
-    result = models.run(manifest, docs_dir=docs)
+    # Spec MS4.prep §5.3: warm make reproduce reads data/cache; FSM_CACHE=off (reproduce-cold)
+    # gives None, so every fit runs.
+    result = models.run(manifest, docs_dir=docs, cache=cache.cache_root(REPO / "data" / "cache"))
     xg = data.load_xg_data(manifest)
     dev, held = data.split_holdout(xg.shots)
     return {"run": result, "docs": docs, "xg": xg, "dev": dev, "held": held}
@@ -340,3 +348,71 @@ def test_models_run_computed_holdout_lines(models_run: dict[str, Any]) -> None:
         else:
             assert "drop-one interval" not in limits, name
         assert "keeper group's includes it" not in limits and "Premier League 2015/16" not in limits
+
+
+# ---- MS4.prep §3.4: one hold-out value per run -------------------------------------------------
+
+
+@pytest.mark.parametrize("runner", ["models", "baselines"])
+def test_models_run_one_holdout(
+    runner: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MS4.prep §3.4, §7: ``data.pair_holdout`` is called once, and the very object it returns
+    (``is``, never ``==``) reaches ``data.split_holdout``, ``card_context`` and (models only)
+    ``penalties.penalty_rows``, each spied where the run looks it up; its label replaces the PL
+    label on every card that prints the hold-out label."""
+    import inspect
+
+    from football_shot_models import models, penalties
+
+    label = "Spy League 2099/2100"
+    made: list[data.Holdout] = []
+    real_pair = data.pair_holdout
+
+    def pair_spy(*args: Any, **kwargs: Any) -> data.Holdout:
+        ho = data.Holdout(real_pair(*args, **kwargs).expr, label)
+        made.append(ho)
+        return ho
+
+    seen: dict[str, list[object]] = {}
+
+    def spy(owner: Any, name: str, param: str) -> None:
+        real = getattr(owner, name)
+        sig = inspect.signature(real)
+
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            bound = sig.bind(*args, **kwargs)
+            seen.setdefault(name, []).append(bound.arguments.get(param))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, wrapper)
+
+    monkeypatch.setattr(data, "pair_holdout", pair_spy)
+    spy(data, "split_holdout", "holdout")
+    docs = tmp_path / "cards"
+    out = io.StringIO()
+    if runner == "models":
+        spy(models, "card_context", "holdout")
+        spy(penalties, "penalty_rows", "holdout")
+        manifest = mc.write_models_snapshot(tmp_path / "fixture")
+        monkeypatch.setattr(models, "GBM", mc.tiny_gbm(models))
+        with contextlib.redirect_stdout(out):
+            models.run(manifest, docs_dir=docs)
+        expected = {"split_holdout", "card_context", "penalty_rows"}
+    else:
+        spy(baselines, "card_context", "holdout")
+        root = tmp_path / "fixture"
+        manifest = xc.write_fixture_snapshot(root)
+        with contextlib.redirect_stdout(out):
+            baselines.run(manifest, root=root, docs_dir=docs)
+        expected = {"split_holdout", "card_context"}
+    assert len(made) == 1
+    assert set(seen) == expected
+    for name, values in seen.items():
+        assert values and all(v is made[0] for v in values), name
+    rendered = [p for p in docs.iterdir() if p.name != "xg-penalty.md"]  # render_card's Data line
+    assert len(rendered) == (4 if runner == "models" else 3)
+    for path in rendered:
+        assert f"hold-out {label}" in path.read_text(encoding="utf-8"), path.name
+    for path in docs.iterdir():
+        assert "Premier League 2015/2016" not in path.read_text(encoding="utf-8"), path.name

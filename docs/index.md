@@ -13,6 +13,7 @@ shot-stopping models, built step by step and documented with model cards.
   [LR splines + body part](models/xg-lr-splines.md), [+ context](models/xg-lr-context.md),
   [+ freeze frames](models/xg-lr-frames.md) (M1.2 / M1.3);
   [monotone GBM + Platt](models/xg-gbm.md), the headline xG model (M1.4);
-  [penalty conversion](models/xg-penalty.md) (M1.5).
+  [penalty conversion](models/xg-penalty.md) (M1.5);
+  [xG v1](models/xg-v1.md), the WhoScored / Opta model next to the legacy v0 (M1.6 / M1.7).
 - [Model card template](model-card-template.md): filled in for every trained model.
 - [References](references.md)

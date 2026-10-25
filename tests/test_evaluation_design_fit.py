@@ -85,7 +85,7 @@ def test_design_fit_null_match_id(dev_held: tuple[pl.DataFrame, pl.DataFrame]) -
 def test_design_fit_gbm_refusal_passes_through() -> None:
     """§3.1, §4: the GBM's own refusal (constant inner scores) reaches the caller unchanged,
     not as the harness's rank-deficient-design message."""
-    from football_shot_models import models
+    from football_shot_models import gbm
 
     _, y, groups = mc.constant_xy()
     frame = pl.DataFrame(
@@ -97,7 +97,7 @@ def test_design_fit_gbm_refusal_passes_through() -> None:
         }
     )
     make = functools.partial(
-        models.MonotoneGBM, {"distance_m": -1}, leaf_grid=(4,), max_iter=20, step=10
+        gbm.MonotoneGBM, {"distance_m": -1}, leaf_grid=(4,), max_iter=20, step=10
     )
     spec = evaluation.ModelSpec("gbm", "GBM", ("distance_m", "angle_rad"), make)
     with pytest.raises(ValueError) as info:

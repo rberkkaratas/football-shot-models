@@ -52,4 +52,7 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests", "src"]
 addopts = "-q --doctest-modules -m 'not slow'"
-markers = ["slow: needs the real snapshot; run with make reproduce"]
+markers = [
+    "slow: needs the real snapshot; run with make reproduce",
+    "whoscored: needs the private WhoScored snapshot and v0",
+]

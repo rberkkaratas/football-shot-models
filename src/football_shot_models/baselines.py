@@ -245,11 +245,12 @@ def run(
     """
     xg = data.load_xg_data(manifest)
     logged = data.write_exclusion_log(xg.exclusions, manifest, root=root)
-    dev, held = data.split_holdout(xg.shots)
+    ho = data.pair_holdout(xg.matches)
+    dev, held = data.split_holdout(xg.shots, ho)
     folds = cv_folds(dev)
     evaluations = tuple(evaluate(b, dev, held, folds) for b in BASELINES)
     benchmark = evaluate_benchmark(dev, held, folds)
-    context = card_context(xg, dev, held)
+    context = card_context(xg, dev, held, ho)
     out = Path(docs_dir)
     out.mkdir(parents=True, exist_ok=True)
     for ev in evaluations:

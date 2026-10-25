@@ -37,10 +37,10 @@ REASONS = {
 @pytest.fixture(scope="module")
 def signal_fit() -> tuple[Any, Any, Any, Any]:
     """One MonotoneGBM fitted on the 600-row signal fixture with ``min_samples_leaf=20``."""
-    from football_shot_models import models
+    from football_shot_models import gbm
 
     x, y, groups = mc.signal_xy()
-    m = models.MonotoneGBM(mc.SIGNAL_MAP, **mc.SIGNAL)
+    m = gbm.MonotoneGBM(mc.SIGNAL_MAP, **mc.SIGNAL)
     m.fit_design(x, y, names=mc.SIGNAL_NAMES, groups=groups)
     return m, x, y, groups
 
@@ -48,20 +48,20 @@ def signal_fit() -> tuple[Any, Any, Any, Any]:
 def test_gbm_constants_and_spec() -> None:
     """§1.3-§1.4, §3.1: the fixed settings, the sign map, its reasons, the spec, ``make_hgb`` and
     no class rebalancing anywhere (§9)."""
-    from football_shot_models import models
+    from football_shot_models import gbm, models
 
-    assert (models.LEARNING_RATE, models.L2_REGULARIZATION) == (0.05, 1.0)
-    assert (models.MIN_SAMPLES_LEAF, models.LEAVES) == (100, (8, 16, 32))
-    assert (models.MAX_ITER, models.STEP, models.INNER_SPLITS) == (600, 50, 4)
-    assert dict(models.MONOTONE) == DEFAULT_MONOTONE
+    assert (gbm.LEARNING_RATE, gbm.L2_REGULARIZATION) == (0.05, 1.0)
+    assert (gbm.MIN_SAMPLES_LEAF, gbm.LEAVES) == (100, (8, 16, 32))
+    assert (gbm.MAX_ITER, gbm.STEP, gbm.INNER_SPLITS) == (600, 50, 4)
+    assert dict(gbm.MONOTONE) == DEFAULT_MONOTONE
     with pytest.raises(TypeError):
-        models.MONOTONE["gk_to_goal_m"] = 1  # type: ignore[index]  # read-only mapping
+        gbm.MONOTONE["gk_to_goal_m"] = 1  # type: ignore[index]  # read-only mapping
     assert dict(models.MONOTONE_REASONS) == REASONS
     spec = models.GBM
     assert (spec.name, spec.title) == ("xg-gbm", "Monotone GBM + Platt")
-    assert spec.coefficients is models.gbm_settings
+    assert spec.coefficients is gbm.gbm_settings
     fresh = spec.make()
-    assert isinstance(fresh, models.MonotoneGBM)
+    assert isinstance(fresh, gbm.MonotoneGBM)
     assert isinstance(fresh, evaluation.DesignFit)
     assert dict(fresh.get_params()) == {
         "monotone": DEFAULT_MONOTONE,
@@ -72,13 +72,13 @@ def test_gbm_constants_and_spec() -> None:
         "min_samples_leaf": 100,
     }
     assert not any("weight" in k for k in fresh.get_params())
-    hgb = models.make_hgb(16, 200, [-1, 1, 0])
+    hgb = gbm.make_hgb(16, 200, [-1, 1, 0])
     p = hgb.get_params()
     assert (p["learning_rate"], p["max_iter"], p["max_leaf_nodes"]) == (0.05, 200, 16)
     assert (p["min_samples_leaf"], p["l2_regularization"]) == (100, 1.0)
     assert (p["early_stopping"], p["random_state"], p["class_weight"]) == (False, 0, None)
     assert list(p["monotonic_cst"]) == [-1, 1, 0]
-    assert models.make_hgb(8, 50, [0], min_leaf=20).get_params()["min_samples_leaf"] == 20
+    assert gbm.make_hgb(8, 50, [0], min_leaf=20).get_params()["min_samples_leaf"] == 20
     # the LR steps are not DesignFit: the harness keeps calling their fit(x, y)
     assert not isinstance(ablation.make_lr(), evaluation.DesignFit)
 
@@ -142,12 +142,12 @@ def test_gbm_constraint_names(monotone: dict[str, Any], named: str) -> None:
     """§3.1 step 1: an absent constrained column and every sign that is a bool, not an int, or
     not -1 / +1 is a ValueError naming it, before any fit (two matches only: the inner
     ``GroupKFold`` would raise a different error if the grid ran first)."""
-    from football_shot_models import models
+    from football_shot_models import gbm
 
     x, y, _ = mc.signal_xy()
     groups = np.array(["sb:m01", "sb:m02"] * 300)
     with pytest.raises(ValueError) as info:
-        models.MonotoneGBM(monotone, **mc.SIGNAL).fit_design(
+        gbm.MonotoneGBM(monotone, **mc.SIGNAL).fit_design(
             x, y, names=mc.SIGNAL_NAMES, groups=groups
         )
     assert named in str(info.value)
@@ -157,10 +157,10 @@ def test_gbm_constraint_names(monotone: dict[str, Any], named: str) -> None:
 def test_gbm_platt_slope_positive() -> None:
     """§1.5, §3.1 step 4: inner out-of-fold scores that rank goals backwards give a Platt slope
     <= 0, which would reverse the constraints: refused (spec_guards.out: b = -4.019)."""
-    from football_shot_models import models
+    from football_shot_models import gbm
 
     x, y, groups = mc.no_signal_xy()
-    m = models.MonotoneGBM({"a": -1}, leaf_grid=(4,), max_iter=20, step=10)
+    m = gbm.MonotoneGBM({"a": -1}, leaf_grid=(4,), max_iter=20, step=10)
     slope = r"^Platt slope -[0-9.]+ <= 0: the inner out-of-fold scores do not rank goals"
     with pytest.raises(ValueError, match=slope):
         m.fit_design(x, y, names=("a", "b"), groups=groups)
@@ -172,10 +172,10 @@ def test_gbm_platt_slope_positive() -> None:
 def test_gbm_constant_inner_scores() -> None:
     """§3.1 step 3: constant inner scores (no tree could split) are refused before Platt, with
     the setting in the message, so the harness never reports a rank-deficient design."""
-    from football_shot_models import models
+    from football_shot_models import gbm
 
     x, y, groups = mc.constant_xy()
-    m = models.MonotoneGBM({"a": -1}, leaf_grid=(4,), max_iter=20, step=10)
+    m = gbm.MonotoneGBM({"a": -1}, leaf_grid=(4,), max_iter=20, step=10)
     message = (
         "the inner out-of-fold scores are constant (no inner tree could split with "
         "min_samples_leaf=100): Platt scaling is not estimable"
@@ -188,10 +188,10 @@ def test_gbm_constant_inner_scores() -> None:
 def test_gbm_fit_requires_design() -> None:
     """§3.1: plain ``fit(x, y)`` is a TypeError (names and groups come from the harness);
     ``predict_proba`` before a fit is a ValueError."""
-    from football_shot_models import models
+    from football_shot_models import gbm
 
     x, y, _ = mc.signal_xy()
-    m = models.MonotoneGBM(mc.SIGNAL_MAP, **mc.SIGNAL)
+    m = gbm.MonotoneGBM(mc.SIGNAL_MAP, **mc.SIGNAL)
     with pytest.raises(TypeError, match="fit_design"):
         m.fit(x, y)
     with pytest.raises(ValueError, match="not fitted"):
@@ -203,11 +203,11 @@ def test_gbm_deterministic(signal_fit: tuple[Any, Any, Any, Any]) -> None:
     OpenMP thread as with the default."""
     from threadpoolctl import threadpool_limits
 
-    from football_shot_models import models
+    from football_shot_models import gbm
 
     first, x, y, groups = signal_fit
     with threadpool_limits(limits=1, user_api="openmp"):
-        again = models.MonotoneGBM(mc.SIGNAL_MAP, **mc.SIGNAL).fit_design(
+        again = gbm.MonotoneGBM(mc.SIGNAL_MAP, **mc.SIGNAL).fit_design(
             x, y, names=mc.SIGNAL_NAMES, groups=groups
         )
     assert (again.leaves_, again.iters_, again.platt_) == (
@@ -223,7 +223,7 @@ def test_gbm_inner_folds_grouped() -> None:
     """§1.4, §9: the inner test folds partition the rows and no match is in two of them (near
     miss: two matches whose rows are spread over the whole array, which a positional split
     would cut)."""
-    from football_shot_models import models
+    from football_shot_models import gbm
 
     x, y, _ = mc.signal_xy()
     # every 15th row belongs to sb:mA or sb:mB in turn: two matches spread over the whole array
@@ -233,7 +233,7 @@ def test_gbm_inner_folds_grouped() -> None:
             for i in range(600)
         ]
     )
-    m = models.MonotoneGBM(mc.SIGNAL_MAP, **mc.SIGNAL).fit_design(
+    m = gbm.MonotoneGBM(mc.SIGNAL_MAP, **mc.SIGNAL).fit_design(
         x, y, names=mc.SIGNAL_NAMES, groups=groups
     )
     assert len(m.inner_test_) == mc.SIGNAL["inner_splits"]
@@ -250,7 +250,7 @@ def test_gbm_platt_cross_fitted(signal_fit: tuple[Any, Any, Any, Any]) -> None:
     other inner folds; ``platt_`` is the unpenalised LR of y on ``inner_raw_`` (never in-sample
     scores); the final model is refitted on all rows with the chosen configuration and
     ``predict_proba = expit(a + b * raw)``."""
-    from football_shot_models import models
+    from football_shot_models import gbm
 
     m, x, y, _ = signal_fit
     # the monotone property is not vacuous: the fitted model moves with d
@@ -264,7 +264,7 @@ def test_gbm_platt_cross_fitted(signal_fit: tuple[Any, Any, Any, Any]) -> None:
     assert m.inner_raw_.shape == (600,)
     for test in m.inner_test_:
         train = np.setdiff1d(np.arange(600), test)
-        fold = models.make_hgb(m.leaves_, m.iters_, cst, mc.SIGNAL["min_samples_leaf"])
+        fold = gbm.make_hgb(m.leaves_, m.iters_, cst, mc.SIGNAL["min_samples_leaf"])
         raw = fold.fit(x[train], y[train]).decision_function(x[test])
         np.testing.assert_allclose(m.inner_raw_[test], raw, rtol=0, atol=1e-12)
     lr = LogisticRegression(C=math.inf, solver="newton-cholesky", tol=1e-10, max_iter=1000)
@@ -288,11 +288,11 @@ def test_gbm_platt_cross_fitted(signal_fit: tuple[Any, Any, Any, Any]) -> None:
 def test_gbm_tie_break(monkeypatch: pytest.MonkeyPatch) -> None:
     """§1.4: equal inner losses go to the smaller model: fewer leaves (whatever the grid order),
     then fewer iterations."""
-    from football_shot_models import models
+    from football_shot_models import gbm
 
-    monkeypatch.setattr(models, "log_loss", lambda *a, **k: 0.5)
+    monkeypatch.setattr(gbm, "log_loss", lambda *a, **k: 0.5)
     x, y, groups = mc.signal_xy()
-    m = models.MonotoneGBM(mc.SIGNAL_MAP, **{**mc.SIGNAL, "leaf_grid": (8, 4)})
+    m = gbm.MonotoneGBM(mc.SIGNAL_MAP, **{**mc.SIGNAL, "leaf_grid": (8, 4)})
     m.fit_design(x, y, names=mc.SIGNAL_NAMES, groups=groups)
     assert (m.leaves_, m.iters_) == (4, mc.SIGNAL["step"])
 
@@ -300,11 +300,11 @@ def test_gbm_tie_break(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_gbm_settings(signal_fit: tuple[Any, Any, Any, Any]) -> None:
     """§3.1: the card's settings rows from the fitted instance (its own sign map, in order);
     a model that is not a MonotoneGBM is a TypeError."""
-    from football_shot_models import models
+    from football_shot_models import gbm
 
     m, _, _, _ = signal_fit
     a, b = m.platt_
-    assert models.gbm_settings(m, mc.SIGNAL_NAMES) == (
+    assert gbm.gbm_settings(m, mc.SIGNAL_NAMES) == (
         ("max_leaf_nodes", m.leaves_, m.leaves_),
         ("iterations", m.iters_, m.iters_),
         ("platt_intercept", a, a),
@@ -313,18 +313,18 @@ def test_gbm_settings(signal_fit: tuple[Any, Any, Any, Any]) -> None:
         ("monotone:a", 1, 1),
     )
     with pytest.raises(TypeError):
-        models.gbm_settings(evaluation.BaseRate(), ())
+        gbm.gbm_settings(evaluation.BaseRate(), ())
 
 
 def test_gbm_refit_and_platt_use_chosen_iterations(monkeypatch: pytest.MonkeyPatch) -> None:
     """run3-ms3 (QA 12), §1.4-§1.5: with a chosen iteration count below ``max_iter`` (a flat inner
     loss picks the first stop), the final refit uses that count, ``inner_raw_`` holds the staged
     scores at that count (not the last stage), and Platt is fitted on them."""
-    from football_shot_models import models
+    from football_shot_models import gbm
 
-    monkeypatch.setattr(models, "log_loss", lambda *a, **k: 0.5)
+    monkeypatch.setattr(gbm, "log_loss", lambda *a, **k: 0.5)
     x, y, groups = mc.signal_xy()
-    m = models.MonotoneGBM(mc.SIGNAL_MAP, **mc.SIGNAL)
+    m = gbm.MonotoneGBM(mc.SIGNAL_MAP, **mc.SIGNAL)
     m.fit_design(x, y, names=mc.SIGNAL_NAMES, groups=groups)
     assert m.iters_ == mc.SIGNAL["step"] < mc.SIGNAL["max_iter"]  # the near miss is live
     assert m.model_ is not None
@@ -332,7 +332,7 @@ def test_gbm_refit_and_platt_use_chosen_iterations(monkeypatch: pytest.MonkeyPat
     cst = [mc.SIGNAL_MAP.get(n, 0) for n in mc.SIGNAL_NAMES]
     for test in m.inner_test_:
         train = np.setdiff1d(np.arange(y.size), test)
-        fold = models.make_hgb(m.leaves_, mc.SIGNAL["max_iter"], cst, mc.SIGNAL["min_samples_leaf"])
+        fold = gbm.make_hgb(m.leaves_, mc.SIGNAL["max_iter"], cst, mc.SIGNAL["min_samples_leaf"])
         staged = list(fold.fit(x[train], y[train]).staged_decision_function(x[test]))
         np.testing.assert_allclose(m.inner_raw_[test], staged[m.iters_ - 1], rtol=0, atol=1e-12)
         assert not np.allclose(m.inner_raw_[test], staged[-1])
@@ -352,9 +352,9 @@ def test_gbm_refit_and_platt_use_chosen_iterations(monkeypatch: pytest.MonkeyPat
 def test_gbm_bad_grid(settings: dict[str, Any], match: str) -> None:
     """run3-ms3 (QA 17): an empty leaf grid or a step outside [1, max_iter] is a named
     ValueError, not a bare ``min()`` error."""
-    from football_shot_models import models
+    from football_shot_models import gbm
 
     x, y, groups = mc.signal_xy()
-    m = models.MonotoneGBM(mc.SIGNAL_MAP, **{**mc.SIGNAL, **settings})
+    m = gbm.MonotoneGBM(mc.SIGNAL_MAP, **{**mc.SIGNAL, **settings})
     with pytest.raises(ValueError, match=match):
         m.fit_design(x, y, names=mc.SIGNAL_NAMES, groups=groups)

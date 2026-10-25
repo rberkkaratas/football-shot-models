@@ -19,6 +19,11 @@ match-bootstrap interval (:func:`~football_shot_models.metrics.bootstrap_gain`),
 two evaluations that were not scored on the same folds and rows: a gain between misaligned
 predictions would be wrong without any error.
 
+**Cached predictions.** :func:`evaluate` can read a spec's predictions from a
+:class:`~football_shot_models.cache.PredictionCache` instead of fitting, when the data, the
+code, the spec and the rows all match; everything after the fits (scores, comparisons, cards)
+is computed the same way either way. The leakage guard runs on a hit too.
+
 **Fits fail closed.** A ``ConvergenceWarning`` and, for the ``newton-cholesky`` solver, a
 singular Hessian (``scipy.linalg.LinAlgWarning``, after which scikit-learn would quietly switch
 to lbfgs) are errors, so every fit is the one the model card describes.
@@ -40,7 +45,10 @@ from sklearn.metrics import log_loss
 from sklearn.model_selection import GroupKFold
 from sklearn.pipeline import Pipeline
 
-from football_shot_models.features import design_matrix
+from football_shot_models import features
+from football_shot_models.cache import PredictionCache, Predictions
+from football_shot_models.cache import identity as cache_identity
+from football_shot_models.features import Guard, design_matrix
 from football_shot_models.metrics import GainCI, Scores, bootstrap_gain, mean_scores, score
 
 FloatArray = npt.NDArray[np.float64]
@@ -123,6 +131,11 @@ class ModelSpec:
     coefficients : callable, optional
         ``coefficients(model, design_names)`` gives ``(term, standardised, natural units)``
         rows of the fit on all of dev for the card; ``None`` for a model without any.
+    guard : callable, optional
+        The leakage guard of ``features`` (:data:`~football_shot_models.features.Guard`), run
+        on every fit, prediction and cache hit; ``None`` is
+        :func:`~football_shot_models.features.check_xg_features`, looked up when called. A
+        guard decides only whether a fit may run, never what it computes.
     """
 
     name: str
@@ -130,6 +143,7 @@ class ModelSpec:
     features: tuple[str, ...]
     make: Callable[[], Estimator]
     coefficients: Callable[[Estimator, tuple[str, ...]], Coefficients] | None = None
+    guard: Guard | None = None
 
 
 @dataclass(frozen=True)
@@ -202,7 +216,7 @@ def _require_model(spec: object) -> ModelSpec:
 def _fit(spec: ModelSpec, train: pl.DataFrame, freeze_frames: pl.DataFrame | None) -> Estimator:
     if train.height == 0:
         raise ValueError(f"{spec.name}: empty training set")
-    x, names = design_matrix(train, spec.features, freeze_frames=freeze_frames)
+    x, names = design_matrix(train, spec.features, freeze_frames=freeze_frames, guard=spec.guard)
     model = spec.make()
     if isinstance(model, DesignFit) and (nulls := train["match_id"].null_count()):
         raise ValueError(f"{spec.name}: match_id has {nulls} null value(s) in the training rows")
@@ -234,7 +248,7 @@ def _fit(spec: ModelSpec, train: pl.DataFrame, freeze_frames: pl.DataFrame | Non
 def _predict(
     model: Estimator, spec: ModelSpec, shots: pl.DataFrame, freeze_frames: pl.DataFrame | None
 ) -> FloatArray:
-    x, _ = design_matrix(shots, spec.features, freeze_frames=freeze_frames)
+    x, _ = design_matrix(shots, spec.features, freeze_frames=freeze_frames, guard=spec.guard)
     p: FloatArray = np.ascontiguousarray(model.predict_proba(x)[:, 1], dtype=np.float64)
     return p
 
@@ -334,6 +348,36 @@ def _evaluation(
     )
 
 
+def _cached(
+    spec: ModelSpec,
+    dev: pl.DataFrame,
+    held: pl.DataFrame,
+    folds: Folds,
+    freeze_frames: pl.DataFrame | None,
+    cache: PredictionCache,
+) -> tuple[str, Predictions | None]:
+    """The spec's cache identity and its entry, after the checks a fit would make first."""
+    for side, frame in (("dev", dev), ("held", held)):
+        if "shot_id" not in frame.columns:
+            raise ValueError(f"{spec.name}: the prediction cache needs shot_id in {side}")
+    key = cache_identity(
+        spec.name, spec.features, spec.make().get_params(), dev["shot_id"], held["shot_id"]
+    )
+    hit = cache.load(spec.name, key, folds)
+    if hit is None:
+        return key, None
+    # a warm run refuses what a cold one refuses: the leakage guard, a frame feature without frames
+    (spec.guard or features.check_xg_features)(spec.features, features.DERIVED)
+    for name in spec.features:
+        sources = features.DERIVED[name].sources if name in features.DERIVED else ()
+        if freeze_frames is None and any(table == "freeze_frames" for table, _ in sources):
+            raise ValueError(f"derived feature {name!r} reads freeze_frames; pass freeze_frames=")
+    sizes = (hit.oof.size, hit.train.size, hit.holdout.size)
+    if sizes != (dev.height, dev.height, held.height):
+        raise ValueError(f"cache: the {spec.name} entry holds {sizes} predictions; delete it")
+    return key, hit
+
+
 def evaluate(
     spec: ModelSpec,
     dev: pl.DataFrame,
@@ -341,15 +385,19 @@ def evaluate(
     folds: Folds,
     *,
     freeze_frames: pl.DataFrame | None = None,
+    cache: PredictionCache | None = None,
 ) -> Evaluation:
     """Grouped-CV, in-sample and hold-out scores of one model.
 
     ``freeze_frames`` is passed to every ``design_matrix`` call, as in :func:`fit_predict`.
+    With a ``cache``, a matching entry replaces the fits (after the leakage guard), and a miss
+    fits as usual, then writes the entry.
 
     Raises
     ------
     TypeError, ValueError
-        As :func:`fit_predict`.
+        As :func:`fit_predict`; with a cache, also a frame without ``shot_id``, a bad
+        ``shot_id`` (:func:`~football_shot_models.cache.identity`) or an unreadable entry.
 
     Examples
     --------
@@ -358,16 +406,21 @@ def evaluate(
     0.2968
     """
     spec, ff = _require_model(spec), freeze_frames
+    key, hit = (None, None) if cache is None else _cached(spec, dev, held, folds, ff, cache)
+    if hit is not None:
+        fold_p = [hit.oof[test] for _, test in folds]
+        return _evaluation(spec, dev, held, fold_p, folds, hit.train, hit.holdout, hit.coefficients)
     fold_p = [fit_predict(spec, dev[train], dev[test], freeze_frames=ff) for train, test in folds]
     model = _fit(spec, dev, ff)
     coefficients: Coefficients = ()
     if spec.coefficients is not None:
-        _, names = design_matrix(dev.head(0), spec.features, freeze_frames=ff)
+        _, names = design_matrix(dev.head(0), spec.features, freeze_frames=ff, guard=spec.guard)
         coefficients = spec.coefficients(model, names)
-    return _evaluation(
-        spec, dev, held, fold_p, folds,
-        _predict(model, spec, dev, ff), _predict(model, spec, held, ff), coefficients,
-    )  # fmt: skip
+    p_train, p_held = _predict(model, spec, dev, ff), _predict(model, spec, held, ff)
+    ev = _evaluation(spec, dev, held, fold_p, folds, p_train, p_held, coefficients)
+    if cache is not None and key is not None:
+        cache.save(spec.name, key, folds, Predictions(ev.oof, p_train, p_held, coefficients))
+    return ev
 
 
 def _column(shots: pl.DataFrame, column: str) -> FloatArray:
@@ -399,21 +452,30 @@ def evaluate_benchmark(
 
 
 def best(evaluations: Sequence[Evaluation]) -> Evaluation:
-    """The model with the lowest grouped-CV log loss; a benchmark never qualifies.
+    """The model with the lowest grouped-CV log loss; a benchmark or an ablation never qualifies.
+
+    An ablation is a spec with an ``ABLATION_ONLY`` feature
+    (:func:`~football_shot_models.features.uses_ablation_only`), whatever its guard.
 
     Raises
     ------
     ValueError
-        If no evaluation is of a ``ModelSpec``.
+        If no evaluation is of a ``ModelSpec`` without an ablation feature.
 
     Examples
     --------
     >>> best(evaluations).spec.name  # doctest: +SKIP
     'xg-lr-distance-angle-body-part'
     """
-    candidates = [ev for ev in evaluations if isinstance(ev.spec, ModelSpec)]
+    candidates = [
+        ev
+        for ev in evaluations
+        if isinstance(ev.spec, ModelSpec) and not features.uses_ablation_only(ev.spec.features)
+    ]
     if not candidates:
-        raise ValueError("no model evaluation to choose from")
+        raise ValueError(
+            "no model evaluation to choose from (benchmarks and ablations never qualify)"
+        )
     return min(candidates, key=lambda ev: ev.cv.log_loss)
 
 

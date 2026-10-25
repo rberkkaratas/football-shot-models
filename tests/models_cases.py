@@ -296,7 +296,9 @@ def tiny_gbm(models: Any, monotone: dict[str, int] | None = None) -> evaluation.
     import dataclasses
     import functools
 
+    from football_shot_models import gbm
+
     args = () if monotone is None else (monotone,)
-    make = functools.partial(models.MonotoneGBM, *args, **TINY)
+    make = functools.partial(gbm.MonotoneGBM, *args, **TINY)
     spec: evaluation.ModelSpec = dataclasses.replace(models.GBM, make=make)
     return spec

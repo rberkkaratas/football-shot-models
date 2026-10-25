@@ -420,7 +420,7 @@ def test_summary_table() -> None:
     """§3.4: every model then every benchmark, the headline in bold, calibration slopes (``n/a``
     for None) and the signed hold-out Σ xG error; then the StatsBomb sentence, the penalty line
     and the match-xG sentence; nothing claims a CI inside the window or a win over StatsBomb."""
-    from football_shot_models import models
+    from football_shot_models import models, penalties
 
     s0 = mc.fake_eval(S0, holdout=mc.scores(goals=913, xg=975.0, log_loss=0.2721, slope=0.965))
     s3 = mc.fake_eval(S3, holdout=mc.scores(goals=913, xg=960.2, log_loss=0.2547, slope=None))
@@ -432,7 +432,7 @@ def test_summary_table() -> None:
         "over StatsBomb xG", mc.gain(0.0021, 0.0012, 0.0031), mc.gain(-0.0013, -0.004, 0.0016)
     )
     rate = metrics.beta_interval(7, 10)
-    penalty = models.PenaltyRow("in-game", rate, 6, 0.7835)
+    penalty = penalties.PenaltyRow("in-game", rate, 6, 0.7835)
     text = models.summary_table((s0, s3, gbm), (sb,), gbm, penalty, sb_gain)
     assert _header(text) == [
         "Model", "CV log loss", "CV AUC", "CV cal. slope", "Hold-out log loss",

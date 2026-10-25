@@ -40,6 +40,7 @@ from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from football_shot_models import baselines, features
+from football_shot_models.cache import PredictionCache
 from football_shot_models.cards import CardContext, CardText, fmt, gain_cell, render_card, side
 from football_shot_models.evaluation import (
     Comparison,
@@ -458,9 +459,16 @@ def wide_dfk(ev: Evaluation, benchmark: Evaluation, dev: pl.DataFrame) -> str:
 
 
 def evaluate_steps(
-    dev: pl.DataFrame, held: pl.DataFrame, folds: Folds, freeze_frames: pl.DataFrame
+    dev: pl.DataFrame,
+    held: pl.DataFrame,
+    folds: Folds,
+    freeze_frames: pl.DataFrame,
+    *,
+    cache: PredictionCache | None = None,
 ) -> tuple[tuple[Evaluation, ...], tuple[Evaluation, ...]]:
     """The steps (``STEPS`` order) and their variants (``VARIANTS`` order), on the same folds.
+
+    ``cache`` is passed to every :func:`~football_shot_models.evaluation.evaluate`.
 
     Examples
     --------
@@ -468,9 +476,11 @@ def evaluate_steps(
     >>> [ev.spec.name for ev in steps]  # doctest: +SKIP
     ['xg-lr-splines', 'xg-lr-context', 'xg-lr-frames']
     """
-    ff = freeze_frames
-    steps = tuple(evaluate(s, dev, held, folds, freeze_frames=ff) for s in STEPS)
-    variants = tuple(evaluate(v.spec(), dev, held, folds, freeze_frames=ff) for v in VARIANTS)
+    ff, pc = freeze_frames, cache
+    steps = tuple(evaluate(s, dev, held, folds, freeze_frames=ff, cache=pc) for s in STEPS)
+    variants = tuple(
+        evaluate(v.spec(), dev, held, folds, freeze_frames=ff, cache=pc) for v in VARIANTS
+    )
     return steps, variants
 
 

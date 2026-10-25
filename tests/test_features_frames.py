@@ -183,10 +183,15 @@ def _population(draw: st.DrawFn) -> tuple[pl.DataFrame, pl.DataFrame, list[int]]
             fixed.append((mate, keeper and not seen[mate], x, y))
             seen[mate] |= keeper
         players[sid] = fixed
+    # MS4.v1 §2.3: `assist` is registered, so every shot has an assist type (never cutback)
     shots = _shots(locations).with_columns(
         situation=pl.Series([draw(_situations) for _ in range(n)], dtype=schema.SITUATION),
         technique=pl.Series(
             [draw(st.sampled_from(schema.TECHNIQUES)) for _ in range(n)], dtype=schema.TECHNIQUE
+        ),
+        assist_type=pl.Series(
+            [draw(st.sampled_from(schema.ASSIST_TYPES[:-1])) for _ in range(n)],
+            dtype=schema.ASSIST_TYPE,
         ),
     )
     subset = draw(

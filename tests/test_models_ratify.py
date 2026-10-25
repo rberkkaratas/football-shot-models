@@ -12,6 +12,7 @@ section appears on that step card only); QA choice 4 by ``::test_gbm_card_monoto
 from __future__ import annotations
 
 import dataclasses
+import functools
 import math
 from typing import Any
 
@@ -127,17 +128,18 @@ def test_verdict_gbm_identity() -> None:
 def test_penalty_row_labels() -> None:
     """R5: the row labels in order; ``penalty_card`` finds rows by label and refuses rows that do
     not start with the in-game all row."""
-    models = _models()
-    rows = models.penalty_rows(mc.penalties_frame())
+    from football_shot_models import penalties
+
+    rows = penalties.penalty_rows(mc.penalties_frame())
     assert [r.label for r in rows] == [
         "In-game: all", "In-game: dev", "In-game: hold-out", "In-game: men", "In-game: women",
         "In-game: league or tournament", "In-game: team-selected",
         "Shoot-out: all", "Shoot-out: men", "Shoot-out: women",
     ]  # fmt: skip
-    spread = models.exchangeability(mc.penalties_frame())
+    spread = penalties.exchangeability(mc.penalties_frame())
     for bad in (rows[1:], ()):
         with pytest.raises(ValueError, match="In-game: all"):
-            models.penalty_card(bad, spread, mc.card_context())
+            penalties.penalty_card(bad, spread, mc.card_context())
 
 
 @pytest.mark.parametrize(
@@ -155,18 +157,20 @@ def test_penalty_rows_null_holdout_key(
 ) -> None:
     """R6: a null in the hold-out mask raises instead of dropping the kick from both dev and the
     hold-out; a null ``reason`` raises too."""
-    models = _models()
+    from football_shot_models import penalties
+
     frame = mc.with_null(mc.penalties_frame(), column, row)
     with pytest.raises(ValueError, match=match):
-        models.penalty_rows(frame, holdout=holdout)
+        penalties.penalty_rows(frame, holdout=holdout)
 
 
 # ---- R7, R8: penalty card margin and benchmarks ---------------------------------------------
 
 
 def _card(rows: Any, frame: pl.DataFrame) -> str:
-    models = _models()
-    return str(models.penalty_card(rows, models.exchangeability(frame), mc.card_context()))
+    from football_shot_models import penalties
+
+    return str(penalties.penalty_card(rows, penalties.exchangeability(frame), mc.card_context()))
 
 
 @pytest.mark.parametrize(
@@ -189,9 +193,10 @@ def test_penalty_check_margin_forms(
     """R7: outside the window the margin is "below the lower" / "above the upper" bound; a mean
     equidistant from both bounds (0.78, an exact float tie) measures from the lower; "wider
     than" only when the interval is wider than the window, "against" otherwise."""
-    models = _models()
+    from football_shot_models import penalties
+
     frame = mc.penalties_frame()
-    rows = models.penalty_rows(frame)
+    rows = penalties.penalty_rows(frame)
     pooled = dataclasses.replace(rows[0], rate=metrics.Rate(1118, 853, 853 / 1118, mean, low, high))
     card = _card((pooled, *rows[1:]), frame)
     (row,) = [r for r in _rows(card) if r[0].startswith("posterior mean in [0.76, 0.80]")]
@@ -202,11 +207,12 @@ def test_penalty_check_margin_forms(
 def test_penalty_benchmarks_statsbomb_constant() -> None:
     """R8: StatsBomb's constant is the hold-out row's mean provider xG (not the pooled row's); a
     constant outside (0, 1) prints ``n/a``; with no dev kick both sections say so."""
-    models = _models()
+    from football_shot_models import penalties
+
     frame = mc.penalties_frame()
     for i in range(3):  # sb:k01-k03, the hold-out kicks
         frame = mc.set_value(frame, "provider_xg", i, 0.9)
-    rows = models.penalty_rows(frame)
+    rows = penalties.penalty_rows(frame)
     assert rows[2].provider_xg == pytest.approx(0.9) and rows[0].provider_xg != pytest.approx(0.9)
     loss = -(2 * math.log(0.9) + math.log(0.1)) / 3
     bench = _rows(_section(_card(rows, frame), "## Benchmarks"))
@@ -221,7 +227,7 @@ def test_penalty_benchmarks_statsbomb_constant() -> None:
         ]
     held_only = tuple(k for k in mc.PEN_KICKS if k[1] in ("sb:m01", "sb:m02") or k[2] == 5)
     frame = mc.penalties_frame(held_only)
-    card = _card(models.penalty_rows(frame), frame)
+    card = _card(penalties.penalty_rows(frame), frame)
     for title in ("## Validation design", "## Benchmarks"):
         assert "The dev has no in-game penalties." in _section(card, title)
 
@@ -302,10 +308,12 @@ def test_gbm_training_mix_line(
     assert "cause of" not in text.limitations[1] and "likely" not in text.limitations[1]
 
 
-def test_gbm_limitations_order_and_largest_leaf(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gbm_limitations_order_and_largest_leaf() -> None:
     """R10, QA choice 12: limitations are the hold-out gain line, the training-mix line, the
-    largest-leaf line (only when the dev fit chose ``max(LEAVES)``, the module constant), the
-    wide-DFK line, then the card's fixed limitations."""
+    largest-leaf line (only when the dev fit chose the largest leaf count of the fitted spec's
+    grid, MS4.prep §1.1), the wide-DFK line, then the card's fixed limitations."""
+    from football_shot_models import gbm
+
     models = _models()
     text, ev, bench, dev = _gbm_text(leaves=32)
     largest = "The grid's largest leaf count was chosen; a wider grid is a follow-up."
@@ -318,20 +326,25 @@ def test_gbm_limitations_order_and_largest_leaf(monkeypatch: pytest.MonkeyPatch)
         ablation.holdout_women(mc.card_context()),  # run3-ms3: computed, last
     )
     assert largest not in _gbm_text(leaves=16)[0].limitations
-    monkeypatch.setattr(models, "LEAVES", (4, 8, 16))
-    assert _gbm_text(leaves=16)[0].limitations[2] == largest
+    grid = functools.partial(gbm.MonotoneGBM, leaf_grid=(4, 8, 16))
+    spec = dataclasses.replace(models.GBM, make=grid)
+    assert _gbm_text(leaves=16, spec=spec)[0].limitations[2] == largest
 
 
 def test_gbm_card_layout_from_constants(monkeypatch: pytest.MonkeyPatch) -> None:
-    """R10: the Model section prints the fixed settings and the grid from the module constants
-    (a swapped constant shows up), then the dev fit's four settings as a table; the Features
-    section is the table, the constraints header, one line per fitted sign, then the arc
-    sentence."""
+    """R10: the Model section prints the fixed settings (``gbm.make_hgb``, read at call time) and
+    the grid of the fitted spec (``get_params``, MS4.prep §1.1; a card that read ``gbm.LEAVES``
+    would print (8, 16, 32)), then the dev fit's four settings as a table; the Features section
+    is the table, the constraints header, one line per fitted sign, then the arc sentence."""
+    from football_shot_models import gbm
+
     models = _models()
-    for name, value in (("LEAVES", (4, 8)), ("STEP", 10), ("MAX_ITER", 40), ("INNER_SPLITS", 3),
-                        ("LEARNING_RATE", 0.1), ("L2_REGULARIZATION", 2.0)):  # fmt: skip
-        monkeypatch.setattr(models, name, value)
-    ev = mc.fake_eval(models.GBM, coefficients=_settings_rows())
+    for name, value in (("LEARNING_RATE", 0.1), ("L2_REGULARIZATION", 2.0)):
+        monkeypatch.setattr(gbm, name, value)
+    grid = functools.partial(
+        gbm.MonotoneGBM, leaf_grid=(4, 8), step=10, max_iter=40, inner_splits=3
+    )
+    ev = mc.fake_eval(dataclasses.replace(models.GBM, make=grid), coefficients=_settings_rows())
     lines = models.CARD.model(ev, mc.card_context())
     text = "\n".join(lines)
     assert "learning_rate=0.1, l2_regularization=2," in text
@@ -417,11 +430,13 @@ def test_step_cards_checks_and_default_verdict(models_run: dict[str, Any]) -> No
 def test_summary_opens_with_headline(head_is_gbm: bool) -> None:
     """R14: the sentence after the table opens with "Headline model: {title}." so the StatsBomb
     sentence's "it" has a referent."""
+    from football_shot_models import penalties
+
     models = _models()
     gbm, s3 = mc.fake_eval(models.GBM), mc.fake_eval(S3)
     sb = mc.fake_eval(evaluation.BENCHMARK)
     head = gbm if head_is_gbm else s3
-    penalty = models.PenaltyRow("In-game: all", metrics.beta_interval(7, 10), 6, 0.7835)
+    penalty = penalties.PenaltyRow("In-game: all", metrics.beta_interval(7, 10), 6, 0.7835)
     text = models.summary_table((s3, gbm), (sb,), head, penalty, SB_ABOVE_THEN_NOT)
     lines = text.splitlines()
     i = lines.index("")

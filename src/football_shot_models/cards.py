@@ -113,17 +113,39 @@ CHECKS_TITLE: Final[str] = CardText.checks_title
 CHECKS_NOTE: Final[str] = CardText.checks_note
 
 
-def card_context(xg: data.XgData, dev: pl.DataFrame, held: pl.DataFrame) -> CardContext:
+def card_context(
+    xg: data.XgData, dev: pl.DataFrame, held: pl.DataFrame, holdout: data.Holdout | None = None
+) -> CardContext:
     """Collect the provenance and counts a card prints.
+
+    Parameters
+    ----------
+    xg : data.XgData
+        The loaded population.
+    dev, held : polars.DataFrame
+        The development and hold-out shots the cards describe.
+    holdout : data.Holdout, optional
+        The hold-out ``dev`` and ``held`` were split by; its label is the cards'. Default
+        ``data.pair_holdout(xg.matches)``.
+
+    Raises
+    ------
+    ValueError
+        A ``held`` row that the hold-out does not hold out, or a ``dev`` row that it does;
+        a hold-out that fails on either frame (:func:`~football_shot_models.data.holdout_mask`).
 
     Examples
     --------
     >>> card_context(xg, dev, held).competition_seasons  # doctest: +SKIP
     80
     """
-    label = xg.matches.filter(data.is_holdout()).select(
-        pl.concat_str("competition_name", "season_name", separator=" ")
-    )
+    ho = data.pair_holdout(xg.matches) if holdout is None else holdout
+    for name, frame, want in (("dev", dev, False), ("held", held, True)):
+        if wrong := int((data.holdout_mask(frame, ho, name) != want).sum()):
+            raise ValueError(
+                f"card_context: {wrong} {name} row(s) are {'not ' * want}held out by the hold-out "
+                f"{ho.label!r}; pass the hold-out the frames were split by"
+            )
     log = xg.exclusions
     gender = xg.shots["gender"]
     pair = ("competition_id", "season_id")
@@ -139,7 +161,7 @@ def card_context(xg: data.XgData, dev: pl.DataFrame, held: pl.DataFrame) -> Card
         data_digest=xg.manifest.data_digest,
         source_revision=xg.manifest.source.revision,
         sklearn_version=sklearn.__version__,
-        holdout_label=str(label.item(0, 0)) if label.height else "n/a",
+        holdout_label=ho.label,
         dev_shots=dev.height,
         dev_matches=dev["match_id"].n_unique(),
         holdout_shots=held.height,
@@ -335,7 +357,17 @@ def _fold_error(ev: Evaluation) -> str:
     return f"{pct(mean)} (max {pct(worst)})"
 
 
-def _metrics_section(ev: Evaluation, base: Evaluation) -> list[str]:
+def metrics_table(ev: Evaluation, base: Evaluation) -> list[str]:
+    """The card's metrics table: train, validation (CV mean ± fold SD) and test columns.
+
+    Skill is against ``base`` (the base rate) on the same split.
+
+    Examples
+    --------
+    >>> metrics_table(gbm, base)[0]  # doctest: +SKIP
+    '| Metric | Train | Validation | Test |'
+    """
+
     def sd(metric: Metric) -> str:
         return f" ± {fmt(fold_sd(ev.folds, metric))}"
 
@@ -401,13 +433,23 @@ def side(g: GainCI) -> str:
     return "lies above 0" if g.low > 0 else "lies below 0" if g.high < 0 else "includes 0"
 
 
-def _checks_section(checks: Sequence[Check], text: CardText) -> list[str]:
+def checks_table(checks: Sequence[Check], title: str, note: str) -> list[str]:
+    """A milestone checks section: heading, note and one row per check; ``[]`` without checks.
+
+    Examples
+    --------
+    >>> lines = checks_table([Check("log loss <= 0.275", "0.2771", "missed")], "Checks", "Note.")
+    >>> lines[0], lines[-2]
+    ('### Checks', '| log loss <= 0.275 | 0.2771 | missed |')
+    >>> checks_table([], "Checks (MS4)", "Note.")
+    []
+    """
     if not checks:
         return []
     return [
-        f"### {text.checks_title}",
+        f"### {title}",
         "",
-        text.checks_note,
+        note,
         "",
         "| Target | Measured | Result |",
         "|---|---|---|",
@@ -613,13 +655,13 @@ def render_card(
         VALIDATION,
         "",
         "## Metrics",
-        *_metrics_section(ev, base),
+        *metrics_table(ev, base),
         "",
         "Skill is `1 − metric / base-rate metric` on the same shots and column.",
         "",
         *(_gain_section(comparisons) if comparisons else []),
         *_thresholds_section(ev, base, benchmark, dev, thresholds),
-        *_checks_section(checks, text),
+        *checks_table(checks, text.checks_title, text.checks_note),
         "### Reliability",
         "",
         "Ten equal-count bins of the out-of-fold predictions.",

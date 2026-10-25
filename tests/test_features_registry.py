@@ -45,8 +45,8 @@ def test_derived_registry_passes_guard() -> None:
     for every step and variant feature list."""
     from football_shot_models import ablation
 
-    assert set(features.DERIVED) == {*SPLINES, "phase", "contact", *FRAME}
-    assert len(features.DERIVED) == 16
+    assert set(features.DERIVED) == {*SPLINES, "phase", "contact", "assist", *FRAME}  # MS4.v1
+    assert len(features.DERIVED) == 17
     assert [f.name for f in features.FRAME_FEATURES] == list(FRAME)
     for f in features.FRAME_FEATURES:
         assert features.DERIVED[f.name] is f

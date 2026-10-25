@@ -1,18 +1,11 @@
-"""M1.4 and M1.5: a monotone gradient-boosted xG model, the headline rule and the penalty model.
+"""M1.4 and M1.5 run: the GBM spec, the headline rule, the MS3 checks and the cards.
 
-**The GBM** (``xg-gbm``) is scikit-learn's ``HistGradientBoostingClassifier`` on S3's inputs
+**The GBM** (``xg-gbm``) is :class:`~football_shot_models.gbm.MonotoneGBM` on S3's inputs
 without the spline terms (trees bend by themselves). Four columns carry a monotone constraint
 for football reasons only (:data:`MONOTONE_REASONS`): further from goal at the same opening
 angle never helps, a wider opening never hurts, another outfield body in the cone never helps,
 and a closer marker never helps. A constraint holds along one column with every other column
-held fixed.
-
-**Tuning and calibration stay inside the fit.** :class:`MonotoneGBM` is a
-:class:`~football_shot_models.evaluation.DesignFit`: the harness hands it the training rows
-of one fit with their design names and matches. Inside, a grouped inner CV by match picks the
-leaf count and the number of iterations, and Platt scaling is fitted on the chosen model's
-inner out-of-fold scores (cross-fitted by match), then applied to a refit on all the training
-rows. The outer test fold never reaches it, so the CV score is honest.
+held fixed. The estimator, its tuning and its calibration are in :mod:`football_shot_models.gbm`.
 
 **Headline rule.** The GBM is the headline model only if its grouped-CV log-loss gain over the
 best logistic regression has a 95 % match-bootstrap interval that lies above 0
@@ -20,42 +13,34 @@ best logistic regression has a 95 % match-bootstrap interval that lies above 0
 The hold-out gain is reported next to it, and so is the comparison with the benchmark
 (StatsBomb's own xG here; :func:`benchmark_sentence`), without the words "beats" or "matches".
 
-**Penalties** (``xg-penalty``) get one probability: the posterior mean of a Beta-binomial
-with the Jeffreys prior over every in-game penalty (:func:`penalty_rows`); shoot-out kicks are
-reported in their own rows and never pooled. Match xG = Σ non-penalty xG + P(goal | in-game
-penalty) × in-game penalties.
+**Penalties** (``xg-penalty``) are modelled in :mod:`football_shot_models.penalties`; this run
+calls it and writes its card.
 
 Run ``python -m football_shot_models.models`` (``make xg-models``) to evaluate every model
-once and write the step cards, the GBM card and the penalty card into ``docs/models/``.
+once and write the step cards, the GBM card and the penalty card into ``docs/models/``. The
+fits' predictions are cached under ``data/cache`` (:mod:`football_shot_models.cache`); a rerun
+on the same data and code reads them instead of fitting.
 """
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
-import math
 import os
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import numpy as np
-import numpy.typing as npt
 import polars as pl
 from football_core.io import snapshot
-from scipy import stats
-from scipy.special import expit
-from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import log_loss
-from sklearn.model_selection import GroupKFold
 
-from football_shot_models import ablation, baselines, data, features
+from football_shot_models import ablation, baselines, data, features, gbm, penalties
+from football_shot_models.cache import PredictionCache
 from football_shot_models.cards import (
-    LICENSING,
     CardContext,
     CardText,
     card_context,
@@ -66,9 +51,7 @@ from football_shot_models.cards import (
     side,
 )
 from football_shot_models.evaluation import (
-    Coefficients,
     Comparison,
-    Estimator,
     Evaluation,
     ModelSpec,
     best,
@@ -78,285 +61,12 @@ from football_shot_models.evaluation import (
     evaluate_benchmark,
     labels,
 )
-from football_shot_models.metrics import (
-    JEFFREYS,
-    LEVEL,
-    Check,
-    Rate,
-    beta_interval,
-    calibration,
-    fold_xg_error,
-)
+from football_shot_models.metrics import Check, calibration, fold_xg_error
 
-FloatArray = npt.NDArray[np.float64]
-BoolArray = npt.NDArray[np.bool_]
-IntArray = npt.NDArray[np.intp]
+if TYPE_CHECKING:  # the field named `penalties` hides the module inside ModelsRun
+    from football_shot_models.penalties import PenaltyRow, Spread
+
 StrPath = str | os.PathLike[str]
-
-# ---- the GBM (spec §3.1, normative) ------------------------------------------------------
-
-LEARNING_RATE: Final[float] = 0.05
-L2_REGULARIZATION: Final[float] = 1.0
-MIN_SAMPLES_LEAF: Final[int] = 100
-LEAVES: Final[tuple[int, ...]] = (8, 16, 32)  # max_leaf_nodes candidates
-MAX_ITER: Final[int] = 600
-STEP: Final[int] = 50  # iteration counts tried: STEP, 2 * STEP, ..., MAX_ITER
-INNER_SPLITS: Final[int] = 4
-MONOTONE: Final[Mapping[str, int]] = MappingProxyType(
-    {"distance_m": -1, "angle_rad": 1, "opponents_in_cone": -1, "nearest_opponent_m": 1}
-)
-
-
-def make_hgb(
-    leaves: int, iters: int, cst: list[int], min_leaf: int = MIN_SAMPLES_LEAF
-) -> HistGradientBoostingClassifier:
-    """One histogram GBM with the fixed settings, deterministic and without early stopping.
-
-    Parameters
-    ----------
-    leaves, iters : int
-        ``max_leaf_nodes`` and ``max_iter``.
-    cst : list of int
-        ``monotonic_cst``, one sign per design column.
-    min_leaf : int, default MIN_SAMPLES_LEAF
-        ``min_samples_leaf``.
-
-    Examples
-    --------
-    >>> h = make_hgb(8, 100, [-1, 1])
-    >>> h.early_stopping, h.class_weight, h.random_state
-    (False, None, 0)
-    """
-    return HistGradientBoostingClassifier(
-        learning_rate=LEARNING_RATE,
-        max_iter=iters,
-        max_leaf_nodes=leaves,
-        min_samples_leaf=min_leaf,
-        l2_regularization=L2_REGULARIZATION,
-        early_stopping=False,  # 'auto' would draw a random, ungrouped validation split
-        monotonic_cst=cst,
-        random_state=0,
-    )
-
-
-class MonotoneGBM:
-    """Monotone HGB, tuned by inner grouped CV, with Platt scaling cross-fitted by match.
-
-    Fitted through the harness only (:meth:`fit_design`), which passes the design names (to
-    place the monotone signs) and the match of every training row (to group the inner folds).
-
-    Parameters
-    ----------
-    monotone : mapping of str to int, default MONOTONE
-        Design column -> -1 (non-increasing) or +1 (non-decreasing); other columns are free.
-    leaf_grid : tuple of int, default LEAVES
-        ``max_leaf_nodes`` candidates.
-    max_iter, step : int, default MAX_ITER, STEP
-        Iteration counts tried: ``step, 2 * step, ..., max_iter``.
-    inner_splits : int, default INNER_SPLITS
-        Inner ``GroupKFold`` splits.
-    min_samples_leaf : int, default MIN_SAMPLES_LEAF
-        Lowered only by unit fixtures; the shipped ``GBM`` uses the constant.
-
-    Attributes
-    ----------
-    model_ : HistGradientBoostingClassifier or None
-        The refit on all training rows with the chosen configuration.
-    leaves_, iters_ : int
-        The chosen configuration.
-    platt_ : tuple of float
-        Platt intercept and slope ``(a, b)``: ``p = expit(a + b * raw score)``.
-    inner_test_ : tuple of numpy.ndarray
-        Inner test row indices, one array per inner split.
-    inner_raw_ : numpy.ndarray
-        Cross-fitted raw scores (log-odds) of the chosen configuration, one per training row.
-
-    Examples
-    --------
-    >>> rng = np.random.default_rng(0)
-    >>> x = rng.uniform(5.0, 30.0, (400, 1))
-    >>> y = rng.uniform(size=400) < expit(1.0 - 0.15 * x[:, 0])
-    >>> gbm = MonotoneGBM({"d": -1}, leaf_grid=(4,), max_iter=20, step=10, min_samples_leaf=20)
-    >>> gbm = gbm.fit_design(x, y, names=("d",), groups=np.repeat(np.arange(40), 10))
-    >>> p = gbm.predict_proba(np.linspace(5.0, 30.0, 50)[:, None])[:, 1]
-    >>> bool(np.all(np.diff(p) <= 0)), gbm.platt_[1] > 0
-    (True, True)
-    """
-
-    def __init__(
-        self,
-        monotone: Mapping[str, int] = MONOTONE,
-        *,
-        leaf_grid: tuple[int, ...] = LEAVES,
-        max_iter: int = MAX_ITER,
-        step: int = STEP,
-        inner_splits: int = INNER_SPLITS,
-        min_samples_leaf: int = MIN_SAMPLES_LEAF,
-    ) -> None:
-        self.monotone, self.leaf_grid, self.max_iter = monotone, leaf_grid, max_iter
-        self.step, self.inner_splits, self.min_samples_leaf = step, inner_splits, min_samples_leaf
-        self.model_: HistGradientBoostingClassifier | None = None
-        self.leaves_ = self.iters_ = 0
-        self.platt_ = (0.0, 1.0)
-        self.inner_test_: tuple[IntArray, ...] = ()
-        self.inner_raw_: FloatArray = np.empty(0)
-
-    def fit(self, x: FloatArray, y: BoolArray) -> MonotoneGBM:
-        """Refused: the model needs design names and match groups.
-
-        Raises
-        ------
-        TypeError
-            Always; the harness calls :meth:`fit_design`.
-        """
-        raise TypeError("MonotoneGBM needs design names and match groups: use fit_design")
-
-    def fit_design(
-        self,
-        x: FloatArray,
-        y: BoolArray,
-        *,
-        names: tuple[str, ...],
-        groups: npt.NDArray[np.generic],
-    ) -> MonotoneGBM:
-        """Tune by inner grouped CV, fit Platt on the inner out-of-fold scores, then refit.
-
-        Parameters
-        ----------
-        x : numpy.ndarray
-            The design matrix of the training rows.
-        y : numpy.ndarray of bool
-            Goal or not.
-        names : tuple of str
-            The design column names (``design_matrix``).
-        groups : numpy.ndarray
-            ``match_id`` of every row; inner folds never split a match.
-
-        Returns
-        -------
-        MonotoneGBM
-            ``self``, fitted.
-
-        Raises
-        ------
-        ValueError
-            An empty ``leaf_grid``; ``step`` not in [1, ``max_iter``]; a constrained column
-            absent from ``names``, or a sign that is a bool, not an ``int``, or not -1 / +1;
-            fewer matches than ``inner_splits`` (from scikit-learn);
-            constant inner out-of-fold scores (Platt not estimable); a Platt slope <= 0.
-        """
-        if not self.leaf_grid or not 1 <= self.step <= self.max_iter:
-            raise ValueError(
-                f"MonotoneGBM needs a non-empty leaf_grid (got {self.leaf_grid}) and 1 <= step "
-                f"<= max_iter (got step={self.step}, max_iter={self.max_iter})"
-            )
-        missing = [n for n in self.monotone if n not in names]
-        bad = {
-            n: s
-            for n, s in self.monotone.items()
-            if isinstance(s, bool) or not isinstance(s, int) or s not in (-1, 1)
-        }
-        if missing or bad:
-            raise ValueError(
-                f"monotone constraints on design columns that are absent {missing} or with a "
-                f"sign other than -1 / +1 {bad}"
-            )
-        cst = [self.monotone.get(n, 0) for n in names]
-        stops = self.max_iter // self.step
-        raw = {leaves: np.full((stops, y.size), np.nan) for leaves in self.leaf_grid}
-        splits = tuple(GroupKFold(n_splits=self.inner_splits).split(x, y, groups=groups))
-        for train, test in splits:
-            for leaves in self.leaf_grid:
-                fitted = make_hgb(leaves, self.max_iter, cst, self.min_samples_leaf)
-                fitted.fit(x[train], y[train])
-                for i, s in enumerate(fitted.staged_decision_function(x[test])):
-                    if (i + 1) % self.step == 0:
-                        raw[leaves][(i + 1) // self.step - 1, test] = s
-        loss = {
-            (leaves, (k + 1) * self.step): float(
-                log_loss(y, expit(raw[leaves][k]), labels=[False, True])
-            )
-            for leaves in self.leaf_grid
-            for k in range(stops)
-        }
-        # ties go to the smaller model: fewer leaves, then fewer iterations
-        self.leaves_, self.iters_ = min(loss, key=lambda key: (loss[key], key))
-        self.inner_test_ = tuple(np.asarray(test, dtype=np.intp) for _, test in splits)
-        self.inner_raw_ = raw[self.leaves_][self.iters_ // self.step - 1]
-        if np.ptp(self.inner_raw_) == 0.0:
-            raise ValueError(
-                "the inner out-of-fold scores are constant (no inner tree could split with "
-                f"min_samples_leaf={self.min_samples_leaf}): Platt scaling is not estimable"
-            )
-        platt = LogisticRegression(C=np.inf, solver="newton-cholesky", tol=1e-10, max_iter=1000)
-        platt.fit(self.inner_raw_[:, None], y)
-        a, b = float(platt.intercept_[0]), float(platt.coef_[0, 0])
-        if not b > 0:
-            raise ValueError(
-                f"Platt slope {b:.4g} <= 0: the inner out-of-fold scores do not rank goals, "
-                "and a slope <= 0 would reverse or erase the monotone constraints"
-            )
-        self.platt_ = (a, b)
-        final = make_hgb(self.leaves_, self.iters_, cst, self.min_samples_leaf)
-        self.model_ = final.fit(x, y)
-        return self
-
-    def predict_proba(self, x: FloatArray) -> FloatArray:
-        """``(n, 2)`` probabilities: Platt applied to the refit's raw scores.
-
-        Raises
-        ------
-        ValueError
-            Not fitted.
-        """
-        if self.model_ is None:
-            raise ValueError("MonotoneGBM is not fitted")
-        a, b = self.platt_
-        p = expit(a + b * self.model_.decision_function(x))
-        out: FloatArray = np.column_stack([1.0 - p, p])
-        return out
-
-    def get_params(self, deep: bool = True) -> Mapping[str, Any]:
-        """The six settings (no class weight: probabilities are never rebalanced)."""
-        return {
-            "monotone": dict(self.monotone),
-            "leaf_grid": self.leaf_grid,
-            "max_iter": self.max_iter,
-            "step": self.step,
-            "inner_splits": self.inner_splits,
-            "min_samples_leaf": self.min_samples_leaf,
-        }
-
-
-def gbm_settings(model: Estimator, names: tuple[str, ...]) -> Coefficients:
-    """The fitted configuration as card rows: leaves, iterations, Platt, then the sign map.
-
-    Uses the ``ModelSpec.coefficients`` hook; each value is repeated in both columns.
-
-    Raises
-    ------
-    TypeError
-        ``model`` is not a ``MonotoneGBM``.
-
-    Examples
-    --------
-    >>> gbm = MonotoneGBM({"d": -1})
-    >>> gbm.leaves_, gbm.iters_, gbm.platt_ = 16, 200, (0.01, 0.99)
-    >>> [term for term, _, _ in gbm_settings(gbm, ("d",))]
-    ['max_leaf_nodes', 'iterations', 'platt_intercept', 'platt_slope', 'monotone:d']
-    """
-    if not isinstance(model, MonotoneGBM):
-        raise TypeError(f"expected a MonotoneGBM, not {type(model).__name__}")
-    a, b = model.platt_
-    rows: list[tuple[str, float, float]] = [
-        ("max_leaf_nodes", model.leaves_, model.leaves_),
-        ("iterations", model.iters_, model.iters_),
-        ("platt_intercept", a, a),
-        ("platt_slope", b, b),
-    ]
-    rows += [(f"monotone:{col}", s, s) for col, s in model.monotone.items()]
-    return tuple((term, float(v), float(w)) for term, v, w in rows)
-
 
 GBM_FEATURES: Final[tuple[str, ...]] = (
     "distance_m",
@@ -365,12 +75,14 @@ GBM_FEATURES: Final[tuple[str, ...]] = (
     *ablation.CONTEXT,
     *ablation.FRAMES,
 )
-GBM: Final = ModelSpec("xg-gbm", "Monotone GBM + Platt", GBM_FEATURES, MonotoneGBM, gbm_settings)
+GBM: Final = ModelSpec(
+    "xg-gbm", "Monotone GBM + Platt", GBM_FEATURES, gbm.MonotoneGBM, gbm.gbm_settings
+)
 
 
 def _is_gbm(ev: Evaluation) -> bool:
     # a GBM spec is one whose card rows come from gbm_settings (any sign map, any grid)
-    return isinstance(ev.spec, ModelSpec) and ev.spec.coefficients is gbm_settings
+    return isinstance(ev.spec, ModelSpec) and ev.spec.coefficients is gbm.gbm_settings
 
 
 # ---- headline rule and sentences ---------------------------------------------------------
@@ -561,325 +273,6 @@ def milestone_checks(
     return tuple(checks)
 
 
-# ---- penalty model -----------------------------------------------------------------------
-
-PENALTY_NAME: Final[str] = "xg-penalty"
-PENALTY_TITLE: Final[str] = "Penalty conversion (Beta-binomial)"
-PENALTY_RANGE: Final[tuple[float, float]] = (0.76, 0.80)
-PENALTY_CHANGELOG: Final[tuple[str, ...]] = (
-    "v1 (MS3, M1.5): first version.",
-    "v2 (MS3 assessment): the milestone check adds the pooled estimate without the team-selected "
-    "seasons.",
-)
-IN_GAME, SHOOTOUT = "In-game", "Shoot-out"
-MATCH_XG: Final[str] = (
-    "Match xG = Σ non-penalty xG (headline model) + P(goal | in-game penalty) × in-game "
-    "penalties; shoot-out kicks are not part of match xG, and own goals and direct corners "
-    "carry no xG."
-)
-
-
-@dataclass(frozen=True)
-class PenaltyRow:
-    """One group of penalty kicks: its Beta posterior, matches and StatsBomb's mean xG.
-
-    ``matches`` counts distinct ``match_id``; ``provider_xg`` is ``None`` when any kick in
-    the group has no provider xG.
-    """
-
-    label: str
-    rate: Rate
-    matches: int
-    provider_xg: float | None
-
-
-def penalty_rows(
-    penalties: pl.DataFrame, *, holdout: pl.Expr | None = None
-) -> tuple[PenaltyRow, ...]:
-    """The penalty model (the first row) and its breakdown; shoot-outs in their own rows.
-
-    Rows, in order, each skipped when it has no kick: in-game all (the model), dev, hold-out,
-    men, women, then each family except ``women`` (that family is the women's row); then
-    shoot-out all, men, women.
-
-    Parameters
-    ----------
-    penalties : polars.DataFrame
-        ``XgData.penalties``: ``reason``, ``is_goal``, ``gender``, ``family``, ``match_id``,
-        ``provider_xg`` and the columns ``holdout`` reads.
-    holdout : polars.Expr, optional
-        True for hold-out kicks; default ``data.is_holdout()`` (the full competition-season
-        pair, so shots and penalties share one key).
-
-    Returns
-    -------
-    tuple of PenaltyRow
-
-    Raises
-    ------
-    ValueError
-        A ``reason`` other than ``penalty`` / ``shootout``; a null in ``reason``,
-        ``is_goal``, ``gender``, ``family``, ``match_id`` or the hold-out mask; no in-game
-        penalty.
-
-    Examples
-    --------
-    >>> kicks = pl.DataFrame({
-    ...     "reason": ["penalty", "penalty", "penalty", "shootout"],
-    ...     "is_goal": [True, True, False, True],
-    ...     "gender": ["male"] * 4,
-    ...     "family": ["league or tournament"] * 4,
-    ...     "match_id": ["sb:1", "sb:2", "sb:2", "sb:3"],
-    ...     "competition_id": ["sb:2", "sb:11", "sb:11", "sb:11"],
-    ...     "season_id": ["sb:27"] * 4,
-    ...     "provider_xg": [0.78, 0.78, 0.78, None]})
-    >>> [(r.label, r.rate.n, r.matches) for r in penalty_rows(kicks)][:3]
-    [('In-game: all', 3, 2), ('In-game: dev', 2, 1), ('In-game: hold-out', 1, 1)]
-    >>> penalty_rows(kicks)[-1].label, penalty_rows(kicks)[-1].provider_xg
-    ('Shoot-out: men', None)
-    """
-    for col in ("reason", "is_goal", "gender", "family", "match_id"):
-        if nulls := penalties[col].null_count():
-            raise ValueError(f"penalties: {col} has {nulls} null value(s)")
-    if other := sorted(set(penalties["reason"].cast(pl.String)) - {"penalty", "shootout"}):
-        raise ValueError(f"penalties: reason {other} is not 'penalty' or 'shootout'")
-    held = penalties.select(data.is_holdout() if holdout is None else holdout).to_series()
-    if nulls := held.null_count():
-        raise ValueError(f"penalties: the hold-out mask has {nulls} null value(s)")
-    frame = penalties.with_columns(_held=held)
-    game, shoot = (frame.filter(pl.col("reason") == r) for r in ("penalty", "shootout"))
-    if game.height == 0:
-        raise ValueError("penalties: no in-game penalty to pool")
-    men, women, is_held = pl.col("gender") == "male", pl.col("gender") == "female", pl.col("_held")
-    groups = [
-        *((f"{IN_GAME}: {k}", game.filter(e)) for k, e in (("all", True), ("dev", ~is_held))),
-        *((f"{IN_GAME}: {k}", game.filter(e)) for k, e in (("hold-out", is_held), ("men", men))),
-        (f"{IN_GAME}: women", game.filter(women)),
-        *((f"{IN_GAME}: {f}", game.filter(pl.col("family") == f)) for f in data.FAMILIES[:-1]),
-        *((f"{SHOOTOUT}: {k}", shoot.filter(e)) for k, e in (("all", True), ("men", men))),
-        (f"{SHOOTOUT}: women", shoot.filter(women)),
-    ]
-    rows = []
-    for label, g in (pair for pair in groups if pair[1].height):
-        xg = g["provider_xg"].cast(pl.Float64)
-        mean = None if xg.null_count() else float(xg.sum()) / g.height
-        rate = beta_interval(int(g["is_goal"].sum()), g.height)
-        rows.append(PenaltyRow(label, rate, g["match_id"].n_unique(), mean))
-    return tuple(rows)
-
-
-@dataclass(frozen=True)
-class Spread:
-    """How exchangeable the in-game kicks are: dispersion across competition-seasons, takers.
-
-    ``dispersion`` (Pearson chi2 / df) and ``p_value`` are ``None`` with one group or a
-    pooled rate of 0 or 1.
-    """
-
-    groups: int
-    dispersion: float | None
-    df: int
-    p_value: float | None
-    top_taker_kicks: int
-    kicks: int
-
-
-def exchangeability(penalties: pl.DataFrame) -> Spread:
-    """Pearson dispersion of in-game conversion across competition-seasons, and the top taker.
-
-    chi2 = Σ over competition-seasons of (goals - n p)² / (n p (1 - p)), with p the pooled
-    rate, on ``groups - 1`` df: a dispersion near 1 is what binomial noise alone gives.
-
-    Raises
-    ------
-    ValueError
-        No in-game penalty; a null ``player_id`` or ``is_goal`` among them.
-
-    Examples
-    --------
-    >>> kicks = pl.DataFrame({"reason": ["penalty"] * 4, "is_goal": [True, False, True, True],
-    ...                       "competition_id": ["sb:1", "sb:1", "sb:2", "sb:2"],
-    ...                       "season_id": ["sb:9"] * 4,
-    ...                       "player_id": ["sb:p1", "sb:p1", "sb:p1", "sb:p2"]})
-    >>> s = exchangeability(kicks)
-    >>> s.groups, s.df, round(s.dispersion, 4), s.top_taker_kicks, s.kicks
-    (2, 1, 1.3333, 3, 4)
-    """
-    game = penalties.filter(pl.col("reason") == "penalty")
-    if game.height == 0:
-        raise ValueError("penalties: no in-game penalty")
-    for col in ("player_id", "is_goal"):
-        if nulls := game[col].null_count():
-            raise ValueError(f"penalties: {col} has {nulls} null value(s) among in-game kicks")
-    by = game.group_by("competition_id", "season_id").agg(n=pl.len(), goals=pl.col("is_goal").sum())
-    n, k = by["n"].to_numpy().astype(np.float64), by["goals"].to_numpy().astype(np.float64)
-    p, df = float(k.sum() / n.sum()), by.height - 1
-    dispersion = p_value = None
-    if df > 0 and 0.0 < p < 1.0:
-        chi2 = float(np.sum((k - n * p) ** 2 / (n * p * (1.0 - p))))
-        dispersion, p_value = chi2 / df, float(stats.chi2.sf(chi2, df))
-    top = int(game.group_by("player_id").len()["len"].to_numpy().max())
-    return Spread(by.height, dispersion, df, p_value, top, game.height)
-
-
-def _interval(r: Rate) -> str:
-    return f"{r.mean:.4f} [{r.low:.4f}, {r.high:.4f}]"
-
-
-def _constant_loss(r: Rate, q: float | None) -> str:
-    if q is None or not 0.0 < q < 1.0:
-        return "n/a"
-    return f"{-(r.goals * math.log(q) + (r.n - r.goals) * math.log1p(-q)) / r.n:.4f}"
-
-
-def _penalty_check(r: Rate, team: Rate | None = None) -> list[str]:
-    lo, hi = PENALTY_RANGE
-    bound, name = (lo, "lower") if r.mean - lo <= hi - r.mean else (hi, "upper")
-    # a mean on a bound is inside the window: "above the lower", "below the upper"
-    where = "above" if r.mean > bound or (name == "lower" and r.mean == bound) else "below"
-    result = "met" if lo <= r.mean <= hi else "missed"
-    lines = [
-        "| Target | Measured | Result |",
-        "|---|---|---|",
-        f"| posterior mean in [{lo:.2f}, {hi:.2f}] (milestone wording) | {_interval(r)}; "
-        f"{abs(r.mean - bound):.4f} {where} the {name} bound | {result} |",
-    ]
-    if outside := [w for w, out in (("below", r.low < lo), ("above", r.high > hi)) if out]:
-        width, window = r.high - r.low, hi - lo
-        lines += [
-            "",
-            f"The 95% interval is {width:.3f} wide, {'wider than' if width > window else 'against'}"
-            f" the {window:.2f} window, and extends {' and '.join(outside)} it: the check is on "
-            "the point estimate.",
-        ]
-    if team is not None and team.n < r.n:
-        rest = beta_interval(r.goals - team.goals, r.n - team.n)
-        where = "inside" if lo <= rest.mean <= hi else "outside"
-        lines += [
-            "",
-            f"Without the team-selected seasons ({team.n:,} kicks, conversion {team.rate:.3f}) "
-            f"the pooled estimate is {_interval(rest)} from {rest.n:,} kicks, {where} the "
-            "window.",
-        ]
-    return lines
-
-
-def _spread_line(s: Spread) -> str:
-    disp = f"the Pearson dispersion is not estimable ({s.df} df)"
-    if s.dispersion is not None and s.p_value is not None:
-        disp = f"the Pearson dispersion is {s.dispersion:.2f} on {s.df} df (p {s.p_value:.2f})"
-    return (
-        f"Kicks are pooled as exchangeable: across {s.groups:,} competition-seasons {disp}, and "
-        f"the most frequent taker has {s.top_taker_kicks:,} of {s.kicks:,} kicks."
-    )
-
-
-def penalty_card(rows: Sequence[PenaltyRow], spread: Spread, context: CardContext) -> str:
-    """The ``xg-penalty`` model card, from :func:`penalty_rows` and :func:`exchangeability`.
-
-    Raises
-    ------
-    ValueError
-        ``rows`` does not start with the in-game all row.
-
-    Examples
-    --------
-    >>> card = penalty_card(penalty_rows(xg.penalties), exchangeability(xg.penalties),
-    ...                     card_context(xg, dev, held))  # doctest: +SKIP
-    >>> card.splitlines()[0]  # doctest: +SKIP
-    '# Model card: Penalty conversion (Beta-binomial)'
-    """
-    if not rows or rows[0].label != f"{IN_GAME}: all":
-        raise ValueError(f"penalty_card: the first row must be '{IN_GAME}: all'")
-    by, c, r, (a0, b0) = {row.label: row for row in rows}, context, rows[0].rate, JEFFREYS
-    dev, held = by.get(f"{IN_GAME}: dev"), by.get(f"{IN_GAME}: hold-out")
-    shoot, team = by.get(f"{SHOOTOUT}: all"), by.get(f"{IN_GAME}: team-selected")
-    validation = benchmarks = [
-        f"The {'hold-out' if held is None else 'dev'} has no in-game penalties."
-    ]
-    if dev is not None and held is not None:
-        h, inside = held.rate, held.rate.low <= dev.rate.mean <= held.rate.high
-        validation = [
-            f"The hold-out ({c.holdout_label}) has {h.n:,} in-game kicks, so its 95% interval "
-            f"[{h.low:.4f}, {h.high:.4f}] is {h.high - h.low:.3f} wide and this is a weak test: "
-            f"the dev estimate {dev.rate.mean:.4f} lies {'inside' if inside else 'outside'} it."
-        ]
-        benchmarks = [
-            f"Each model as a constant on the {h.n:,} hold-out kicks:",
-            "",
-            "| Model | Kicks | Log loss |",
-            "|---|---|---|",
-            f"| Dev posterior mean ({dev.rate.mean:.4f}) | {h.n:,} | "
-            f"{_constant_loss(h, dev.rate.mean)} |",
-            f"| StatsBomb mean xG ({fmt(held.provider_xg)}) | {h.n:,} | "
-            f"{_constant_loss(h, held.provider_xg)} |",
-        ]
-    families = (*data.FAMILIES[:-1], "women")
-    spread_by_family = "; ".join(
-        f"{f} {by[k].rate.rate:.3f} ({by[k].rate.n:,} kicks)"
-        for f in families
-        if (k := f"{IN_GAME}: {f}") in by
-    )
-    shootouts = (
-        f"{shoot.rate.n:,} shoot-out kicks (period 5) cluster in {shoot.matches:,} matches; they "
-        "are reported apart, never pooled, and their interval treats kicks of one shoot-out as "
-        "independent."
-        if shoot
-        else "There are no shoot-out kicks."
-    )
-    metrics = [
-        f"| {row.label} | {row.rate.n:,} | {row.matches:,} | {row.rate.goals:,} | "
-        f"{row.rate.rate:.4f} | {_interval(row.rate)} | {fmt(row.provider_xg)} |"
-        for row in rows
-    ]
-    sections: list[tuple[str, list[str]]] = [
-        ("Overview", [
-            f"- **Name / version:** `{PENALTY_NAME}` v{len(PENALTY_CHANGELOG)}",
-            "- **Task:** P(goal | in-game penalty), periods 1–4; shoot-out kicks reported apart",
-            "- **Status:** experimental",
-            f"- M1.5: pooled conversion of in-game penalties. P(goal) = {_interval(r)} (95% "
-            f"interval) from {r.n:,} kicks in {rows[0].matches:,} matches.",
-        ]),
-        ("Intended use", [
-            f"The penalty term of match xG. {MATCH_XG} Not for rating takers or keepers: every "
-            "in-game penalty gets the same probability."
-        ]),
-        ("Data", [
-            f"- **Source(s):** StatsBomb open data, revision `{c.source_revision}`; snapshot "
-            f"`{c.manifest_name}`, data digest `{c.data_digest}`",
-            "- **Rows:** the shots the xG population excludes as in-game penalties, dev and "
-            f"hold-out ({c.holdout_label}) together, from {spread.groups:,} competition-seasons.",
-        ]),
-        ("Target", ["`is_goal`: the penalty kick went in."]),
-        ("Features", ["None: one probability for every in-game penalty."]),
-        ("Model", [
-            f"Beta-binomial with the Jeffreys prior Beta({a0:g}, {b0:g}): the posterior is "
-            f"Beta({a0:g} + goals, {b0:g} + misses); P(goal) is its mean and the interval its "
-            f"{LEVEL:.0%} equal-tailed interval. Nothing is fitted per taker, keeper or "
-            "competition."
-        ]),
-        ("Validation design", ["Nothing is tuned; the model pools all kicks.", *validation]),
-        ("Metrics", [
-            "| Group | Kicks | Matches | Goals | Conversion | P(goal) [95% interval] "
-            "| StatsBomb mean xG |",
-            "|---|---|---|---|---|---|---|",
-            *metrics, "", "### Milestone check", "",
-            *_penalty_check(r, None if team is None else team.rate),
-        ]),
-        ("Benchmarks", benchmarks),
-        ("Limitations & known biases", [
-            "- No taker, keeper or foot: the model cannot tell a specialist from anyone else.",
-            f"- {_spread_line(spread)}",
-            f"- In-game conversion by family: {spread_by_family}.",
-            f"- {shootouts}",
-        ]),
-        ("Data licensing", [LICENSING]),
-        ("Changelog", [f"- {item}" for item in PENALTY_CHANGELOG]),
-    ]  # fmt: skip
-    body = "\n\n".join(f"## {title}\n" + "\n".join(text) for title, text in sections)
-    return f"# Model card: {PENALTY_TITLE}\n\n{body}\n"
-
-
 # ---- GBM card text -----------------------------------------------------------------------
 
 NEAR_IDENTITY: Final[float] = 0.05
@@ -900,6 +293,27 @@ MONOTONE_NOTE: Final[str] = (
 
 def _settings(ev: Evaluation) -> dict[str, float]:
     return {term: value for term, value, _ in ev.coefficients}
+
+
+def gbm_grid(ev: Evaluation) -> Mapping[str, Any]:
+    """The GBM fit's own settings (``get_params``: ``leaf_grid``, ``max_iter``, ...).
+
+    Read from the spec's ``make`` (bound when MonotoneGBM was made), never from gbm's module
+    constants, so a patched grid prints as fitted.
+
+    Raises
+    ------
+    ValueError
+        A benchmark evaluation.
+
+    Examples
+    --------
+    >>> gbm_grid(gbm)["leaf_grid"]  # doctest: +SKIP
+    (8, 16, 32)
+    """
+    if not isinstance(ev.spec, ModelSpec):
+        raise ValueError(f"{ev.spec.name}: a GBM card needs a ModelSpec, not a benchmark")
+    return ev.spec.make().get_params()
 
 
 def gbm_features(ev: Evaluation) -> tuple[str, ...]:
@@ -935,7 +349,8 @@ def gbm_features(ev: Evaluation) -> tuple[str, ...]:
 
 
 def _gbm_model(ev: Evaluation, c: CardContext) -> list[str]:
-    h, s = make_hgb(LEAVES[0], STEP, []), _settings(ev)  # h: the fixed settings of every fit
+    g, s = gbm_grid(ev), _settings(ev)
+    h = gbm.make_hgb(g["leaf_grid"][0], g["step"], [], g["min_samples_leaf"])  # fixed settings
     a, b = s["platt_intercept"], s["platt_slope"]
     near = abs(b - 1.0) <= NEAR_IDENTITY and abs(a) <= NEAR_IDENTITY
     return [
@@ -944,8 +359,9 @@ def _gbm_model(ev: Evaluation, c: CardContext) -> list[str]:
         f"{h.early_stopping}, random_state={h.random_state})`, `monotonic_cst` placed by column "
         f"name, no class weights. scikit-learn {c.sklearn_version}.",
         "",
-        f"Tuning inside each fit: {INNER_SPLITS}-fold `GroupKFold` by match on its training rows,"
-        f" `max_leaf_nodes` in {LEAVES} and {STEP}, {2 * STEP}, ..., {MAX_ITER} iterations "
+        f"Tuning inside each fit: {g['inner_splits']}-fold `GroupKFold` by match on its training "
+        f"rows, `max_leaf_nodes` in {g['leaf_grid']} and {g['step']}, {2 * g['step']}, ..., "
+        f"{g['max_iter']} iterations "
         "(staged scores of one fit per leaf count); the lowest inner out-of-fold log loss wins, "
         "ties to fewer leaves, then fewer iterations. Platt scaling: an unpenalised logistic "
         "regression of the goal on the chosen configuration's inner out-of-fold log-odds, "
@@ -1032,7 +448,7 @@ def gbm_text(
         f"{'are' if carry else 'is'} reported, not explained: this card does not test whether "
         f"the mix causes {'them' if carry else 'it'}."
     )
-    if _settings(ev)["max_leaf_nodes"] == max(LEAVES):
+    if _settings(ev)["max_leaf_nodes"] == max(gbm_grid(ev)["leaf_grid"]):
         lines.append("The grid's largest leaf count was chosen; a wider grid is a follow-up.")
     if isinstance(ev.spec, ModelSpec) and "phase" in ev.spec.features:
         lines.append(ablation.wide_dfk(ev, benchmark, dev))
@@ -1044,14 +460,14 @@ def summary_table(
     evaluations: Sequence[Evaluation],
     benchmarks: Sequence[Evaluation],
     head: Evaluation,
-    penalty: PenaltyRow,
+    penalty: penalties.PenaltyRow,
     sb_gain: Comparison,
 ) -> str:
     """The README summary block: every model and benchmark, the headline in bold, then lines.
 
     ``sb_gain`` is the headline model over ``benchmarks[0]``, which the sentence after the
     table names (:func:`benchmark_sentence`); ``penalty`` is the in-game all row of
-    :func:`penalty_rows`.
+    :func:`~football_shot_models.penalties.penalty_rows`.
 
     Raises
     ------
@@ -1082,7 +498,7 @@ def summary_table(
         f"Penalties (in-game): P(goal) point estimate {r.mean:.4f} [95% interval {r.low:.4f}, "
         f"{r.high:.4f}], {r.n:,} kicks; shoot-outs reported apart.",
         "",
-        MATCH_XG,
+        penalties.MATCH_XG,
     ]
     return "\n".join(lines) + "\n"
 
@@ -1105,9 +521,9 @@ class ModelsRun:
     checks : tuple of Check
         :func:`milestone_checks` of the headline model.
     penalties : tuple of PenaltyRow
-        :func:`penalty_rows`.
+        :func:`~football_shot_models.penalties.penalty_rows`.
     spread : Spread
-        :func:`exchangeability`.
+        :func:`~football_shot_models.penalties.exchangeability`.
     """
 
     evaluations: tuple[Evaluation, ...]
@@ -1120,7 +536,10 @@ class ModelsRun:
 
 
 def run(
-    manifest: StrPath = data.DEFAULT_MANIFEST, *, docs_dir: StrPath = "docs/models"
+    manifest: StrPath = data.DEFAULT_MANIFEST,
+    *,
+    docs_dir: StrPath = "docs/models",
+    cache: StrPath | None = None,
 ) -> ModelsRun:
     """Evaluate every model once, pick the headline, write the step, GBM and penalty cards.
 
@@ -1132,6 +551,10 @@ def run(
         The StatsBomb snapshot manifest.
     docs_dir : str or path, default "docs/models"
         Where ``<name>.md`` is written.
+    cache : str or path, optional
+        Root of the prediction cache (:class:`~football_shot_models.cache.PredictionCache`):
+        every fitted spec reads its predictions there when data, code and spec match, and
+        writes them otherwise. ``None`` (the default) fits everything and writes nothing.
 
     Returns
     -------
@@ -1143,12 +566,14 @@ def run(
     'xg-gbm'
     """
     xg = data.load_xg_data(manifest)
-    dev, held = data.split_holdout(xg.shots)
+    ho = data.pair_holdout(xg.matches)
+    dev, held = data.split_holdout(xg.shots, ho)
     folds = cv_folds(dev)
-    base = tuple(evaluate(b, dev, held, folds) for b in baselines.BASELINES)
+    pc = None if cache is None else PredictionCache(cache, xg.manifest.data_digest)
+    base = tuple(evaluate(b, dev, held, folds, cache=pc) for b in baselines.BASELINES)
     sb = evaluate_benchmark(dev, held, folds)
-    steps, variants = ablation.evaluate_steps(dev, held, folds, xg.freeze_frames)
-    gbm = evaluate(GBM, dev, held, folds, freeze_frames=xg.freeze_frames)
+    steps, variants = ablation.evaluate_steps(dev, held, folds, xg.freeze_frames, cache=pc)
+    gbm = evaluate(GBM, dev, held, folds, freeze_frames=xg.freeze_frames, cache=pc)
     s0, evaluations = base[2], (*base, *steps, gbm)
     by_name = {ev.spec.name: ev for ev in (*base, *steps, *variants)}
     chain = (s0.spec.name, *(ev.spec.name for ev in steps))
@@ -1162,8 +587,9 @@ def run(
     checks = milestone_checks(
         head, sb, s0_gain=s0_gain, sb_gain=sb_gain, gbm_gain=gbm_gain, dev=dev, held=held, s0=s0
     )
-    penalties, spread = penalty_rows(xg.penalties), exchangeability(xg.penalties)
-    context = card_context(xg, dev, held)
+    kicks = penalties.penalty_rows(xg.penalties, holdout=ho)
+    spread = penalties.exchangeability(xg.penalties)
+    context = card_context(xg, dev, held, ho)
     verdicts = {ev.spec.name: verdict(ev, head, gbm_gain) for ev in (*steps, gbm)}
     cards = ablation.step_cards(
         steps, rows, sb, evaluations=evaluations, dev=dev, context=context, verdicts=verdicts,
@@ -1177,7 +603,7 @@ def run(
         comparisons=gbm_rows, checks=checks if head is gbm else (),
         verdict=f"{verdicts[gbm.spec.name]} {benchmark_sentence(gbm, gbm_rows[2], sb)}",
     )  # fmt: skip
-    cards[PENALTY_NAME] = penalty_card(penalties, spread, context)
+    cards[penalties.PENALTY_NAME] = penalties.penalty_card(kicks, spread, context)
     out = Path(docs_dir)
     out.mkdir(parents=True, exist_ok=True)
     for name, card in cards.items():
@@ -1190,9 +616,11 @@ def run(
             print(f"{name} | {g.label}: cv {gain_cell(g.cv)} | hold-out {gain_cell(g.holdout)}")
     print(f"headline: {head.spec.name}")
     print(*(f"check | {c.target} | {c.measured} | {c.result}" for c in checks), sep="\n")
-    print(summary_table(evaluations, (sb,), head, penalties[0], sb_gain), end="")
+    print(summary_table(evaluations, (sb,), head, kicks[0], sb_gain), end="")
     print(f"cards: {out}")
-    return ModelsRun(evaluations, sb, head, all_rows, checks, penalties, spread)
+    if pc is not None:
+        print(f"cache: {pc.dir} ({len(pc.hits)} read, {len(pc.written)} written)")
+    return ModelsRun(evaluations, sb, head, all_rows, checks, kicks, spread)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1209,9 +637,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--manifest", default=data.DEFAULT_MANIFEST, help="snapshot manifest")
     parser.add_argument("--docs-dir", default="docs/models", help="where the cards go")
+    where = parser.add_mutually_exclusive_group()
+    where.add_argument("--cache", default="data/cache", help="prediction cache root (git-ignored)")
+    where.add_argument("--no-cache", action="store_true", help="fit everything, write no cache")
     args = parser.parse_args(argv)
     try:
-        run(args.manifest, docs_dir=args.docs_dir)
+        run(args.manifest, docs_dir=args.docs_dir, cache=None if args.no_cache else args.cache)
     except (ValueError, OSError, snapshot.SnapshotError) as e:
         print(f"fsm: error: {e}", file=sys.stderr)
         return 1

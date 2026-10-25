@@ -96,9 +96,9 @@ def test_penalty_rows() -> None:
     shoot-out all, men, women), each a Jeffreys ``beta_interval`` with distinct matches; the
     hold-out is the pair (kicks in (sb:11, sb:27) and (sb:2, sb:44) are dev); a null StatsBomb
     xG makes that group's ``provider_xg`` None."""
-    from football_shot_models import models
+    from football_shot_models import penalties
 
-    rows = models.penalty_rows(mc.penalties_frame())
+    rows = penalties.penalty_rows(mc.penalties_frame())
     assert _key(rows) == list(mc.PEN_ROWS)
     for row, (n, goals, _) in zip(rows, mc.PEN_ROWS, strict=True):
         assert row.rate == metrics.beta_interval(goals, n)
@@ -108,33 +108,33 @@ def test_penalty_rows() -> None:
     assert all(v == pytest.approx(0.7835) for v in sb[:7])
     assert sb[7:] == [None, pytest.approx(0.8), None]
     # a custom hold-out expression (MS4's season split) picks its own rows
-    custom = models.penalty_rows(mc.penalties_frame(), holdout=pl.col("season_id") == "sb:44")
+    custom = penalties.penalty_rows(mc.penalties_frame(), holdout=pl.col("season_id") == "sb:44")
     assert _key(custom)[1:3] == [(9, 6, 5), (1, 1, 1)]
 
 
 def test_penalty_rows_skips_empty_groups() -> None:
     """§3.3: a group with no kick has no row (no women, no hold-out, no shoot-out), and a 0-kick
     hold-out does not raise as ``split_holdout`` would."""
-    from football_shot_models import models
+    from football_shot_models import penalties
 
     men = tuple(k for k in mc.PEN_KICKS if k[1] != "sb:m05")
-    assert _key(models.penalty_rows(mc.penalties_frame(men))) == [
+    assert _key(penalties.penalty_rows(mc.penalties_frame(men))) == [
         (7, 5, 5), (4, 3, 3), (3, 2, 2), (7, 5, 5), (5, 4, 4), (2, 1, 1), (3, 2, 1), (3, 2, 1),
     ]  # fmt: skip
     dev_only = tuple(k for k in mc.PEN_KICKS if k[1] not in ("sb:m01", "sb:m02"))
-    rows = models.penalty_rows(mc.penalties_frame(dev_only))
+    rows = penalties.penalty_rows(mc.penalties_frame(dev_only))
     assert _key(rows)[:3] == [(7, 5, 4), (7, 5, 4), (4, 3, 3)]
     in_game = tuple(k for k in mc.PEN_KICKS if k[2] != 5)
-    assert len(models.penalty_rows(mc.penalties_frame(in_game))) == 7
+    assert len(penalties.penalty_rows(mc.penalties_frame(in_game))) == 7
 
 
 def test_penalty_rows_shootout_apart() -> None:
     """§1.7, §9: a shoot-out kick's outcome changes only the shoot-out rows."""
-    from football_shot_models import models
+    from football_shot_models import penalties
 
     frame = mc.penalties_frame()
     flipped = mc.set_value(frame, "is_goal", 14, True)  # sb:s05, a women's shoot-out miss
-    before, after = models.penalty_rows(frame), models.penalty_rows(flipped)
+    before, after = penalties.penalty_rows(frame), penalties.penalty_rows(flipped)
     assert before[:7] == after[:7]
     assert _key(after)[7:] == [(5, 4, 2), (3, 2, 1), (2, 2, 1)]
 
@@ -162,10 +162,10 @@ def test_penalty_rows_shootout_apart() -> None:
 )
 def test_penalty_rows_raise(edit: Any, match: str) -> None:
     """§3.3: another exclusion reason, a null key and no in-game penalty are ValueErrors."""
-    from football_shot_models import models
+    from football_shot_models import penalties
 
     with pytest.raises(ValueError, match=match):
-        models.penalty_rows(edit(mc.penalties_frame()))
+        penalties.penalty_rows(edit(mc.penalties_frame()))
 
 
 @settings(deadline=None, max_examples=40)
@@ -179,13 +179,13 @@ def test_penalty_rows_raise(edit: Any, match: str) -> None:
 def test_penalty_rows_property(kicks: list[tuple[str, int, bool]]) -> None:
     """Property: the first row pools every in-game kick (never a shoot-out kick), and flipping
     every shoot-out outcome leaves all in-game rows unchanged."""
-    from football_shot_models import models
+    from football_shot_models import penalties
 
     table = tuple(
         (f"sb:k{i:02d}", m, p, g, f"sb:p-{i % 3}", 0.7835) for i, (m, p, g) in enumerate(kicks)
     )
     flipped = tuple((s, m, p, (not g) if p == 5 else g, t, x) for s, m, p, g, t, x in table)
-    rows = models.penalty_rows(mc.penalties_frame(table))
+    rows = penalties.penalty_rows(mc.penalties_frame(table))
     in_game = [(m, g) for m, p, g in kicks if p != 5]
     first = rows[0]
     assert first.rate == metrics.beta_interval(sum(g for _, g in in_game), len(in_game))
@@ -194,7 +194,7 @@ def test_penalty_rows_property(kicks: list[tuple[str, int, bool]]) -> None:
     if any(p == 5 for _, p, _ in kicks):
         genders = {mc.PEN_MATCHES[m][2] for m, p, _ in kicks if p == 5}
         shootout_rows = 1 + len(genders)
-    again = models.penalty_rows(mc.penalties_frame(flipped))
+    again = penalties.penalty_rows(mc.penalties_frame(flipped))
     k = len(rows) - shootout_rows
     assert again[:k] == rows[:k]
 
@@ -207,32 +207,32 @@ def test_exchangeability() -> None:
     alone 4, by competition alone 3), p = 7/10, chi2 = 80/63 by hand; the top taker has 3
     in-game kicks (6 with his shoot-out kicks, which do not count). One group or a pooled rate
     of 0 or 1 gives None; a null ``player_id`` on an in-game kick raises."""
-    from football_shot_models import models
+    from football_shot_models import penalties
 
-    s = models.exchangeability(mc.penalties_frame())
+    s = penalties.exchangeability(mc.penalties_frame())
     assert (s.groups, s.df, s.top_taker_kicks, s.kicks) == (5, 4, 3, 10)
     assert s.dispersion == pytest.approx(80 / 63 / 4, abs=1e-12)
     assert s.p_value == pytest.approx(float(stats.chi2.sf(80 / 63, 4)), abs=1e-12)
     # one competition-season (df 0) or a pooled rate of 0 or 1: not estimable (§9)
     one = tuple(k for k in mc.PEN_KICKS if k[1] in ("sb:m01", "sb:m02") or k[2] == 5)
-    s = models.exchangeability(mc.penalties_frame(one))
+    s = penalties.exchangeability(mc.penalties_frame(one))
     assert (s.groups, s.df, s.dispersion, s.p_value) == (1, 0, None, None)
     all_goals = tuple((a, b, p, True if p != 5 else g, t, x) for a, b, p, g, t, x in mc.PEN_KICKS)
-    s = models.exchangeability(mc.penalties_frame(all_goals))
+    s = penalties.exchangeability(mc.penalties_frame(all_goals))
     assert (s.groups, s.dispersion, s.p_value) == (5, None, None)
     with pytest.raises(ValueError, match="player_id"):
-        models.exchangeability(mc.with_null(mc.penalties_frame(), "player_id", 6))
+        penalties.exchangeability(mc.with_null(mc.penalties_frame(), "player_id", 6))
 
 
 # ---- penalty card -----------------------------------------------------------------------------
 
 
 def _card(rows: Any = None, frame: pl.DataFrame | None = None) -> str:
-    from football_shot_models import models
+    from football_shot_models import penalties
 
     frame = mc.penalties_frame() if frame is None else frame
-    rows = models.penalty_rows(frame) if rows is None else rows
-    return str(models.penalty_card(rows, models.exchangeability(frame), mc.card_context()))
+    rows = penalties.penalty_rows(frame) if rows is None else rows
+    return str(penalties.penalty_card(rows, penalties.exchangeability(frame), mc.card_context()))
 
 
 def _check_row(card: str) -> list[str]:
@@ -244,9 +244,9 @@ def test_penalty_card() -> None:
     """§3.3: the template headings, name / title / version, features, the Metrics table, the
     validation and Benchmarks sentences for a hold-out row, the exchangeability, shoot-out and
     match-xG text, licensing; no date and no "CI inside"."""
-    from football_shot_models import models
+    from football_shot_models import penalties
 
-    rows = models.penalty_rows(mc.penalties_frame())
+    rows = penalties.penalty_rows(mc.penalties_frame())
     card = _card()
     lines = card.splitlines()
     template = [x for x in TEMPLATE.read_text(encoding="utf-8").splitlines() if x.startswith("## ")]
@@ -294,7 +294,7 @@ def test_penalty_card_no_holdout_and_na() -> None:
     """§3.3: without a hold-out row both sections say so; a dev estimate outside the hold-out
     interval says ``outside``; a null StatsBomb xG prints ``n/a``; an inestimable dispersion
     prints ``not estimable``."""
-    from football_shot_models import models
+    from football_shot_models import penalties
 
     dev_only = tuple(k for k in mc.PEN_KICKS if k[1] not in ("sb:m01", "sb:m02"))
     card = _card(frame=mc.penalties_frame(dev_only))
@@ -302,7 +302,7 @@ def test_penalty_card_no_holdout_and_na() -> None:
     assert sentence in _section(card, "## Validation design")
     assert sentence in _section(card, "## Benchmarks")
     frame = mc.with_null(mc.penalties_frame(), "provider_xg", 2)  # a hold-out kick
-    rows = models.penalty_rows(frame)
+    rows = penalties.penalty_rows(frame)
     assert rows[2].provider_xg is None
     narrow = dataclasses.replace(rows[2], rate=metrics.Rate(3, 2, 2 / 3, 0.9, 0.8, 0.95))
     card = _card(rows=(*rows[:2], narrow, *rows[3:]), frame=frame)
@@ -332,10 +332,10 @@ def test_penalty_card_check_row(
     """§1.8, §3.3: the milestone checks the point estimate in [0.76, 0.80] (bounds inclusive),
     prints the interval and the margin to the nearer bound, and says when the interval extends
     below or above the 0.04 window."""
-    from football_shot_models import models
+    from football_shot_models import penalties
 
-    assert models.PENALTY_RANGE == (0.76, 0.80)
-    rows = models.penalty_rows(mc.penalties_frame())
+    assert penalties.PENALTY_RANGE == (0.76, 0.80)
+    rows = penalties.penalty_rows(mc.penalties_frame())
     pooled = dataclasses.replace(rows[0], rate=metrics.Rate(1118, 853, 853 / 1118, mean, low, high))
     card = _card(rows=(pooled, *rows[1:]))
     row = _check_row(card)
@@ -355,9 +355,9 @@ def test_penalty_card_without_team_selected() -> None:
     """run3-ms3 (football 10): under the milestone check, the pooled estimate without the
     team-selected seasons (all in-game kicks minus that family's) and whether it is inside the
     window; no team-selected row -> no line."""
-    from football_shot_models import models
+    from football_shot_models import penalties
 
-    rows = models.penalty_rows(mc.penalties_frame())
+    rows = penalties.penalty_rows(mc.penalties_frame())
     team = next(r for r in rows if r.label == "In-game: team-selected")
     assert (team.rate.n, team.rate.goals) == (2, 1)
     pooled = dataclasses.replace(rows[0], rate=metrics.Rate(1118, 853, 853 / 1118, 0.7627, 0, 1))
@@ -371,7 +371,7 @@ def test_penalty_card_without_team_selected() -> None:
         f"estimate is {rest.mean:.4f} [{rest.low:.4f}, {rest.high:.4f}] from 909 kicks, outside "
         "the window."
     ) in check
-    assert rest.mean < models.PENALTY_RANGE[0]
+    assert rest.mean < penalties.PENALTY_RANGE[0]
     inside = dataclasses.replace(team, rate=metrics.beta_interval(59, 100))
     by = [pooled if r is rows[0] else inside if r is team else r for r in rows]
     assert "from 1,018 kicks, inside the window." in _section(
@@ -384,7 +384,7 @@ def test_penalty_card_without_team_selected() -> None:
 def test_exchangeability_null_is_goal() -> None:
     """run3-ms3 (QA 15): a null ``is_goal`` among in-game kicks raises (it would otherwise count as
     a miss in the dispersion)."""
-    from football_shot_models import models
+    from football_shot_models import penalties
 
     with pytest.raises(ValueError, match="is_goal has 1 null"):
-        models.exchangeability(mc.with_null(mc.penalties_frame(), "is_goal", 6))
+        penalties.exchangeability(mc.with_null(mc.penalties_frame(), "is_goal", 6))

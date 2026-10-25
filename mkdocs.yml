@@ -64,6 +64,7 @@ nav:
       - "LR splines + context + freeze frames": models/xg-lr-frames.md
       - "Monotone GBM + Platt": models/xg-gbm.md
       - "Penalty conversion (Beta-binomial)": models/xg-penalty.md
+      - "xG v1 (WhoScored / Opta events)": models/xg-v1.md
   - References: references.md
   - API reference:
       - data: api/data.md
@@ -74,3 +75,9 @@ nav:
       - baselines: api/baselines.md
       - ablation: api/ablation.md
       - models: api/models.md
+      - gbm: api/gbm.md
+      - penalties: api/penalties.md
+      - cache: api/cache.md
+      - legacy: api/legacy.md
+      - v1: api/v1.md
+      - release: api/release.md

@@ -25,12 +25,18 @@ Three additions sit on top of the roles:
   ``needs`` names features it is only defined together with: a keeper distance of 0.0 means
   "no keeper" only next to ``gk_absent``.
 
-The registry :data:`DERIVED` holds the M1.2 and M1.3 features. Every one is computed per shot
-from that shot's own row and freeze frame, never from other shots: the spline knots are fixed
-constants (rounded, label-free quantiles), so a fold fit cannot leak through them, and the
-freeze-frame features are local to the shot (shooting cone, nearest opponent, keeper), in
-canonical metres (``football_core.pitch``). The frame is recorded at the strike, so it is
-pre-shot.
+**Ablation only.** A ``restricted`` column in :data:`ABLATION_ONLY` (Opta's big chance) may
+enter a labelled ablation and never a candidate model. A model spec carries a *guard*, the
+function that checks its feature names (default :func:`check_xg_features`, which refuses it);
+an ablation passes :func:`check_ablation_features` instead, and :func:`uses_ablation_only` is
+the one rule that keeps such a spec out of the model choice.
+
+The registry :data:`DERIVED` holds the M1.2 and M1.3 features, and ``assist`` (MS4). Every
+one is computed per shot from that shot's own row and freeze frame, never from other shots:
+the spline knots are fixed constants (rounded, label-free quantiles), so a fold fit cannot
+leak through them, and the freeze-frame features are local to the shot (shooting cone,
+nearest opponent, keeper), in canonical metres (``football_core.pitch``). The frame is
+recorded at the strike, so it is pre-shot.
 
 :func:`design_matrix` is the only way the models turn a frame into numbers, and it calls the
 guard first. It never fills a missing value: a null, NaN or infinity is an error, because a
@@ -259,6 +265,21 @@ def _phase(t: Tables) -> pl.Series:
     return t["shots"].select(expr).to_series()
 
 
+# The archive has no pull-back qualifier, so a cutback level would be a constant-0 indicator.
+ASSISTS: Final = tuple(a for a in schema.ASSIST_TYPES if a != "cutback")
+ASSIST: Final = pl.Enum(ASSISTS)
+
+
+def _assist(t: Tables) -> pl.Series:
+    col = t["shots"]["assist_type"].cast(pl.String)
+    if bad := int(col.is_in(["cutback"]).sum()):
+        raise ValueError(
+            f"derived feature 'assist': {bad} cutback value(s); the archive has no pull-back "
+            "qualifier (C5 census), so a cutback level would be a constant-0 column"
+        )
+    return col.cast(ASSIST)
+
+
 def _contact(t: Tables) -> pl.Series:
     tech = pl.col("technique").cast(pl.String)
     lob_as_normal = pl.when(tech == "lob").then(pl.lit("normal")).otherwise(tech)
@@ -366,6 +387,7 @@ DERIVED: Final[Mapping[str, DerivedFeature]] = MappingProxyType(
             *(_spline("angle_rad", ANGLE_KNOTS, j) for j in range(len(ANGLE_KNOTS) - 2)),
             DerivedFeature("phase", (("shots", "situation"), ("shots", "y")), _phase),
             DerivedFeature("contact", (("shots", "technique"),), _contact),
+            DerivedFeature("assist", (("shots", "assist_type"),), _assist),
             *FRAME_FEATURES,
         )
     }
@@ -447,6 +469,81 @@ def check_xg_features(
     return names
 
 
+Guard = Callable[[Sequence[str], Mapping[str, DerivedFeature]], tuple[str, ...]]
+ABLATION_ONLY: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "big_chance": "Opta q214 is an analyst's label of the chance; it enters a labelled "
+        "ablation only, never a headline model"
+    }
+)
+
+
+def uses_ablation_only(names: Sequence[str]) -> bool:
+    """True when any name is an :data:`ABLATION_ONLY` column: the spec is an ablation.
+
+    The one rule behind "an ablation never qualifies" (``evaluation.best``) and the v1 check
+    "big chance only in the labelled ablation".
+
+    Raises
+    ------
+    TypeError
+        If ``names`` is a single ``str``.
+
+    Examples
+    --------
+    >>> uses_ablation_only(("distance_m", "big_chance")), uses_ablation_only(("distance_m",))
+    (True, False)
+    """
+    if isinstance(names, str):
+        raise TypeError("features must be a sequence of column names, not a single str")
+    return any(n in ABLATION_ONLY for n in names)
+
+
+def check_ablation_features(
+    names: Sequence[str], derived: Mapping[str, DerivedFeature] = DERIVED
+) -> tuple[str, ...]:
+    """The guard of a labelled ablation: :func:`check_xg_features` plus ``ABLATION_ONLY``.
+
+    Parameters
+    ----------
+    names : sequence of str
+        Feature names, at least one of them in :data:`ABLATION_ONLY`.
+    derived : mapping of str to DerivedFeature, default DERIVED
+        Registered derived features.
+
+    Returns
+    -------
+    tuple of str
+        The names, in the given order.
+
+    Raises
+    ------
+    TypeError
+        If ``names`` is a single ``str``.
+    ValueError
+        No ``ABLATION_ONLY`` name, a duplicate, or any refusal of :func:`check_xg_features` on
+        the other names (so post-shot and outcome columns stay refused).
+
+    Examples
+    --------
+    >>> check_ablation_features(["distance_m", "big_chance"])
+    ('distance_m', 'big_chance')
+    >>> check_ablation_features(["goal_y", "big_chance"])
+    Traceback (most recent call last):
+    ...
+    ValueError: column 'goal_y' has role 'post_shot'; xG features must have role 'pre_shot'
+    """
+    if isinstance(names, str):
+        raise TypeError("features must be a sequence of column names, not a single str")
+    out = tuple(names)
+    if not uses_ablation_only(out):
+        raise ValueError(f"an ablation guard needs one of {sorted(ABLATION_ONLY)}; got {out}")
+    if len(set(out)) != len(out):
+        raise ValueError(f"duplicate feature names in {out}")
+    check_xg_features([n for n in out if n not in ABLATION_ONLY], derived)
+    return out
+
+
 def _derive(
     feature: DerivedFeature, shots: pl.DataFrame, freeze_frames: pl.DataFrame | None
 ) -> pl.Series:
@@ -506,6 +603,7 @@ def design_matrix(
     *,
     derived: Mapping[str, DerivedFeature] = DERIVED,
     freeze_frames: pl.DataFrame | None = None,
+    guard: Guard | None = None,
 ) -> tuple[FloatArray, tuple[str, ...]]:
     """The float64 feature matrix of the given xG features, and its column names.
 
@@ -523,6 +621,10 @@ def design_matrix(
         Registered derived features.
     freeze_frames : polars.DataFrame, optional
         C3 freeze frames, for derived features that read them.
+    guard : callable, optional
+        ``guard(features, derived)`` checks the names first; ``None`` is
+        :func:`check_xg_features`, looked up when called (a labelled ablation passes
+        :func:`check_ablation_features`).
 
     Returns
     -------
@@ -534,7 +636,7 @@ def design_matrix(
     Raises
     ------
     TypeError, ValueError
-        As :func:`check_xg_features`; also a feature missing from the frame, a null, NaN or
+        As the guard; also a feature missing from the frame, a null, NaN or
         infinite value, an unsupported dtype (List, String), or a derived feature without its
         table or returning the wrong length.
 
@@ -553,7 +655,7 @@ def design_matrix(
     >>> design_matrix(shots, ["near"], derived={"near": near})[0].tolist()
     [[1.0], [0.0]]
     """
-    names = check_xg_features(features, derived)
+    names = (guard or check_xg_features)(features, derived)
     frame = shots
     for name in names:
         if name in derived:
