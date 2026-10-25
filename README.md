@@ -13,9 +13,10 @@ Building, evaluating and documenting **shot models** for football from first pri
 > below, none typed here). Two of its check rows are missed, each with a computed reason on the
 > card: the test log-loss bound, and the gain over the legacy v0, which reads Opta's big-chance
 > tag (q214, a column v1's leakage rule bars). The block also gives the headline's gain over
-> v0's own inputs refitted without q214, a labelled counterfactual. Whether the v0 element is
-> met, re-baselined or missed is a PM ruling, pending. Milestone 3 (the StatsBomb xG model) is
-> below. See [`docs/roadmap.md`](docs/roadmap.md).
+> v0's own inputs refitted without q214, a labelled counterfactual. PM ruling (2026-10-25):
+> both misses stand as recorded misses, and the v0 comparison is re-baselined to v0's inputs
+> without q214, which the headline beats with an interval above 0; milestone 4 is done on that
+> basis. Milestone 3 (the StatsBomb xG model) is below. See [`docs/roadmap.md`](docs/roadmap.md).
 
 ### Results (MS3, every model and StatsBomb xG on the same shots)
 
