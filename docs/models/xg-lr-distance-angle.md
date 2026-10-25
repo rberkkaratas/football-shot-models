@@ -1,7 +1,7 @@
 # Model card: LR distance + angle
 
 ## Overview
-- **Name / version:** `xg-lr-distance-angle` v3
+- **Name / version:** `xg-lr-distance-angle` v4
 - **Task:** binary classification: P(goal | shot) for non-penalty shots in periods 1–4 (extra time included; direct free kicks and corners from open play or set pieces included; direct corners, own goals and shoot-outs excluded)
 - **Status:** experimental
 - Baseline for M1.1. Not the best baseline; that is LR distance + angle + body part.
@@ -64,7 +64,7 @@ Grouped 5-fold cross-validation by `match_id` on dev (`GroupKFold`, no shuffle):
 
 Skill is `1 − metric / base-rate metric` on the same shots and column.
 
-### Milestone thresholds
+### MS2 thresholds (retired; see the headline model's MS3 checks)
 
 | Threshold | CV | Hold-out | CV result |
 |---|---|---|---|
@@ -104,7 +104,6 @@ Pooled out of fold. Log-loss skill is `1 − log loss / log loss of a constant a
 |---|---|---|---|---|---|---|---|---|---|
 | family = league or tournament | 38,218 | 3,634 | 9.51% | 3765.4735 | 1.0362 | 0.2777 | 0.0782 | 0.1159 | 1.0419 |
 | family = team-selected | 17,769 | 2,115 | 11.90% | 1741.6622 | 0.8235 | 0.3254 | 0.0952 | 0.1086 | 1.0657 |
-| family = women | 33,910 | 3,553 | 10.48% | 3795.3295 | 1.0682 | 0.3015 | 0.0859 | 0.1012 | 0.9457 |
 | gender = female | 33,910 | 3,553 | 10.48% | 3795.3295 | 1.0682 | 0.3015 | 0.0859 | 0.1012 | 0.9457 |
 | gender = male | 55,987 | 5,749 | 10.27% | 5507.1357 | 0.9579 | 0.2928 | 0.0836 | 0.1151 | 1.0454 |
 | body_part = right_foot | 47,459 | 4,784 | 10.08% | 3920.6338 | 0.8195 | 0.2822 | 0.0805 | 0.1366 | 1.2561 |
@@ -137,3 +136,4 @@ Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Ne
 - v1 (MS2): first baseline.
 - v2 (MS3): direct corners excluded (logged on outcome), all numbers re-measured; Segments show the pooled-OOF calibration slope.
 - v3 (MS3, M1.4): the benchmark table shows calibration slopes.
+- v4 (MS3 assessment): the MS2 thresholds are marked retired; the family = women segment row (the gender = female row) is printed once.

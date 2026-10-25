@@ -1,7 +1,7 @@
 # Model card: LR splines + context
 
 ## Overview
-- **Name / version:** `xg-lr-context` v2
+- **Name / version:** `xg-lr-context` v3
 - **Task:** binary classification: P(goal | shot) for non-penalty shots in periods 1–4 (extra time included; direct free kicks and corners from open play or set pieces included; direct corners, own goals and shoot-outs excluded)
 - **Status:** experimental
 - M1.2 step S2: S1 plus the context columns. Not the headline model; that is Monotone GBM + Platt.
@@ -147,7 +147,6 @@ Pooled out of fold. Log-loss skill is `1 − log loss / log loss of a constant a
 |---|---|---|---|---|---|---|---|---|---|
 | family = league or tournament | 38,218 | 3,634 | 9.51% | 3591.6813 | 0.9884 | 0.2569 | 0.0724 | 0.1823 | 1.0297 |
 | family = team-selected | 17,769 | 2,115 | 11.90% | 1956.8070 | 0.9252 | 0.2961 | 0.0865 | 0.1887 | 1.0108 |
-| family = women | 33,910 | 3,553 | 10.48% | 3754.0484 | 1.0566 | 0.2817 | 0.0805 | 0.1604 | 0.9541 |
 | gender = female | 33,910 | 3,553 | 10.48% | 3754.0484 | 1.0566 | 0.2817 | 0.0805 | 0.1604 | 0.9541 |
 | gender = male | 55,987 | 5,749 | 10.27% | 5548.4883 | 0.9651 | 0.2693 | 0.0769 | 0.1862 | 1.0255 |
 | body_part = right_foot | 47,459 | 4,784 | 10.08% | 4784.8379 | 1.0002 | 0.2630 | 0.0749 | 0.1954 | 0.9987 |
@@ -172,12 +171,13 @@ StatsBomb xG is a reference ceiling, not a like-for-like out-of-sample competito
 ## Limitations & known biases
 - Wide direct free kicks (y < 13.84 or > 54.16, n 378 in dev): goal rate 0.074, this model's mean xG 0.025, StatsBomb 0.008. They are logged as shots mostly when they threaten goal and join `phase = free_kick`, so the model rates them low.
 - `open_goal` and `one_on_one` are StatsBomb annotator judgements; other providers record them differently or not at all.
-- The context columns were selected on CV among seven candidates, a small optimism. On the hold-out the `phase` interval reaches 0 and the keeper group's includes it (gain tables).
+- The context columns were selected on CV among seven candidates, a small optimism; their drop-one rows are in the gain table of `xg-lr-context`.
 - Lob is merged into normal contact: it is labelled from the ball's flight, after the strike.
 - No score state: the game situation enters only through `phase` and the freeze frame.
 - Men and women are pooled: adding `gender` gives no gain with a CV interval above 0 (see the gain table of `xg-lr-context`); the Segments table gives each one's calibration slope.
-- The hold-out (Premier League 2015/16) has no women's shots, so women are judged on the pooled out-of-fold predictions only.
 - Direct corners are excluded (logged on outcome); penalties are a separate model (M1.5).
+- On the hold-out every drop-one interval in this card's gain table lies above 0.
+- The hold-out (Premier League 2015/2016) has no women's shots, so women are judged on the pooled out-of-fold predictions only.
 
 ## Data licensing
 Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Never committed or redistributed; this card holds aggregates only.
@@ -185,3 +185,4 @@ Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Ne
 ## Changelog
 - v1 (MS3): first version.
 - v2 (MS3, M1.4): the benchmark table lists the GBM and calibration slopes; the overview names the headline model (v1's 'best model' sentence held until the GBM was added).
+- v3 (MS3 assessment): the hold-out drop-one and women's lines are computed; the family = women segment row (the gender = female row) is printed once.

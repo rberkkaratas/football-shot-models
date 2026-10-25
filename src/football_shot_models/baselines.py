@@ -143,6 +143,8 @@ CHANGELOG: Final[tuple[str, ...]] = (
     "v2 (MS3): direct corners excluded (logged on outcome), all numbers re-measured; Segments "
     "show the pooled-OOF calibration slope.",
     "v3 (MS3, M1.4): the benchmark table shows calibration slopes.",
+    "v4 (MS3 assessment): the MS2 thresholds are marked retired; the family = women segment row "
+    "(the gender = female row) is printed once.",
 )
 
 

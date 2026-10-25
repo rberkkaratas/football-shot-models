@@ -1,7 +1,7 @@
 # Model card: LR splines + body part
 
 ## Overview
-- **Name / version:** `xg-lr-splines` v2
+- **Name / version:** `xg-lr-splines` v3
 - **Task:** binary classification: P(goal | shot) for non-penalty shots in periods 1–4 (extra time included; direct free kicks and corners from open play or set pieces included; direct corners, own goals and shoot-outs excluded)
 - **Status:** experimental
 - M1.2 step S1: the MS2 best baseline plus spline terms of distance and angle. Not the headline model; that is Monotone GBM + Platt.
@@ -120,7 +120,6 @@ Pooled out of fold. Log-loss skill is `1 − log loss / log loss of a constant a
 |---|---|---|---|---|---|---|---|---|---|
 | family = league or tournament | 38,218 | 3,634 | 9.51% | 3653.4752 | 1.0054 | 0.2673 | 0.0754 | 0.1491 | 1.0523 |
 | family = team-selected | 17,769 | 2,115 | 11.90% | 1795.7269 | 0.8490 | 0.3105 | 0.0909 | 0.1493 | 1.0783 |
-| family = women | 33,910 | 3,553 | 10.48% | 3854.7072 | 1.0849 | 0.2943 | 0.0843 | 0.1228 | 0.9183 |
 | gender = female | 33,910 | 3,553 | 10.48% | 3854.7072 | 1.0849 | 0.2943 | 0.0843 | 0.1228 | 0.9183 |
 | gender = male | 55,987 | 5,749 | 10.27% | 5449.2021 | 0.9479 | 0.2810 | 0.0803 | 0.1509 | 1.0623 |
 | body_part = right_foot | 47,459 | 4,784 | 10.08% | 4785.0489 | 1.0002 | 0.2767 | 0.0791 | 0.1534 | 0.9805 |
@@ -145,8 +144,8 @@ StatsBomb xG is a reference ceiling, not a like-for-like out-of-sample competito
 ## Limitations & known biases
 - Geometry and body part only: no context, defenders or keeper.
 - Men and women are pooled: adding `gender` gives no gain with a CV interval above 0 (see the gain table of `xg-lr-context`); the Segments table gives each one's calibration slope.
-- The hold-out (Premier League 2015/16) has no women's shots, so women are judged on the pooled out-of-fold predictions only.
 - Direct corners are excluded (logged on outcome); penalties are a separate model (M1.5).
+- The hold-out (Premier League 2015/2016) has no women's shots, so women are judged on the pooled out-of-fold predictions only.
 
 ## Data licensing
 Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Never committed or redistributed; this card holds aggregates only.
@@ -154,3 +153,4 @@ Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Ne
 ## Changelog
 - v1 (MS3): first version.
 - v2 (MS3, M1.4): the benchmark table lists the GBM and calibration slopes; the overview names the headline model (v1's 'best model' sentence held until the GBM was added).
+- v3 (MS3 assessment): the hold-out drop-one and women's lines are computed; the family = women segment row (the gender = female row) is printed once.

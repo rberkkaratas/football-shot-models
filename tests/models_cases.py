@@ -130,10 +130,11 @@ def gain(gain: float, low: float, high: float) -> metrics.GainCI:
 def statsbomb_sentence(
     models: Any, ev: evaluation.Evaluation, sb_gain: Any, benchmark: evaluation.Evaluation
 ) -> str:
-    """Call ``models.statsbomb_sentence``. Spec §3.2 gives ``(ev, sb_gain)``, but the sentence
-    prints StatsBomb's own hold-out Σ xG, which only the benchmark evaluation holds; when the
-    Engineer adds a ``benchmark`` parameter it is passed by name (choice for the Architect)."""
-    fn: Callable[..., str] = models.statsbomb_sentence
+    """Call ``models.benchmark_sentence`` (``statsbomb_sentence`` until the run3-ms3 fix pass).
+    Spec §3.2 gives ``(ev, sb_gain)``, but the sentence prints the benchmark's own hold-out Σ xG,
+    which only the benchmark evaluation holds; when the Engineer adds a ``benchmark`` parameter it
+    is passed by name (choice for the Architect)."""
+    fn: Callable[..., str] = models.benchmark_sentence
     if "benchmark" in inspect.signature(fn).parameters:
         return fn(ev, sb_gain, benchmark=benchmark)
     return fn(ev, sb_gain)
@@ -155,6 +156,7 @@ def card_context() -> Any:
         competition_seasons=5,
         male_shots=600,
         female_shots=200,
+        holdout_female_shots=0,
         exclusions=tuple((r, 1, 0) for r in data.EXCLUSION_REASONS),
         team_selected_seasons=1,
         team_selected_short=0,

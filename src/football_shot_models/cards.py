@@ -68,6 +68,7 @@ class CardContext:
     competition_seasons: int
     male_shots: int
     female_shots: int
+    holdout_female_shots: int  # women's shots in the hold-out (the cards' pooled-gender line)
     exclusions: tuple[tuple[str, int, int], ...]  # (reason, shots, goals), every reason
     team_selected_seasons: int  # competition-seasons in the team-selected family
     team_selected_short: int  # of those, with one or two matches (both teams reach 50 %)
@@ -92,6 +93,9 @@ class CardText:
         One bullet each.
     best_label : str, default "baseline"
         What the overview calls the best of the evaluations ("This is the best baseline").
+    checks_title, checks_note : str, default CHECKS_TITLE, CHECKS_NOTE
+        The heading and the sentence of the milestone checks section, so a later milestone's
+        checks render under their own name.
     """
 
     role: str
@@ -101,6 +105,12 @@ class CardText:
     limitations: tuple[str, ...]
     changelog: tuple[str, ...]
     best_label: str = "baseline"
+    checks_title: str = "Milestone checks (MS3)"
+    checks_note: str = "Thresholds re-baselined by the PM: targets are relative to the same shots."
+
+
+CHECKS_TITLE: Final[str] = CardText.checks_title
+CHECKS_NOTE: Final[str] = CardText.checks_note
 
 
 def card_context(xg: data.XgData, dev: pl.DataFrame, held: pl.DataFrame) -> CardContext:
@@ -137,6 +147,7 @@ def card_context(xg: data.XgData, dev: pl.DataFrame, held: pl.DataFrame) -> Card
         competition_seasons=xg.shots.select("competition_id", "season_id").n_unique(),
         male_shots=int((gender == "male").sum()),
         female_shots=int((gender == "female").sum()),
+        holdout_female_shots=int((held["gender"] == "female").sum()),
         exclusions=tuple(
             (
                 reason,
@@ -260,8 +271,15 @@ def _segment(dev: pl.DataFrame, oof: FloatArray, column: str, value: str) -> dic
 def _segments(dev: pl.DataFrame) -> tuple[tuple[str, str], ...]:
     dtype = dev["body_part"].dtype
     body = tuple(dtype.categories.to_list()) if isinstance(dtype, pl.Enum) else ()
+    genders = [(dev["gender"].cast(pl.String) == g).to_numpy() for g in ("female", "male")]
+    # a family that is a gender row by construction (women = female) is printed once
+    same = {
+        v
+        for v in data.FAMILIES
+        if any(np.array_equal((dev["family"].cast(pl.String) == v).to_numpy(), g) for g in genders)
+    }
     return (
-        *(("family", v) for v in data.FAMILIES),
+        *(("family", v) for v in data.FAMILIES if v not in same),
         *(("gender", v) for v in ("female", "male")),
         *(("body_part", v) for v in body),
     )
@@ -383,18 +401,13 @@ def side(g: GainCI) -> str:
     return "lies above 0" if g.low > 0 else "lies below 0" if g.high < 0 else "includes 0"
 
 
-CHECKS_NOTE: Final[str] = (
-    "Thresholds re-baselined by the PM: targets are relative to the same shots."
-)
-
-
-def _checks_section(checks: Sequence[Check]) -> list[str]:
+def _checks_section(checks: Sequence[Check], text: CardText) -> list[str]:
     if not checks:
         return []
     return [
-        "### Milestone checks (MS3)",
+        f"### {text.checks_title}",
         "",
-        CHECKS_NOTE,
+        text.checks_note,
         "",
         "| Target | Measured | Result |",
         "|---|---|---|",
@@ -419,6 +432,9 @@ def _gain_section(comparisons: Sequence[Comparison]) -> list[str]:
     ]
 
 
+THRESHOLDS_TITLE: Final[str] = "MS2 thresholds (retired; see the headline model's MS3 checks)"
+
+
 def _thresholds_section(
     ev: Evaluation,
     base: Evaluation,
@@ -430,7 +446,7 @@ def _thresholds_section(
         return []
     cv, held = check_thresholds(ev.cv, thresholds), check_thresholds(ev.holdout, thresholds)
     lines = [
-        "### Milestone thresholds",
+        f"### {THRESHOLDS_TITLE}",
         "",
         "| Threshold | CV | Hold-out | CV result |",
         "|---|---|---|---|",
@@ -504,7 +520,7 @@ def render_card(
     context : CardContext
         Provenance and population counts.
     thresholds : sequence of Threshold, default THRESHOLDS
-        The milestone targets; empty leaves out the "Milestone thresholds" section.
+        The retired MS2 targets; empty leaves out their section (``THRESHOLDS_TITLE``).
     comparisons : sequence of Comparison, default ()
         Log-loss gains of this model over others; non-empty adds the "Log-loss gain" section
         after the metrics table.
@@ -512,7 +528,7 @@ def render_card(
         The overview sentence after the role; replaces "This is the best ..." (the headline
         model's verdict, :func:`football_shot_models.models.verdict`).
     checks : sequence of Check, default ()
-        Non-empty adds the "Milestone checks (MS3)" section where the thresholds go.
+        Non-empty adds the ``text.checks_title`` section where the thresholds go.
 
     Returns
     -------
@@ -603,7 +619,7 @@ def render_card(
         "",
         *(_gain_section(comparisons) if comparisons else []),
         *_thresholds_section(ev, base, benchmark, dev, thresholds),
-        *_checks_section(checks),
+        *_checks_section(checks, text),
         "### Reliability",
         "",
         "Ten equal-count bins of the out-of-fold predictions.",

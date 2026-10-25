@@ -40,7 +40,7 @@ from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from football_shot_models import baselines, features
-from football_shot_models.cards import CardContext, CardText, fmt, render_card
+from football_shot_models.cards import CardContext, CardText, fmt, gain_cell, render_card, side
 from football_shot_models.evaluation import (
     Comparison,
     Evaluation,
@@ -279,18 +279,70 @@ FEATURE_ROWS: Final[dict[str, str]] = {
 POOLED_LIMITS: Final[tuple[str, ...]] = (
     "Men and women are pooled: adding `gender` gives no gain with a CV interval above 0 (see "
     "the gain table of `xg-lr-context`); the Segments table gives each one's calibration slope.",
-    "The hold-out (Premier League 2015/16) has no women's shots, so women are judged on the "
-    "pooled out-of-fold predictions only.",
     "Direct corners are excluded (logged on outcome); penalties are a separate model (M1.5).",
 )
 CONTEXT_LIMITS: Final[tuple[str, ...]] = (
     "`open_goal` and `one_on_one` are StatsBomb annotator judgements; other providers record "
     "them differently or not at all.",
-    "The context columns were selected on CV among seven candidates, a small optimism. On the "
-    "hold-out the `phase` interval reaches 0 and the keeper group's includes it (gain tables).",
+    "The context columns were selected on CV among seven candidates, a small optimism; their "
+    "drop-one rows are in the gain table of `xg-lr-context`.",
     "Lob is merged into normal contact: it is labelled from the ball's flight, after the strike.",
     "No score state: the game situation enters only through `phase` and the freeze frame.",
 )
+
+
+def holdout_women(c: CardContext) -> str:
+    """The card line on women in the hold-out, from the hold-out's own shot count.
+
+    Examples
+    --------
+    >>> holdout_women(card_context(xg, dev, held))  # doctest: +SKIP
+    "The hold-out (Premier League 2015/2016) has no women's shots, so women are judged ..."
+    """
+    if c.holdout_female_shots == 0:
+        return (
+            f"The hold-out ({c.holdout_label}) has no women's shots, so women are judged on the "
+            "pooled out-of-fold predictions only."
+        )
+    return (
+        f"The hold-out ({c.holdout_label}) has {c.holdout_female_shots:,} women's shots; the "
+        "Segments table is pooled out of fold on dev only."
+    )
+
+
+def holdout_drops(rows: Sequence[Comparison]) -> str | None:
+    """The card line on the hold-out side of the card's own drop-one rows; ``None`` without any.
+
+    Built from the rows with :func:`~football_shot_models.cards.side`, so a refit cannot leave
+    it stale.
+
+    Examples
+    --------
+    >>> from football_shot_models.metrics import GainCI
+    >>> cv, ho = GainCI(0.003, 0.002, 0.004, 2000, 9), GainCI(0.001, -0.001, 0.003, 2000, 9)
+    >>> print(holdout_drops([Comparison("`phase`: dropped", cv, ho)]))
+    On the hold-out the drop-one interval of `phase` (+0.0010 [-0.0010, +0.0030]) includes 0 \
+(this card's gain table); the inclusion rule is decided on CV.
+    >>> holdout_drops([]) is None
+    True
+    """
+    drops = [r for r in rows if r.label.endswith(": dropped")]
+    if not drops:
+        return None
+    weak = [
+        f"{r.label.removesuffix(': dropped').split(' (')[0]} ({gain_cell(r.holdout)}) "
+        f"{side(r.holdout)}"
+        for r in drops
+        if side(r.holdout) != "lies above 0"
+    ]
+    if not weak:
+        return "On the hold-out every drop-one interval in this card's gain table lies above 0."
+    return (
+        f"On the hold-out the drop-one interval of {'; of '.join(weak)} (this card's gain "
+        "table); the inclusion rule is decided on CV."
+    )
+
+
 FRAME_LIMITS: Final[tuple[str, ...]] = (
     "Freeze frames hold the players the broadcast camera shows, so the counts depend on the "
     "camera; the features are local to the shot (cone, nearest opponent, keeper) rather than "
@@ -341,6 +393,8 @@ CHANGELOG: Final[tuple[str, ...]] = (
     "v1 (MS3): first version.",
     "v2 (MS3, M1.4): the benchmark table lists the GBM and calibration slopes; the overview "
     "names the headline model (v1's 'best model' sentence held until the GBM was added).",
+    "v3 (MS3 assessment): the hold-out drop-one and women's lines are computed; the family = "
+    "women segment row (the gender = female row) is printed once.",
 )
 
 
@@ -385,8 +439,8 @@ def wide_dfk(ev: Evaluation, benchmark: Evaluation, dev: pl.DataFrame) -> str:
     >>> wide_dfk(s2, sb, dev)  # doctest: +SKIP
     'Wide direct free kicks (y < 13.84 or > 54.16, n 378 in dev): goal rate 0.074, ...'
     """
-    wide = (pl.col("y") < features.BOX_RIGHT_Y) | (pl.col("y") > features.BOX_LEFT_Y)
-    mask = dev.select((pl.col("situation") == "direct_free_kick") & wide).to_series().to_numpy()
+    dfk = (pl.col("situation") == "direct_free_kick") & features.WIDE
+    mask = dev.select(dfk).to_series().to_numpy()
     n = int(mask.sum())
 
     def mean(values: npt.NDArray[np.generic]) -> str:
@@ -467,10 +521,10 @@ def step_cards(
     for ev in steps:
         name = ev.spec.name
         text = CARDS[name]
-        if "phase" in _STEP[name].features:
-            text = dataclasses.replace(
-                text, limitations=(wide_dfk(ev, benchmark, dev), *text.limitations)
-            )
+        wide = (wide_dfk(ev, benchmark, dev),) if "phase" in _STEP[name].features else ()
+        drops = () if (line := holdout_drops(rows[name])) is None else (line,)
+        limits = (*wide, *text.limitations, *drops, holdout_women(context))
+        text = dataclasses.replace(text, limitations=limits)
         out[name] = render_card(
             ev,
             text,

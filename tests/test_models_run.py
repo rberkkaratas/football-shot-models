@@ -23,6 +23,8 @@ from test_cards_gain import GAIN
 
 from football_shot_models import ablation, baselines, cards, data, evaluation, metrics
 
+THRESH = "### MS2 thresholds (retired; see the headline model's MS3 checks)"
+
 REPO = Path(__file__).resolve().parents[1]
 STEP_NAMES = tuple(s.name for s in ablation.STEPS)
 CARD_NAMES = (*STEP_NAMES, "xg-gbm", "xg-penalty")
@@ -97,7 +99,7 @@ def test_models_run_fixture(models_run: dict[str, Any]) -> None:
         assert slopes == [cards.fmt(e.cv.cal_slope) for e in (*run.evaluations, run.benchmark)]
         lines = card.splitlines()
         assert (CHECKS in lines) == (name == g["head"].spec.name), name
-        assert "### Milestone thresholds" not in lines
+        assert THRESH not in lines
         overview = _section(card, "## Overview")
         ev = next(e for e in run.evaluations if e.spec.name == name)
         assert models.verdict(ev, g["head"], g["lr_gain"]) in overview, name
@@ -317,3 +319,24 @@ def test_ms3_checks_on_real_data(real_run: dict[str, Any]) -> None:
     s = run.spread
     assert (s.groups, s.df, s.top_taker_kicks, s.kicks) == (55, 54, 80, 1118)
     assert s.dispersion == pytest.approx(0.94, abs=0.005)
+
+
+def test_models_run_computed_holdout_lines(models_run: dict[str, Any]) -> None:
+    """run3-ms3 (architect 4, football 9): the hold-out drop-one line is built from each card's
+    own drop rows (none on S1 and on the GBM, whose gain tables have no drop rows), and the
+    women's hold-out line from the hold-out's own shot count; no card keeps the old fixed text."""
+    r = models_run
+    run, held = r["run"], r["held"]
+    context = cards.card_context(r["xg"], r["dev"], held)
+    assert context.holdout_female_shots == int((held["gender"] == "female").sum())
+    women = ablation.holdout_women(context)
+    for name in (*STEP_NAMES, "xg-gbm"):
+        limits = _section(_card(r, name), "## Limitations & known biases")
+        assert f"- {women}" in limits.splitlines(), name
+        line = ablation.holdout_drops(run.rows[name]) if name in STEP_NAMES[1:] else None
+        assert (line is not None) == (name in STEP_NAMES[1:]), name
+        if line is not None:
+            assert f"- {line}" in limits.splitlines(), name
+        else:
+            assert "drop-one interval" not in limits, name
+        assert "keeper group's includes it" not in limits and "Premier League 2015/16" not in limits

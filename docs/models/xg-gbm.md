@@ -1,10 +1,10 @@
 # Model card: Monotone GBM + Platt
 
 ## Overview
-- **Name / version:** `xg-gbm` v1
+- **Name / version:** `xg-gbm` v2
 - **Task:** binary classification: P(goal | shot) for non-penalty shots in periods 1–4 (extra time included; direct free kicks and corners from open play or set pieces included; direct corners, own goals and shoot-outs excluded)
 - **Status:** experimental
-- M1.4: monotone gradient boosting on S3's inputs without spline terms, tuned and Platt-calibrated inside each fit by grouped CV. This is the headline model: its CV log-loss gain over LR splines + context + freeze frames is +0.0035 [+0.0028, +0.0043], a 95% interval that lies above 0; on the hold-out it is +0.0014 [-0.0005, +0.0034], an interval that includes 0. Against StatsBomb's own xG: CV gain +0.0021 [+0.0012, +0.0031], an interval that lies above 0; hold-out gain -0.0013 [-0.0040, +0.0016], an interval that includes 0. On the hold-out it predicts 975 goals for 913 scored (+6.77%); StatsBomb predicts 900 (-1.41%).
+- M1.4: monotone gradient boosting on S3's inputs without spline terms, tuned and Platt-calibrated inside each fit by grouped CV. This is the headline model: its CV log-loss gain over LR splines + context + freeze frames is +0.0035 [+0.0028, +0.0043], a 95% interval that lies above 0; on the hold-out it is +0.0014 [-0.0005, +0.0034], an interval that includes 0. Against StatsBomb xG: CV gain +0.0021 [+0.0012, +0.0031], an interval that lies above 0; hold-out gain -0.0013 [-0.0040, +0.0016], an interval that includes 0. On the hold-out it predicts 975 goals for 913 scored (+6.77%); StatsBomb xG predicts 900 (-1.41%).
 
 ## Intended use
 A transparent, reproducible xG model on StatsBomb open data, built one feature group at a time so each group's gain is measured on the same folds. For research and for comparing with StatsBomb's own xG; not for rating players or teams without that comparison, not for penalties, and not for other providers' data (it needs StatsBomb freeze frames and annotations) without re-fitting.
@@ -111,7 +111,7 @@ Thresholds re-baselined by the PM: targets are relative to the same shots.
 | Target | Measured | Result |
 |---|---|---|
 | CV log-loss gain over S0 with a 95% interval above 0 (LR distance + angle + body part 0.2872 on these folds; the MS2 best baseline 0.2880 is the MS2 population) | Monotone GBM + Platt: +0.0234 [+0.0219, +0.0249] | met |
-| CV log loss within 0.006 of StatsBomb xG (StatsBomb CV 0.2659 on these shots; the PM brief's 0.2674 is the MS2 population, with direct corners) | Monotone GBM + Platt 0.2638, StatsBomb 0.2659: gap -0.0021 | met |
+| CV log loss not more than 0.006 worse than StatsBomb xG (StatsBomb CV 0.2659 on these shots; the PM brief's 0.2674 is the MS2 population, with direct corners) | Monotone GBM + Platt 0.2638, StatsBomb 0.2659: gap -0.0021 | met |
 | calibration slope in [0.9, 1.1], CV fold mean | 1.0097 | met |
 | calibration slope in [0.9, 1.1], hold-out | 0.9526 | met |
 | calibration slope in [0.9, 1.1], men, pooled out of fold | 1.0244 | met |
@@ -120,7 +120,7 @@ Thresholds re-baselined by the PM: targets are relative to the same shots.
 | calibration slope in [0.9, 1.1], women, hold-out | n/a (0 women's shots in the hold-out) | n/a |
 | Σ xG error, fold mean <= 3% | 1.71% (pooled 0.04%) | met |
 | Σ xG error, fold max <= 5% | 2.92% (pooled 0.04%) | met |
-| the GBM is headline only if its CV gain over LR splines + context + freeze frames has a 95% interval above 0 | CV +0.0035 [+0.0028, +0.0043]; hold-out +0.0014 [-0.0005, +0.0034], an interval that includes 0 | met |
+| GBM CV gain over LR splines + context + freeze frames, 95% interval above 0 (the GBM is headline iff met) | CV +0.0035 [+0.0028, +0.0043]; hold-out +0.0014 [-0.0005, +0.0034], an interval that includes 0 | met |
 
 ### Reliability
 
@@ -149,7 +149,6 @@ Pooled out of fold. Log-loss skill is `1 − log loss / log loss of a constant a
 |---|---|---|---|---|---|---|---|---|---|
 | family = league or tournament | 38,218 | 3,634 | 9.51% | 3725.1516 | 1.0251 | 0.2468 | 0.0698 | 0.2143 | 1.0348 |
 | family = team-selected | 17,769 | 2,115 | 11.90% | 2014.8319 | 0.9526 | 0.2868 | 0.0836 | 0.2143 | 0.9994 |
-| family = women | 33,910 | 3,553 | 10.48% | 3565.4522 | 1.0035 | 0.2709 | 0.0774 | 0.1925 | 0.9844 |
 | gender = female | 33,910 | 3,553 | 10.48% | 3565.4522 | 1.0035 | 0.2709 | 0.0774 | 0.1925 | 0.9844 |
 | gender = male | 55,987 | 5,749 | 10.27% | 5739.9835 | 0.9984 | 0.2595 | 0.0742 | 0.2159 | 1.0244 |
 | body_part = right_foot | 47,459 | 4,784 | 10.08% | 4725.1594 | 0.9877 | 0.2523 | 0.0718 | 0.2280 | 1.0193 |
@@ -173,21 +172,22 @@ StatsBomb xG is a reference ceiling, not a like-for-like out-of-sample competito
 
 ## Limitations & known biases
 - The hold-out gain over LR splines + context + freeze frames is +0.0014 [-0.0005, +0.0034], an interval that includes 0; the headline rule is decided on CV, and the hold-out (Premier League 2015/2016, 380 matches) is a smaller test.
-- The CV population mixes women's and team-selected seasons that convert more than a men's league (dev goal rate 9.51% league, 11.90% team-selected, 10.48% women; hold-out 9.30%); a likely cause, not a measured one, of the hold-out over-prediction (+6.77%) and of the CV gain over StatsBomb not carrying over.
+- The CV population mixes women's and team-selected seasons that convert more than a men's league (dev goal rate 9.51% league, 11.90% team-selected, 10.48% women; hold-out 9.30%). The hold-out over-prediction (+6.77%) and the CV gain over StatsBomb not carrying over are reported, not explained: this card does not test whether the mix causes them.
 - The grid's largest leaf count was chosen; a wider grid is a follow-up.
 - Wide direct free kicks (y < 13.84 or > 54.16, n 378 in dev): goal rate 0.074, this model's mean xG 0.044, StatsBomb 0.008. They are logged as shots mostly when they threaten goal and join `phase = free_kick`, so the model rates them low.
 - Freeze frames hold the players the broadcast camera shows, so the counts depend on the camera; the features are local to the shot (cone, nearest opponent, keeper) rather than whole-frame counts.
 - Keeper distances are capped at 20 m, where few shots are (a keeper far out of goal); `gk_absent` marks a frame without the opponent keeper.
 - `open_goal` and `one_on_one` are StatsBomb annotator judgements; other providers record them differently or not at all.
-- The context columns were selected on CV among seven candidates, a small optimism. On the hold-out the `phase` interval reaches 0 and the keeper group's includes it (gain tables).
+- The context columns were selected on CV among seven candidates, a small optimism; their drop-one rows are in the gain table of `xg-lr-context`.
 - Lob is merged into normal contact: it is labelled from the ball's flight, after the strike.
 - No score state: the game situation enters only through `phase` and the freeze frame.
 - Men and women are pooled: adding `gender` gives no gain with a CV interval above 0 (see the gain table of `xg-lr-context`); the Segments table gives each one's calibration slope.
-- The hold-out (Premier League 2015/16) has no women's shots, so women are judged on the pooled out-of-fold predictions only.
 - Direct corners are excluded (logged on outcome); penalties are a separate model (M1.5).
+- The hold-out (Premier League 2015/2016) has no women's shots, so women are judged on the pooled out-of-fold predictions only.
 
 ## Data licensing
 Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Never committed or redistributed; this card holds aggregates only.
 
 ## Changelog
 - v1 (MS3, M1.4): first version.
+- v2 (MS3 assessment): the benchmark sentence names the benchmark; the training-mix line makes no causal claim; the hold-out women's line is computed.

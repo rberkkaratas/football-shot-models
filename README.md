@@ -30,7 +30,7 @@ Building, evaluating and documenting **shot models** for football from first pri
 | **Monotone GBM + Platt** | 0.2638 | 0.8107 | 1.0097 | 0.2533 | 0.9526 | +6.77% |
 | StatsBomb xG | 0.2659 | 0.8072 | 1.0166 | 0.2520 | 0.9916 | -1.41% |
 
-Headline model: Monotone GBM + Platt. Against StatsBomb's own xG: CV gain +0.0021 [+0.0012, +0.0031], an interval that lies above 0; hold-out gain -0.0013 [-0.0040, +0.0016], an interval that includes 0. On the hold-out it predicts 975 goals for 913 scored (+6.77%); StatsBomb predicts 900 (-1.41%).
+Headline model: Monotone GBM + Platt. Against StatsBomb xG: CV gain +0.0021 [+0.0012, +0.0031], an interval that lies above 0; hold-out gain -0.0013 [-0.0040, +0.0016], an interval that includes 0. On the hold-out it predicts 975 goals for 913 scored (+6.77%); StatsBomb xG predicts 900 (-1.41%).
 
 Penalties (in-game): P(goal) point estimate 0.7627 [95% interval 0.7374, 0.7872], 1,118 kicks; shoot-outs reported apart.
 
@@ -60,7 +60,7 @@ Part of the `football-*-models` family; shared loaders and pitch conventions com
 
 ```bash
 make snapshot && make xg-baselines   # freeze StatsBomb open data, write the M1.1 cards
-make xg-models                       # every MS3 model and its card (about 7 min)
+make xg-models                       # every MS3 model and its card (about 10 min)
 ```
 
 ## Repository layout

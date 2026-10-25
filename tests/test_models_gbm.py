@@ -314,3 +314,47 @@ def test_gbm_settings(signal_fit: tuple[Any, Any, Any, Any]) -> None:
     )
     with pytest.raises(TypeError):
         models.gbm_settings(evaluation.BaseRate(), ())
+
+
+def test_gbm_refit_and_platt_use_chosen_iterations(monkeypatch: pytest.MonkeyPatch) -> None:
+    """run3-ms3 (QA 12), §1.4-§1.5: with a chosen iteration count below ``max_iter`` (a flat inner
+    loss picks the first stop), the final refit uses that count, ``inner_raw_`` holds the staged
+    scores at that count (not the last stage), and Platt is fitted on them."""
+    from football_shot_models import models
+
+    monkeypatch.setattr(models, "log_loss", lambda *a, **k: 0.5)
+    x, y, groups = mc.signal_xy()
+    m = models.MonotoneGBM(mc.SIGNAL_MAP, **mc.SIGNAL)
+    m.fit_design(x, y, names=mc.SIGNAL_NAMES, groups=groups)
+    assert m.iters_ == mc.SIGNAL["step"] < mc.SIGNAL["max_iter"]  # the near miss is live
+    assert m.model_ is not None
+    assert (m.model_.max_iter, m.model_.max_leaf_nodes) == (m.iters_, m.leaves_)
+    cst = [mc.SIGNAL_MAP.get(n, 0) for n in mc.SIGNAL_NAMES]
+    for test in m.inner_test_:
+        train = np.setdiff1d(np.arange(y.size), test)
+        fold = models.make_hgb(m.leaves_, mc.SIGNAL["max_iter"], cst, mc.SIGNAL["min_samples_leaf"])
+        staged = list(fold.fit(x[train], y[train]).staged_decision_function(x[test]))
+        np.testing.assert_allclose(m.inner_raw_[test], staged[m.iters_ - 1], rtol=0, atol=1e-12)
+        assert not np.allclose(m.inner_raw_[test], staged[-1])
+    lr = LogisticRegression(C=math.inf, solver="newton-cholesky", tol=1e-10, max_iter=1000)
+    lr.fit(m.inner_raw_[:, None], y)
+    assert m.platt_ == pytest.approx((float(lr.intercept_[0]), float(lr.coef_[0, 0])), abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("settings", "match"),
+    [
+        ({"leaf_grid": ()}, r"non-empty leaf_grid \(got \(\)\)"),
+        ({"step": 80}, r"step=80, max_iter=60"),
+        ({"step": 0}, r"step=0, max_iter=60"),
+    ],
+)
+def test_gbm_bad_grid(settings: dict[str, Any], match: str) -> None:
+    """run3-ms3 (QA 17): an empty leaf grid or a step outside [1, max_iter] is a named
+    ValueError, not a bare ``min()`` error."""
+    from football_shot_models import models
+
+    x, y, groups = mc.signal_xy()
+    m = models.MonotoneGBM(mc.SIGNAL_MAP, **{**mc.SIGNAL, **settings})
+    with pytest.raises(ValueError, match=match):
+        m.fit_design(x, y, names=mc.SIGNAL_NAMES, groups=groups)

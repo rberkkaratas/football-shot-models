@@ -86,3 +86,24 @@ def test_card_checks_section(run_result: tuple[Any, Path], xg_data: Any, dev_hel
     assert _rows(block) == [[c.target, c.measured, c.result] for c in checks]
     plain = _render(run_result, xg_data, dev_held, 2, thresholds=(), comparisons=(row,))
     assert CHECKS not in plain.splitlines()
+
+
+def test_card_checks_title_from_text(
+    run_result: tuple[Any, Path], xg_data: Any, dev_held: Any
+) -> None:
+    """run3-ms3 (architect 1): the checks heading and sentence come from the ``CardText``, so a
+    later milestone's checks are not rendered under "MS3"; the defaults are the MS3 ones."""
+    evaluations, _ = run_result
+    assert (cards.CardText.checks_title, cards.CardText.checks_note) == (
+        "Milestone checks (MS3)",
+        "Thresholds re-baselined by the PM: targets are relative to the same shots.",
+    )
+    name = evaluations[2].spec.name
+    text = dataclasses.replace(
+        baselines.CARDS[name], checks_title="Milestone checks (MS4)", checks_note="M1.7 targets."
+    )
+    checks = (metrics.Check("log loss in [0.26, 0.27]", "0.2650", "met"),)
+    card = _render(run_result, xg_data, dev_held, 2, text=text, thresholds=(), checks=checks)
+    lines = card.splitlines()
+    assert "### Milestone checks (MS4)" in lines and "M1.7 targets." in lines
+    assert CHECKS not in lines and "re-baselined" not in card

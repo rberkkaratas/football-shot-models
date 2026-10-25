@@ -14,6 +14,8 @@ from test_baselines_cards import _header, _rows, _section
 
 from football_shot_models import baselines, cards, evaluation, metrics
 
+THRESH = "### MS2 thresholds (retired; see the headline model's MS3 checks)"
+
 GAIN = "### Log-loss gain (95% match-bootstrap CI)"
 GAIN_HEADER = "| Comparison | CV gain [95% CI] | Hold-out gain [95% CI] |"
 
@@ -79,11 +81,11 @@ def test_card_thresholds_omitted(run_result: tuple[Any, Path], xg_data: Any, dev
     """``thresholds=()`` drops the Milestone thresholds section and its Why paragraph; the
     default keeps the MS2 thresholds (the base rate misses them, so its Why is there)."""
     default = _render(run_result, xg_data, dev_held, 0)
-    assert "### Milestone thresholds" in default.splitlines() and "**Why.**" in default
+    assert THRESH in default.splitlines() and "**Why.**" in default
     explicit = _render(run_result, xg_data, dev_held, 0, thresholds=metrics.THRESHOLDS)
     assert explicit == default
     none = _render(run_result, xg_data, dev_held, 0, thresholds=())
-    assert "### Milestone thresholds" not in none.splitlines()
+    assert THRESH not in none.splitlines()
     assert "**Why.**" not in none
     assert "### Reliability" in none.splitlines() and "## Metrics" in none.splitlines()
 
@@ -138,7 +140,12 @@ def test_card_gain_before_thresholds(
     dev, held = dev_held
     row = evaluation.compare("body part: added", evaluations[1], evaluations[2], dev, held)
     lines = _render(run_result, xg_data, dev_held, 2, comparisons=(row,)).splitlines()
-    order = ["## Metrics", GAIN, "### Milestone thresholds", "### Reliability"]
+    order = [
+        "## Metrics",
+        GAIN,
+        THRESH,
+        "### Reliability",
+    ]
     assert [lines.index(h) for h in order] == sorted(lines.index(h) for h in order)
 
 

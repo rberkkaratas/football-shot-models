@@ -1,7 +1,7 @@
 # Model card: LR distance + angle + body part
 
 ## Overview
-- **Name / version:** `xg-lr-distance-angle-body-part` v3
+- **Name / version:** `xg-lr-distance-angle-body-part` v4
 - **Task:** binary classification: P(goal | shot) for non-penalty shots in periods 1–4 (extra time included; direct free kicks and corners from open play or set pieces included; direct corners, own goals and shoot-outs excluded)
 - **Status:** experimental
 - Baseline for M1.1. This is the best baseline (lowest grouped-CV log loss).
@@ -68,7 +68,7 @@ Grouped 5-fold cross-validation by `match_id` on dev (`GroupKFold`, no shuffle):
 
 Skill is `1 − metric / base-rate metric` on the same shots and column.
 
-### Milestone thresholds
+### MS2 thresholds (retired; see the headline model's MS3 checks)
 
 | Threshold | CV | Hold-out | CV result |
 |---|---|---|---|
@@ -108,7 +108,6 @@ Pooled out of fold. Log-loss skill is `1 − log loss / log loss of a constant a
 |---|---|---|---|---|---|---|---|---|---|
 | family = league or tournament | 38,218 | 3,634 | 9.51% | 3665.1707 | 1.0086 | 0.2682 | 0.0755 | 0.1463 | 1.0640 |
 | family = team-selected | 17,769 | 2,115 | 11.90% | 1793.4312 | 0.8480 | 0.3118 | 0.0911 | 0.1457 | 1.0924 |
-| family = women | 33,910 | 3,553 | 10.48% | 3843.8821 | 1.0819 | 0.2957 | 0.0844 | 0.1184 | 0.9091 |
 | gender = female | 33,910 | 3,553 | 10.48% | 3843.8821 | 1.0819 | 0.2957 | 0.0844 | 0.1184 | 0.9091 |
 | gender = male | 55,987 | 5,749 | 10.27% | 5458.6019 | 0.9495 | 0.2820 | 0.0805 | 0.1478 | 1.0745 |
 | body_part = right_foot | 47,459 | 4,784 | 10.08% | 4784.3021 | 1.0001 | 0.2781 | 0.0793 | 0.1490 | 0.9849 |
@@ -141,3 +140,4 @@ Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Ne
 - v1 (MS2): first baseline.
 - v2 (MS3): direct corners excluded (logged on outcome), all numbers re-measured; Segments show the pooled-OOF calibration slope.
 - v3 (MS3, M1.4): the benchmark table shows calibration slopes.
+- v4 (MS3 assessment): the MS2 thresholds are marked retired; the family = women segment row (the gender = female row) is printed once.

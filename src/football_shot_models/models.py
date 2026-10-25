@@ -17,8 +17,8 @@ rows. The outer test fold never reaches it, so the CV score is honest.
 **Headline rule.** The GBM is the headline model only if its grouped-CV log-loss gain over the
 best logistic regression has a 95 % match-bootstrap interval that lies above 0
 (:func:`headline`); otherwise the LR stays headline and every card says so (:func:`verdict`).
-The hold-out gain is reported next to it, and so is the comparison with StatsBomb's own xG
-(:func:`statsbomb_sentence`), without the words "beats" or "matches".
+The hold-out gain is reported next to it, and so is the comparison with the benchmark
+(StatsBomb's own xG here; :func:`benchmark_sentence`), without the words "beats" or "matches".
 
 **Penalties** (``xg-penalty``) get one probability: the posterior mean of a Beta-binomial
 with the Jeffreys prior over every in-game penalty (:func:`penalty_rows`); shoot-out kicks are
@@ -240,10 +240,16 @@ class MonotoneGBM:
         Raises
         ------
         ValueError
-            A constrained column absent from ``names``, or a sign that is a bool, not an
-            ``int``, or not -1 / +1; fewer matches than ``inner_splits`` (from scikit-learn);
+            An empty ``leaf_grid``; ``step`` not in [1, ``max_iter``]; a constrained column
+            absent from ``names``, or a sign that is a bool, not an ``int``, or not -1 / +1;
+            fewer matches than ``inner_splits`` (from scikit-learn);
             constant inner out-of-fold scores (Platt not estimable); a Platt slope <= 0.
         """
+        if not self.leaf_grid or not 1 <= self.step <= self.max_iter:
+            raise ValueError(
+                f"MonotoneGBM needs a non-empty leaf_grid (got {self.leaf_grid}) and 1 <= step "
+                f"<= max_iter (got step={self.step}, max_iter={self.max_iter})"
+            )
         missing = [n for n in self.monotone if n not in names]
         bad = {
             n: s
@@ -419,22 +425,23 @@ def verdict(ev: Evaluation, head: Evaluation, gain: Comparison) -> str:
     return f"Not the headline model; that is {head.spec.title}."
 
 
-def statsbomb_sentence(ev: Evaluation, sb_gain: Comparison, benchmark: Evaluation) -> str:
-    """The comparison with StatsBomb's own xG, on CV and on the hold-out, with Σ xG.
+def benchmark_sentence(ev: Evaluation, sb_gain: Comparison, benchmark: Evaluation) -> str:
+    """The comparison with a benchmark, named by its title, on CV and hold-out, with Σ xG.
 
-    ``sb_gain`` is ``compare(..., benchmark, ev, ...)``.
+    ``sb_gain`` is ``compare(..., benchmark, ev, ...)``; any benchmark works (StatsBomb xG
+    here, a legacy model in a later milestone).
 
     Examples
     --------
-    >>> statsbomb_sentence(gbm, sb_gain, sb)  # doctest: +SKIP
-    "Against StatsBomb's own xG: CV gain +0.0021 [+0.0012, +0.0031], an interval that ..."
+    >>> benchmark_sentence(gbm, sb_gain, sb)  # doctest: +SKIP
+    'Against StatsBomb xG: CV gain +0.0021 [+0.0012, +0.0031], an interval that ...'
     """
-    h, b = ev.holdout, benchmark.holdout
+    h, b, name = ev.holdout, benchmark.holdout, benchmark.spec.title
     return (
-        f"Against StatsBomb's own xG: CV gain {gain_cell(sb_gain.cv)}, an interval that "
+        f"Against {name}: CV gain {gain_cell(sb_gain.cv)}, an interval that "
         f"{side(sb_gain.cv)}; hold-out gain {gain_cell(sb_gain.holdout)}, an interval that "
         f"{side(sb_gain.holdout)}. On the hold-out it predicts {h.xg:.0f} goals for "
-        f"{h.goals:,} scored ({h.xg_signed_error:+.2%}); StatsBomb predicts {b.xg:.0f} "
+        f"{h.goals:,} scored ({h.xg_signed_error:+.2%}); {name} predicts {b.xg:.0f} "
         f"({b.xg_signed_error:+.2%})."
     )
 
@@ -485,7 +492,7 @@ def milestone_checks(
         these folds.
     s0_gain, sb_gain : Comparison
         The headline model over S0 and over StatsBomb (``sb_gain`` is printed by
-        :func:`statsbomb_sentence`; the checks use the log-loss gap).
+        :func:`benchmark_sentence`; the checks use the log-loss gap).
     gbm_gain : Comparison
         The GBM over the best LR (:func:`headline`).
     dev, held : polars.DataFrame
@@ -517,7 +524,7 @@ def milestone_checks(
             s0_gain.cv.low > 0,
         ),
         _check(
-            f"CV log loss within {SB_GAP:g} of StatsBomb xG (StatsBomb CV "
+            f"CV log loss not more than {SB_GAP:g} worse than StatsBomb xG (StatsBomb CV "
             f"{benchmark.cv.log_loss:.4f} on these shots; the PM brief's {SB_MS2_CV:.4f} is the "
             "MS2 population, with direct corners)",
             f"{title} {head.cv.log_loss:.4f}, StatsBomb {benchmark.cv.log_loss:.4f}: gap "
@@ -545,7 +552,7 @@ def milestone_checks(
         checks.append(_check(target, f"{pct(value)} {pooled}", value <= bound))
     checks.append(
         _check(
-            f"the GBM is headline only if its CV gain {gbm_gain.label} has a 95% interval above 0",
+            f"GBM CV gain {gbm_gain.label}, 95% interval above 0 (the GBM is headline iff met)",
             f"CV {gain_cell(gbm_gain.cv)}; hold-out {gain_cell(gbm_gain.holdout)}, an interval "
             f"that {side(gbm_gain.holdout)}",
             gbm_gain.cv.low > 0,
@@ -559,7 +566,11 @@ def milestone_checks(
 PENALTY_NAME: Final[str] = "xg-penalty"
 PENALTY_TITLE: Final[str] = "Penalty conversion (Beta-binomial)"
 PENALTY_RANGE: Final[tuple[float, float]] = (0.76, 0.80)
-PENALTY_CHANGELOG: Final[tuple[str, ...]] = ("v1 (MS3, M1.5): first version.",)
+PENALTY_CHANGELOG: Final[tuple[str, ...]] = (
+    "v1 (MS3, M1.5): first version.",
+    "v2 (MS3 assessment): the milestone check adds the pooled estimate without the team-selected "
+    "seasons.",
+)
 IN_GAME, SHOOTOUT = "In-game", "Shoot-out"
 MATCH_XG: Final[str] = (
     "Match xG = Σ non-penalty xG (headline model) + P(goal | in-game penalty) × in-game "
@@ -721,7 +732,7 @@ def _constant_loss(r: Rate, q: float | None) -> str:
     return f"{-(r.goals * math.log(q) + (r.n - r.goals) * math.log1p(-q)) / r.n:.4f}"
 
 
-def _penalty_check(r: Rate) -> list[str]:
+def _penalty_check(r: Rate, team: Rate | None = None) -> list[str]:
     lo, hi = PENALTY_RANGE
     bound, name = (lo, "lower") if r.mean - lo <= hi - r.mean else (hi, "upper")
     # a mean on a bound is inside the window: "above the lower", "below the upper"
@@ -740,6 +751,15 @@ def _penalty_check(r: Rate) -> list[str]:
             f"The 95% interval is {width:.3f} wide, {'wider than' if width > window else 'against'}"
             f" the {window:.2f} window, and extends {' and '.join(outside)} it: the check is on "
             "the point estimate.",
+        ]
+    if team is not None and team.n < r.n:
+        rest = beta_interval(r.goals - team.goals, r.n - team.n)
+        where = "inside" if lo <= rest.mean <= hi else "outside"
+        lines += [
+            "",
+            f"Without the team-selected seasons ({team.n:,} kicks, conversion {team.rate:.3f}) "
+            f"the pooled estimate is {_interval(rest)} from {rest.n:,} kicks, {where} the "
+            "window.",
         ]
     return lines
 
@@ -773,7 +793,7 @@ def penalty_card(rows: Sequence[PenaltyRow], spread: Spread, context: CardContex
         raise ValueError(f"penalty_card: the first row must be '{IN_GAME}: all'")
     by, c, r, (a0, b0) = {row.label: row for row in rows}, context, rows[0].rate, JEFFREYS
     dev, held = by.get(f"{IN_GAME}: dev"), by.get(f"{IN_GAME}: hold-out")
-    shoot = by.get(f"{SHOOTOUT}: all")
+    shoot, team = by.get(f"{SHOOTOUT}: all"), by.get(f"{IN_GAME}: team-selected")
     validation = benchmarks = [
         f"The {'hold-out' if held is None else 'dev'} has no in-game penalties."
     ]
@@ -843,7 +863,8 @@ def penalty_card(rows: Sequence[PenaltyRow], spread: Spread, context: CardContex
             "| Group | Kicks | Matches | Goals | Conversion | P(goal) [95% interval] "
             "| StatsBomb mean xG |",
             "|---|---|---|---|---|---|---|",
-            *metrics, "", "### Milestone check", "", *_penalty_check(r),
+            *metrics, "", "### Milestone check", "",
+            *_penalty_check(r, None if team is None else team.rate),
         ]),
         ("Benchmarks", benchmarks),
         ("Limitations & known biases", [
@@ -956,7 +977,12 @@ CARD: Final[CardText] = CardText(
     features=(),  # from the fitted sign map: gbm_features
     model=_gbm_model,
     limitations=(*ablation.FRAME_LIMITS, *ablation.CONTEXT_LIMITS, *ablation.POOLED_LIMITS),
-    changelog=("v1 (MS3, M1.4): first version.",),
+    # gbm_text appends ablation.holdout_women (computed); the GBM has no drop-one rows
+    changelog=(
+        "v1 (MS3, M1.4): first version.",
+        "v2 (MS3 assessment): the benchmark sentence names the benchmark; the training-mix line "
+        "makes no causal claim; the hold-out women's line is computed.",
+    ),
     best_label="model",
 )
 
@@ -995,19 +1021,22 @@ def gbm_text(
     more = league is not None and min(team or 0.0, women or 0.0) > league
     carry = side(sb_gain.cv) == "lies above 0" and side(sb_gain.holdout) != "lies above 0"
     signed = ev.holdout.xg_signed_error
+    # no causal claim: a refit on men's league shots only still over-predicts the hold-out
+    # (run3-ms3 football probes), so the goal rates are reported, not offered as the cause
     lines.append(
         "The CV population mixes women's and team-selected seasons that "
         f"{'convert more than' if more else 'differ in goal rate from'} a men's league (dev goal "
         f"rate {pct(league)} league, {pct(team)} team-selected, {pct(women)} women; hold-out "
-        f"{pct(_goal_rate(held))}); a likely cause, not a measured one, of the hold-out "
-        f"{'over' if signed > 0 else 'under'}-prediction ({signed:+.2%})"
-        f"{' and of the CV gain over StatsBomb not carrying over' * carry}."
+        f"{pct(_goal_rate(held))}). The hold-out {'over' if signed > 0 else 'under'}-prediction "
+        f"({signed:+.2%}){' and the CV gain over StatsBomb not carrying over' * carry} "
+        f"{'are' if carry else 'is'} reported, not explained: this card does not test whether "
+        f"the mix causes {'them' if carry else 'it'}."
     )
     if _settings(ev)["max_leaf_nodes"] == max(LEAVES):
         lines.append("The grid's largest leaf count was chosen; a wider grid is a follow-up.")
     if isinstance(ev.spec, ModelSpec) and "phase" in ev.spec.features:
         lines.append(ablation.wide_dfk(ev, benchmark, dev))
-    limits = (*lines, *CARD.limitations)
+    limits = (*lines, *CARD.limitations, ablation.holdout_women(context))
     return dataclasses.replace(CARD, features=gbm_features(ev), limitations=limits)
 
 
@@ -1020,8 +1049,9 @@ def summary_table(
 ) -> str:
     """The README summary block: every model and benchmark, the headline in bold, then lines.
 
-    ``sb_gain`` is the headline model over ``benchmarks[0]`` (StatsBomb xG); ``penalty`` is
-    the in-game all row of :func:`penalty_rows`.
+    ``sb_gain`` is the headline model over ``benchmarks[0]``, which the sentence after the
+    table names (:func:`benchmark_sentence`); ``penalty`` is the in-game all row of
+    :func:`penalty_rows`.
 
     Raises
     ------
@@ -1034,7 +1064,7 @@ def summary_table(
     | Model | CV log loss | CV AUC | CV cal. slope | Hold-out log loss | ...
     """
     if not benchmarks:
-        raise ValueError("summary_table needs a benchmark (StatsBomb xG)")
+        raise ValueError("summary_table needs at least one benchmark, got none")
     r = penalty.rate
     lines = [
         "| Model | CV log loss | CV AUC | CV cal. slope | Hold-out log loss | Hold-out cal. slope "
@@ -1047,7 +1077,7 @@ def summary_table(
             for e in (*evaluations, *benchmarks)
         ),
         "",
-        f"Headline model: {head.spec.title}. {statsbomb_sentence(head, sb_gain, benchmarks[0])}",
+        f"Headline model: {head.spec.title}. {benchmark_sentence(head, sb_gain, benchmarks[0])}",
         "",
         f"Penalties (in-game): P(goal) point estimate {r.mean:.4f} [95% interval {r.low:.4f}, "
         f"{r.high:.4f}], {r.n:,} kicks; shoot-outs reported apart.",
@@ -1145,7 +1175,7 @@ def run(
     cards[gbm.spec.name] = render_card(
         gbm, text, evaluations=evaluations, benchmark=sb, dev=dev, context=context, thresholds=(),
         comparisons=gbm_rows, checks=checks if head is gbm else (),
-        verdict=f"{verdicts[gbm.spec.name]} {statsbomb_sentence(gbm, gbm_rows[2], sb)}",
+        verdict=f"{verdicts[gbm.spec.name]} {benchmark_sentence(gbm, gbm_rows[2], sb)}",
     )  # fmt: skip
     cards[PENALTY_NAME] = penalty_card(penalties, spread, context)
     out = Path(docs_dir)

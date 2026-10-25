@@ -484,8 +484,8 @@ def bootstrap_gain(
     ------
     ValueError
         ``y`` not 1-D or a value other than 0 / 1 (NaN included); a shape that differs from
-        ``y``'s; a probability NaN or outside [0, 1]; a null or NaN group; ``n_boot < 1``; fewer
-        than two groups (an empty input included).
+        ``y``'s; a probability NaN or outside [0, 1]; a null or NaN group; groups of mixed
+        types; ``n_boot`` a bool or ``< 1``; fewer than two groups (an empty input included).
 
     Examples
     --------
@@ -511,8 +511,8 @@ def bootstrap_gain(
         raise ValueError(f"groups has shape {groups.shape}, expected {y.shape}")
     if bad := sum(k is None or k != k for k in groups.tolist()):  # k != k: NaN
         raise ValueError(f"groups has {bad} null or NaN key(s)")
-    if n_boot < 1:
-        raise ValueError(f"n_boot must be >= 1, got {n_boot}")
+    if isinstance(n_boot, bool) or n_boot < 1:
+        raise ValueError(f"n_boot must be an int >= 1, got {n_boot!r}")
 
     def loss(p: FloatArray) -> FloatArray:
         q = np.clip(p, EPS, 1.0 - EPS)
@@ -520,7 +520,10 @@ def bootstrap_gain(
         return out
 
     diff = loss(p_ref) - loss(p_new)
-    _, inv = np.unique(groups, return_inverse=True)
+    try:
+        _, inv = np.unique(groups, return_inverse=True)
+    except TypeError as e:  # e.g. int and str keys together: not comparable
+        raise ValueError(f"groups must be keys of one type (match_id), got: {e}") from e
     m = int(inv.max()) + 1 if inv.size else 0
     if m < 2:
         raise ValueError(f"the bootstrap needs at least 2 groups (matches), got {m}")

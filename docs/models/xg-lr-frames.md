@@ -1,7 +1,7 @@
 # Model card: LR splines + context + freeze frames
 
 ## Overview
-- **Name / version:** `xg-lr-frames` v2
+- **Name / version:** `xg-lr-frames` v3
 - **Task:** binary classification: P(goal | shot) for non-penalty shots in periods 1–4 (extra time included; direct free kicks and corners from open play or set pieces included; direct corners, own goals and shoot-outs excluded)
 - **Status:** experimental
 - M1.3 step S3: S2 plus the freeze-frame features. Not the headline model; that is Monotone GBM + Platt.
@@ -161,7 +161,6 @@ Pooled out of fold. Log-loss skill is `1 − log loss / log loss of a constant a
 |---|---|---|---|---|---|---|---|---|---|
 | family = league or tournament | 38,218 | 3,634 | 9.51% | 3704.8380 | 1.0195 | 0.2502 | 0.0709 | 0.2037 | 1.0322 |
 | family = team-selected | 17,769 | 2,115 | 11.90% | 2007.5293 | 0.9492 | 0.2897 | 0.0845 | 0.2064 | 0.9929 |
-| family = women | 33,910 | 3,553 | 10.48% | 3589.6291 | 1.0103 | 0.2750 | 0.0788 | 0.1802 | 0.9541 |
 | gender = female | 33,910 | 3,553 | 10.48% | 3589.6291 | 1.0103 | 0.2750 | 0.0788 | 0.1802 | 0.9541 |
 | gender = male | 55,987 | 5,749 | 10.27% | 5712.3673 | 0.9936 | 0.2627 | 0.0752 | 0.2062 | 1.0204 |
 | body_part = right_foot | 47,459 | 4,784 | 10.08% | 4785.1125 | 1.0002 | 0.2561 | 0.0731 | 0.2165 | 0.9920 |
@@ -188,12 +187,13 @@ StatsBomb xG is a reference ceiling, not a like-for-like out-of-sample competito
 - Freeze frames hold the players the broadcast camera shows, so the counts depend on the camera; the features are local to the shot (cone, nearest opponent, keeper) rather than whole-frame counts.
 - Keeper distances are capped at 20 m, where few shots are (a keeper far out of goal); `gk_absent` marks a frame without the opponent keeper.
 - `open_goal` and `one_on_one` are StatsBomb annotator judgements; other providers record them differently or not at all.
-- The context columns were selected on CV among seven candidates, a small optimism. On the hold-out the `phase` interval reaches 0 and the keeper group's includes it (gain tables).
+- The context columns were selected on CV among seven candidates, a small optimism; their drop-one rows are in the gain table of `xg-lr-context`.
 - Lob is merged into normal contact: it is labelled from the ball's flight, after the strike.
 - No score state: the game situation enters only through `phase` and the freeze frame.
 - Men and women are pooled: adding `gender` gives no gain with a CV interval above 0 (see the gain table of `xg-lr-context`); the Segments table gives each one's calibration slope.
-- The hold-out (Premier League 2015/16) has no women's shots, so women are judged on the pooled out-of-fold predictions only.
 - Direct corners are excluded (logged on outcome); penalties are a separate model (M1.5).
+- On the hold-out the drop-one interval of keeper group (+0.0005 [-0.0003, +0.0014]) includes 0 (this card's gain table); the inclusion rule is decided on CV.
+- The hold-out (Premier League 2015/2016) has no women's shots, so women are judged on the pooled out-of-fold predictions only.
 
 ## Data licensing
 Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Never committed or redistributed; this card holds aggregates only.
@@ -201,3 +201,4 @@ Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Ne
 ## Changelog
 - v1 (MS3): first version.
 - v2 (MS3, M1.4): the benchmark table lists the GBM and calibration slopes; the overview names the headline model (v1's 'best model' sentence held until the GBM was added).
+- v3 (MS3 assessment): the hold-out drop-one and women's lines are computed; the family = women segment row (the gender = female row) is printed once.

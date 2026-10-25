@@ -1,7 +1,7 @@
 # Model card: Base rate
 
 ## Overview
-- **Name / version:** `xg-base-rate` v3
+- **Name / version:** `xg-base-rate` v4
 - **Task:** binary classification: P(goal | shot) for non-penalty shots in periods 1–4 (extra time included; direct free kicks and corners from open play or set pieces included; direct corners, own goals and shoot-outs excluded)
 - **Status:** experimental
 - Baseline for M1.1. Not the best baseline; that is LR distance + angle + body part.
@@ -53,7 +53,7 @@ Grouped 5-fold cross-validation by `match_id` on dev (`GroupKFold`, no shuffle):
 
 Skill is `1 − metric / base-rate metric` on the same shots and column.
 
-### Milestone thresholds
+### MS2 thresholds (retired; see the headline model's MS3 checks)
 
 | Threshold | CV | Hold-out | CV result |
 |---|---|---|---|
@@ -93,7 +93,6 @@ Pooled out of fold. Log-loss skill is `1 − log loss / log loss of a constant a
 |---|---|---|---|---|---|---|---|---|---|
 | family = league or tournament | 38,218 | 3,634 | 9.51% | 3954.8657 | 1.0883 | 0.3145 | 0.0861 | -0.0013 | -3.2715 |
 | family = team-selected | 17,769 | 2,115 | 11.90% | 1838.4838 | 0.8693 | 0.3662 | 0.1051 | -0.0034 | -1.1772 |
-| family = women | 33,910 | 3,553 | 10.48% | 3508.6461 | 0.9875 | 0.3355 | 0.0938 | -0.0001 | -5.3069 |
 | gender = female | 33,910 | 3,553 | 10.48% | 3508.6461 | 0.9875 | 0.3355 | 0.0938 | -0.0001 | -5.3069 |
 | gender = male | 55,987 | 5,749 | 10.27% | 5793.3495 | 1.0077 | 0.3310 | 0.0921 | -0.0000 | -3.1534 |
 | body_part = right_foot | 47,459 | 4,784 | 10.08% | 4910.8301 | 1.0265 | 0.3269 | 0.0906 | -0.0001 | 1.0769 |
@@ -126,3 +125,4 @@ Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Ne
 - v1 (MS2): first baseline.
 - v2 (MS3): direct corners excluded (logged on outcome), all numbers re-measured; Segments show the pooled-OOF calibration slope.
 - v3 (MS3, M1.4): the benchmark table shows calibration slopes.
+- v4 (MS3 assessment): the MS2 thresholds are marked retired; the family = women segment row (the gender = female row) is printed once.

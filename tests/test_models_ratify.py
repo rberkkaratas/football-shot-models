@@ -286,17 +286,20 @@ def test_gbm_training_mix_line(
     """R9: "convert more than" only when both the team-selected and the women's dev goal rates
     exceed the league rate (strictly); over- or under-prediction by the sign of the hold-out Σ xG
     error; the StatsBomb clause only when the CV gain over StatsBomb lies above 0 and the
-    hold-out gain does not."""
+    hold-out gain does not. run3-ms3 (football 8): no causal claim, because a men's-league-only
+    refit still over-predicts the hold-out; the line reports the rates and says the cause is not
+    tested."""
     text, ev, _, _ = _gbm_text(rates=rates, xg=xg, sb_gain=sb_gain)
     league, team, women = (cards.pct(r) for r in rates)
     signed = ev.holdout.xg_signed_error
-    tail = " and of the CV gain over StatsBomb not carrying over" if clause else ""
+    tail = " and the CV gain over StatsBomb not carrying over are" if clause else " is"
     assert text.limitations[1] == (
         f"The CV population mixes women's and team-selected seasons that {word} a men's league "
-        f"(dev goal rate {league} league, {team} team-selected, {women} women; hold-out 25.00%); "
-        f"a likely cause, not a measured one, of the hold-out {direction}-prediction "
-        f"({signed:+.2%}){tail}."
+        f"(dev goal rate {league} league, {team} team-selected, {women} women; hold-out 25.00%). "
+        f"The hold-out {direction}-prediction ({signed:+.2%}){tail} reported, not explained: "
+        f"this card does not test whether the mix causes {'them' if clause else 'it'}."
     )
+    assert "cause of" not in text.limitations[1] and "likely" not in text.limitations[1]
 
 
 def test_gbm_limitations_order_and_largest_leaf(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -312,6 +315,7 @@ def test_gbm_limitations_order_and_largest_leaf(monkeypatch: pytest.MonkeyPatch)
         largest,
         ablation.wide_dfk(ev, bench, dev),
         *models.CARD.limitations,
+        ablation.holdout_women(mc.card_context()),  # run3-ms3: computed, last
     )
     assert largest not in _gbm_text(leaves=16)[0].limitations
     monkeypatch.setattr(models, "LEAVES", (4, 8, 16))
@@ -423,5 +427,5 @@ def test_summary_opens_with_headline(head_is_gbm: bool) -> None:
     i = lines.index("")
     assert lines[i + 1] == (
         f"Headline model: {head.spec.title}. "
-        f"{models.statsbomb_sentence(head, SB_ABOVE_THEN_NOT, sb)}"
+        f"{models.benchmark_sentence(head, SB_ABOVE_THEN_NOT, sb)}"
     )

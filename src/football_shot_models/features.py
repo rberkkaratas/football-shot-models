@@ -232,13 +232,14 @@ def _spline(column: str, knots: tuple[float, ...], j: int) -> DerivedFeature:
 PHASES: Final = ("open_play", "fast_break", "corner", "free_kick", "throw_in", "direct_free_kick")
 PHASE: Final = pl.Enum(PHASES)
 BOX_RIGHT_Y, BOX_LEFT_Y = pitch.METRE_Y[1], pitch.METRE_Y[-2]  # 13.84, 54.16
+# "wide of the box": the one predicate phase and the card's wide-DFK line both read
+WIDE: Final[pl.Expr] = (pl.col("y") < BOX_RIGHT_Y) | (pl.col("y") > BOX_LEFT_Y)
 CONTACTS: Final = tuple(c for c in schema.TECHNIQUES if c != "lob")
 CONTACT: Final = pl.Enum(CONTACTS)
 
 
 def _phase(t: Tables) -> pl.Series:
     sit = pl.col("situation")
-    wide = (pl.col("y") < BOX_RIGHT_Y) | (pl.col("y") > BOX_LEFT_Y)
     expr = (
         pl.when(sit.is_in(["open_play", "kick_off"]))
         .then(pl.lit("open_play"))
@@ -246,7 +247,7 @@ def _phase(t: Tables) -> pl.Series:
         .then(pl.lit("fast_break"))
         .when(sit == "from_corner")
         .then(pl.lit("corner"))
-        .when((sit == "from_free_kick") | ((sit == "direct_free_kick") & wide))
+        .when((sit == "from_free_kick") | ((sit == "direct_free_kick") & WIDE))
         .then(pl.lit("free_kick"))
         .when(sit == "from_throw_in")
         .then(pl.lit("throw_in"))

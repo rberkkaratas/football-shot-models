@@ -1,7 +1,7 @@
 # Model card: Penalty conversion (Beta-binomial)
 
 ## Overview
-- **Name / version:** `xg-penalty` v1
+- **Name / version:** `xg-penalty` v2
 - **Task:** P(goal | in-game penalty), periods 1–4; shoot-out kicks reported apart
 - **Status:** experimental
 - M1.5: pooled conversion of in-game penalties. P(goal) = 0.7627 [0.7374, 0.7872] (95% interval) from 1,118 kicks in 967 matches.
@@ -48,6 +48,8 @@ The hold-out (Premier League 2015/2016) has 91 in-game kicks, so its 95% interva
 
 The 95% interval is 0.050 wide, wider than the 0.04 window, and extends below it: the check is on the point estimate.
 
+Without the team-selected seasons (209 kicks, conversion 0.818) the pooled estimate is 0.7500 [0.7214, 0.7776] from 909 kicks, outside the window.
+
 ## Benchmarks
 Each model as a constant on the 91 hold-out kicks:
 
@@ -67,3 +69,4 @@ Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Ne
 
 ## Changelog
 - v1 (MS3, M1.5): first version.
+- v2 (MS3 assessment): the milestone check adds the pooled estimate without the team-selected seasons.

@@ -207,3 +207,19 @@ def test_derived_per_shot_purity(case: tuple[pl.DataFrame, pl.DataFrame, list[in
     part, again = features.design_matrix(shots[subset], names, freeze_frames=frames)
     assert again == design
     np.testing.assert_array_equal(part, full[subset])
+
+
+def test_nearest_opponent_without_outfield_opponent() -> None:
+    """run3-ms3 (QA 14), §1.3: a frame with only the opponent keeper and teammates has no
+    outfield marker, so ``nearest_opponent_m`` is the cap (10 m, the most open value the +1
+    monotone sign expects), not 0."""
+    shots = _shots({"sb:g": (94.0, 34.0), "sb:b": LOCATIONS["sb:b"]})
+    frames = _frames(
+        {
+            "sb:g": [(False, True, 104.0, 34.0), (True, False, 96.0, 34.0)],
+            "sb:b": PLAYERS["sb:b"],
+        }
+    )
+    matrix = _features(shots, frames, ("nearest_opponent_m",))
+    assert matrix[:, 0].tolist() == [features.NEAREST_CAP_M, 10.0]
+    assert features.NEAREST_CAP_M == 10.0

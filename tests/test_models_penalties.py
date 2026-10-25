@@ -349,3 +349,42 @@ def test_penalty_card_check_row(
         assert "and extends" not in card
     else:
         assert f"{sentence} {extends} it" in card
+
+
+def test_penalty_card_without_team_selected() -> None:
+    """run3-ms3 (football 10): under the milestone check, the pooled estimate without the
+    team-selected seasons (all in-game kicks minus that family's) and whether it is inside the
+    window; no team-selected row -> no line."""
+    from football_shot_models import models
+
+    rows = models.penalty_rows(mc.penalties_frame())
+    team = next(r for r in rows if r.label == "In-game: team-selected")
+    assert (team.rate.n, team.rate.goals) == (2, 1)
+    pooled = dataclasses.replace(rows[0], rate=metrics.Rate(1118, 853, 853 / 1118, 0.7627, 0, 1))
+    team_ts = dataclasses.replace(team, rate=metrics.beta_interval(171, 209))
+    by = [pooled if r is rows[0] else team_ts if r is team else r for r in rows]
+    rest = metrics.beta_interval(853 - 171, 1118 - 209)
+    card = _card(rows=tuple(by))
+    check = _section(card, "### Milestone check")
+    assert (
+        f"Without the team-selected seasons (209 kicks, conversion {171 / 209:.3f}) the pooled "
+        f"estimate is {rest.mean:.4f} [{rest.low:.4f}, {rest.high:.4f}] from 909 kicks, outside "
+        "the window."
+    ) in check
+    assert rest.mean < models.PENALTY_RANGE[0]
+    inside = dataclasses.replace(team, rate=metrics.beta_interval(59, 100))
+    by = [pooled if r is rows[0] else inside if r is team else r for r in rows]
+    assert "from 1,018 kicks, inside the window." in _section(
+        _card(rows=tuple(by)), "### Milestone check"
+    )
+    no_team = tuple(r for r in rows if r is not team)
+    assert "Without the team-selected" not in _card(rows=no_team)
+
+
+def test_exchangeability_null_is_goal() -> None:
+    """run3-ms3 (QA 15): a null ``is_goal`` among in-game kicks raises (it would otherwise count as
+    a miss in the dispersion)."""
+    from football_shot_models import models
+
+    with pytest.raises(ValueError, match="is_goal has 1 null"):
+        models.exchangeability(mc.with_null(mc.penalties_frame(), "is_goal", 6))

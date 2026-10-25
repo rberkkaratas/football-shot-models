@@ -38,7 +38,7 @@ xg-baselines:
 	uv run python -m football_shot_models.baselines
 
 ## Evaluate every xG model (baselines, M1.2/M1.3 steps, M1.4 GBM) and the M1.5 penalty model;
-## write the step, GBM and penalty cards (about 8 min)
+## write the step, GBM and penalty cards (about 10 min)
 xg-models:
 	uv run python -m football_shot_models.models
 

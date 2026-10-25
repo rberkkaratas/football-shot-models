@@ -22,6 +22,8 @@ from test_cards_gain import GAIN, _cell
 
 from football_shot_models import baselines, evaluation, features
 
+THRESH = "### MS2 thresholds (retired; see the headline model's MS3 checks)"
+
 STEP_NAMES = ("xg-lr-splines", "xg-lr-context", "xg-lr-frames")
 STEP_TITLES = (
     "LR splines + body part",
@@ -270,7 +272,7 @@ def test_models_run_writes_step_cards(fixture_run: dict[str, Any]) -> None:
         lines = card.splitlines()
         assert lines[0] == f"# Model card: {spec.title}"
         assert "sb:" not in card
-        assert "### Milestone thresholds" not in lines and "**Why.**" not in card
+        assert THRESH not in lines and "**Why.**" not in card
         assert [r[0] for r in _rows(_section(card, "## Benchmarks"))] == titles
         overview = _section(card, "## Overview")
         assert "headline model" in overview and "best model" not in overview
@@ -314,3 +316,45 @@ def test_card_wide_dfk_row(fixture_run: dict[str, Any]) -> None:
 
 
 # The CLI, determinism and real-snapshot tests moved to test_models_run.py with ``models.run``.
+
+
+def test_holdout_lines() -> None:
+    """run3-ms3 (architect 4, football 9): the drop-one line names only drop rows whose hold-out
+    interval does not lie above 0, with ``side``; added rows are ignored; no drop rows -> None.
+    The women's line follows the hold-out's women's shot count."""
+    import dataclasses
+
+    import models_cases as mc
+
+    from football_shot_models import ablation, cards
+
+    cv = mc.gain(0.003, 0.002, 0.004)
+    above, zero, below = (
+        mc.gain(0.002, 0.0001, 0.004),
+        mc.gain(0.001, 0.0, 0.002),
+        mc.gain(-0.002, -0.004, -0.001),
+    )
+    rows = [
+        evaluation.Comparison("over S1", cv, below),
+        evaluation.Comparison("`open_goal`: dropped", cv, above),
+        evaluation.Comparison("`phase`: dropped", cv, zero),
+        evaluation.Comparison("keeper group (`gk_absent`, `gk_to_goal_m`): dropped", cv, below),
+        evaluation.Comparison("`gender`: added (not in the model)", cv, below),
+    ]
+    assert ablation.holdout_drops(rows) == (
+        "On the hold-out the drop-one interval of `phase` (+0.0010 [+0.0000, +0.0020]) includes 0;"
+        " of keeper group (-0.0020 [-0.0040, -0.0010]) lies below 0 (this card's gain table); "
+        "the inclusion rule is decided on CV."
+    )
+    assert ablation.holdout_drops(rows[:2]) == (
+        "On the hold-out every drop-one interval in this card's gain table lies above 0."
+    )
+    assert ablation.holdout_drops(rows[:1]) is None and ablation.holdout_drops([]) is None
+    c = mc.card_context()
+    assert ablation.holdout_women(c) == (
+        "The hold-out (Premier League 2015/2016) has no women's shots, so women are judged on "
+        "the pooled out-of-fold predictions only."
+    )
+    some = dataclasses.replace(c, holdout_female_shots=1234)
+    assert "has 1,234 women's shots" in ablation.holdout_women(some)
+    assert isinstance(some, cards.CardContext)

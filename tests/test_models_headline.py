@@ -229,12 +229,29 @@ def test_statsbomb_sentence(sb_gain: Any, cv_side: str, ho_side: str) -> None:
     bench = mc.fake_eval(evaluation.BENCHMARK, holdout=mc.scores(n=9816, goals=913, xg=900.4))
     got = mc.statsbomb_sentence(models, ev, sb_gain, bench)
     assert got == (
-        f"Against StatsBomb's own xG: CV gain {cv_side}; hold-out gain {ho_side}. On the hold-out "
-        f"it predicts 975 goals for 913 scored ({62.2 / 913:+.2%}); StatsBomb predicts 900 "
+        f"Against StatsBomb xG: CV gain {cv_side}; hold-out gain {ho_side}. On the hold-out "
+        f"it predicts 975 goals for 913 scored ({62.2 / 913:+.2%}); StatsBomb xG predicts 900 "
         f"({-12.6 / 913:+.2%})."
     )
     assert "+6.81%" in got and "-1.38%" in got
     assert "beat" not in got and "match" not in got
+
+
+def test_benchmark_sentence_names_any_benchmark() -> None:
+    """run3-ms3 (architect 1): the sentence names the benchmark by its title, so a later
+    milestone's legacy benchmark (no StatsBomb column) is never called StatsBomb's own xG."""
+    from football_shot_models import models
+
+    ev = _gbm(holdout=mc.scores(n=9816, goals=913, xg=975.2))
+    legacy = evaluation.Benchmark("ws-xg-v0", "WhoScored xG v0", "legacy_xg")
+    bench = mc.fake_eval(legacy, holdout=mc.scores(n=9816, goals=913, xg=900.4))
+    sb_gain = evaluation.Comparison("over v0", mc.gain(0.001, 0.0, 0.002), mc.gain(0, -1, 1))
+    got = models.benchmark_sentence(ev, sb_gain, bench)
+    assert (
+        got.startswith("Against WhoScored xG v0: CV gain")
+        and "; WhoScored xG v0 predicts 900" in got
+    )
+    assert "StatsBomb" not in got
 
 
 # ---- milestone checks -------------------------------------------------------------------------
@@ -439,3 +456,17 @@ def test_summary_table() -> None:
     assert penalty_line in text
     assert "match xG" in text
     assert "CI inside" not in text and "beats" not in text.lower()
+    with pytest.raises(ValueError, match="at least one benchmark"):
+        models.summary_table((s0, s3, gbm), (), gbm, penalty, sb_gain)
+
+
+def test_milestone_checks_wording() -> None:
+    """run3-ms3 (QA 16, architect 3): the StatsBomb target is one-sided and says so ("not more
+    than 0.006 worse"); the last row is the GBM's CV gain rule, so "missed" with an LR headline
+    reads as "the GBM does not ship"."""
+    checks = _checks(head="lr", gbm_low=-0.0001)
+    assert checks[1].target.startswith("CV log loss not more than 0.006 worse than StatsBomb xG")
+    assert checks[10].target == (
+        f"GBM CV gain {LR_GAIN.label}, 95% interval above 0 (the GBM is headline iff met)"
+    )
+    assert checks[10].result == "missed"

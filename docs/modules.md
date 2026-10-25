@@ -35,7 +35,7 @@ Reproduce the M1.1 and MS3 results from the pinned StatsBomb open data:
 make snapshot        # uv run fc snapshot statsbomb-open-v1 --builder statsbomb ...
 make xg-baselines    # uv run python -m football_shot_models.baselines -> the 3 M1.1 cards
 make xg-models       # uv run python -m football_shot_models.models -> step, GBM and penalty
-                     # cards (about 7 min)
+                     # cards (about 10 min)
 make reproduce       # regenerate every card and the README summary from the snapshot and
                      # compare them byte for byte (fails, rather than skips, without the snapshot)
 ```

@@ -17,6 +17,8 @@ from sklearn.metrics import brier_score_loss, log_loss
 
 from football_shot_models import baselines, cards, data, evaluation, metrics
 
+THRESH = "### MS2 thresholds (retired; see the headline model's MS3 checks)"
+
 REPO = Path(__file__).resolve().parents[1]
 LICENCE = (
     "Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Never "
@@ -91,7 +93,11 @@ def test_card_headings_follow_template(run_result: tuple[Any, Path]) -> None:
         lines = _card(docs, baseline).splitlines()
         assert lines[0] == f"# Model card: {baseline.title}"
         assert [line for line in lines if line.startswith("## ")] == headings
-        for sub in ("### Milestone thresholds", "### Reliability", "### Segments"):
+        for sub in (
+            THRESH,
+            "### Reliability",
+            "### Segments",
+        ):
             assert sub in lines
 
 
@@ -129,7 +135,7 @@ def test_card_reports_missed_threshold(run_result: tuple[Any, Path]) -> None:
         assert f"{ev.train.log_loss:.4f}" in log_loss_row[1]
         assert f"{ev.cv.log_loss:.4f}" in log_loss_row[2] and f"{sd:.4f}" in log_loss_row[2]
         assert f"{ev.holdout.log_loss:.4f}" in log_loss_row[3]
-        block = _section(text, "### Milestone thresholds")
+        block = _section(text, THRESH)
         assert "hold-out" in block.lower()
         assert THRESHOLD_NOTE in block
         rows = _rows(block)
@@ -157,8 +163,10 @@ def test_card_reports_missed_threshold(run_result: tuple[Any, Path]) -> None:
     assert missed_any  # the base rate's AUC is 0.5, so its card always explains a miss
 
 
+# run3-ms3 (football 11): family = women is the gender = female row by construction, so it is
+# printed once, as the gender row
 SEGMENTS = (
-    r"league or tournament", r"team-selected", r"women",
+    r"league or tournament", r"team-selected",
     r"\bfemale\b", r"\bmale\b",
     r"right[_ ]foot", r"left[_ ]foot", r"\bhead\b",
 )  # fmt: skip
@@ -184,9 +192,10 @@ def test_card_segments(run_result: tuple[Any, Path], dev_held: tuple[pl.DataFram
     assert len(rows) == len(SEGMENTS)  # body_part=other has no shot: no row
     assert not any(re.search(r"\bother\b", lab, re.I) for lab in labels)
     shots = [r[col["Shots"]] for r in rows]
-    assert shots == ["48", "48", "24", "24", "96", "52", "44", "24"]
+    assert shots == ["48", "48", "24", "96", "52", "44", "24"]
+    assert not any(re.search(r"\bwomen\b", lab) for lab in labels)
     assert all(len(r) == len(header) == 10 for r in rows)
-    women = rows[2]  # one class: no goals, but a log loss and a Brier score; no skill
+    women = rows[2]  # gender = female; one class: no goals, a log loss and a Brier; no skill
     mask = (dev["family"] == "women").to_numpy()
     p = ev.oof[mask]
     assert women[col["Goals"]] == "0"
@@ -194,7 +203,7 @@ def test_card_segments(run_result: tuple[Any, Path], dev_held: tuple[pl.DataFram
     assert women[col["Log loss"]] == f"{log_loss(np.zeros(p.size), p, labels=[0, 1]):.4f}"
     assert women[col["Brier"]] == f"{brier_score_loss(np.zeros(p.size), p):.4f}"
     assert women[col["Log-loss skill"]] == "n/a"
-    assert rows[4][col["Σ xG / goals"]] != "n/a"
+    assert rows[3][col["Σ xG / goals"]] != "n/a"
     # skill against the segment's own goal rate, not the pooled one
     league = (dev["family"] == "league or tournament").to_numpy()
     y = dev["is_goal"].to_numpy()[league].astype(float)
@@ -214,7 +223,7 @@ def test_card_fold_xg_error(run_result: tuple[Any, Path]) -> None:
         cell = f"{mean:.2%} (max {worst:.2%})"
         row = next(r for r in _rows(_section(text, "## Metrics")) if "fold mean" in r[0])
         assert row == ["abs(Σ xG − goals) / goals, fold mean (max)", "n/a", cell, "n/a"]
-        threshold = _rows(_section(text, "### Milestone thresholds"))[3]
+        threshold = _rows(_section(text, THRESH))[3]
         assert f"{ev.cv.xg_error:.2%} pooled; fold mean {cell}" == threshold[1]
 
 

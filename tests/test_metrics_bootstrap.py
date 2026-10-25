@@ -144,3 +144,26 @@ def test_property_bootstrap_symmetry_and_shot_order(
     assert (shuffled.gain, shuffled.low, shuffled.high) == pytest.approx(
         (ci.gain, ci.low, ci.high), abs=1e-12
     )
+
+
+def test_bootstrap_resample_gain_is_shot_weighted() -> None:
+    """run3-ms3 (QA 13), MS3.features §4.1: each resample's gain is its weighted difference over
+    its weighted shot count. Five matches of 1, 2, 5, 1 and 3 shots (near miss: the mean of the
+    match means gives (-0.0544, 0.5951) here)."""
+    groups = np.repeat(np.arange(5), [1, 2, 5, 1, 3])
+    y = np.array([1, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1], dtype=float)
+    p_ref = np.full(12, 0.3)
+    p_new = np.array([0.6, 0.2, 0.2, 0.4, 0.3, 0.25, 0.35, 0.2, 0.6, 0.1, 0.4, 0.5])
+    ci = metrics.bootstrap_gain(y, p_ref, p_new, groups)
+    assert ci.gain == pytest.approx(float(np.mean(_loss(y, p_ref) - _loss(y, p_new))), rel=1e-12)
+    assert (ci.low, ci.high) == pytest.approx((-0.0680, 0.4829), abs=1e-4)
+
+
+def test_bootstrap_hostile_settings() -> None:
+    """run3-ms3 (QA 17): a bool ``n_boot`` is refused (not one resample), and groups mixing int
+    and str keys are a named ValueError, not numpy's TypeError."""
+    with pytest.raises(ValueError, match="n_boot must be an int >= 1, got True"):
+        metrics.bootstrap_gain(Y, P_REF, P_NEW, np.arange(100) // 2, n_boot=True)
+    mixed = np.array([i if i % 2 else f"sb:m{i}" for i in range(100)], dtype=object)
+    with pytest.raises(ValueError, match="groups must be keys of one type"):
+        metrics.bootstrap_gain(Y, P_REF, P_NEW, mixed)
