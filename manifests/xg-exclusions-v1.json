@@ -2,13 +2,13 @@
   "manifest_version": 1,
   "name": "xg-exclusions-v1",
   "builder": null,
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "data_dir": "../data/snapshots/xg-exclusions-v1",
   "data_digest": "3d16d203c583551361464f572fa009a2062000d1587cae0605e95e8b0b920d65",
   "source": {
     "kind": "files",
     "uri": "statsbomb-open-v1",
-    "revision": "31146e70cefb5fe39056b8ef24216724a5d5162601decb2e214c0608b2eb3e78",
+    "revision": "63002fdd75a8889807a717c20035b3c42132534408074f2ecdd40118b35d62be",
     "content_sha256": null,
     "files": []
   },
@@ -511,7 +511,7 @@
     "pandera": "0.34.1",
     "numpy": "2.5.4",
     "football_core": "0.1.0",
-    "football_core_git": "6a4357ec28efa21913ff8774cca5f61b91ca5bf0",
+    "football_core_git": "d5cd9468c7ffa4a6bb2a32fe3206349af9fb5852",
     "football_core_dirty": false
   }
 }

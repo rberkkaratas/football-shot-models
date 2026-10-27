@@ -226,3 +226,14 @@ def test_check_thresholds_custom_targets() -> None:
     with pytest.raises(ValueError, match="unknown op '<'"):
         metrics.Threshold("brier", "<", 0.3)  # type: ignore[arg-type]
     assert metrics.METRICS == ("log_loss", "brier", "auc", "xg_error")
+
+
+def test_logit_clips_the_logit_symmetrically() -> None:
+    """Engineer decision (build.md, spec 5.2): ``logit`` clips the logit to ``±logit(EPS)``, not
+    ``p`` to ``[EPS, 1 - EPS]``, so ``logit(1) == -logit(0)`` exactly and every ``p`` below
+    ``1 - EPS`` and above ``EPS`` is bitwise the raw ``log(p) - log1p(-p)``."""
+    bound = float(np.log(metrics.EPS) - np.log1p(-metrics.EPS))
+    lo, hi = metrics.logit(np.array([0.0, 1.0])).tolist()
+    assert lo == bound and hi == -bound  # clipping p instead makes hi differ by about 8e-4
+    inner = np.array([1e-14, 0.1, 0.5, 0.9, 1.0 - 1e-12, 1.0 - 1e-14])
+    assert np.array_equal(metrics.logit(inner), np.log(inner) - np.log1p(-inner))

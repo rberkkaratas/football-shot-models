@@ -33,6 +33,7 @@ def _render(
         benchmark=evaluations[3],
         dev=dev,
         context=cards.card_context(xg_data, dev, held),
+        provider=cards.STATSBOMB_TEXT,
         **kwargs,
     )
 
@@ -127,7 +128,10 @@ def test_card_best_label(run_result: tuple[Any, Path], xg_data: Any, dev_held: A
 
 
 def test_card_filter_and_task_text() -> None:
-    assert cards.FILTER_LABELS["direct_corner"] == "direct corner (logged as a shot on outcome)"
+    assert (
+        cards.STATSBOMB_TEXT.filter_labels["direct_corner"]
+        == "direct corner (logged as a shot on outcome)"
+    )
     assert "direct corners, own goals and shoot-outs excluded" in cards.TASK
 
 

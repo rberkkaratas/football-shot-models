@@ -65,6 +65,12 @@ nav:
       - "Monotone GBM + Platt": models/xg-gbm.md
       - "Penalty conversion (Beta-binomial)": models/xg-penalty.md
       - "xG v1 (WhoScored / Opta events)": models/xg-v1.md
+      - "xGOT LR (StatsBomb)": models/xgot-lr.md
+      - "xGOT monotone GBM (StatsBomb)": models/xgot-gbm.md
+      - "Penalty xGOT (StatsBomb)": models/xgot-penalty.md
+      - "xGOT LR (WhoScored / Opta)": models/ws-xgot-lr.md
+      - "xGOT monotone GBM (WhoScored / Opta)": models/ws-xgot-gbm.md
+      - "Penalty xGOT (WhoScored / Opta)": models/ws-xgot-penalty.md
   - References: references.md
   - API reference:
       - data: api/data.md
@@ -81,3 +87,4 @@ nav:
       - legacy: api/legacy.md
       - v1: api/v1.md
       - release: api/release.md
+      - xgot: api/xgot.md

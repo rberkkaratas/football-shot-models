@@ -38,9 +38,10 @@ import numpy as np
 import polars as pl
 from football_core.io import snapshot
 
-from football_shot_models import ablation, baselines, data, features, gbm, penalties
+from football_shot_models import ablation, baselines, cards, data, features, gbm, penalties
 from football_shot_models.cache import PredictionCache
 from football_shot_models.cards import (
+    STATSBOMB_TEXT,
     CardContext,
     CardText,
     card_context,
@@ -104,6 +105,32 @@ def headline(
     """
     gain = compare(f"over {best_lr.spec.title}", best_lr, gbm, dev, held)
     return (gbm if gain.cv.low > 0 else best_lr), gain
+
+
+def select_headline(
+    candidates: Sequence[Evaluation], gbm: Evaluation, dev: pl.DataFrame, held: pl.DataFrame
+) -> tuple[Evaluation, Comparison]:
+    """:func:`headline` of the best of ``candidates`` (``evaluation.best``) and the GBM.
+
+    The one headline rule of every run (MS3, MS4 v1, the MS5 xGOT input).
+
+    Raises
+    ------
+    TypeError
+        ``best`` returns a benchmark evaluation.
+    ValueError
+        From ``best`` (no candidate) or :func:`headline`.
+
+    Examples
+    --------
+    >>> head, gain = select_headline((*base, *steps), gbm, dev, held)  # doctest: +SKIP
+    >>> head.spec.name  # doctest: +SKIP
+    'xg-gbm'
+    """
+    best_lr = best(candidates)
+    if not isinstance(best_lr.spec, ModelSpec):
+        raise TypeError(f"best returned a benchmark: {best_lr.spec!r}")
+    return headline(best_lr, gbm, dev, held)
 
 
 def verdict(ev: Evaluation, head: Evaluation, gain: Comparison, *, split: str = "hold-out") -> str:
@@ -317,11 +344,18 @@ def gbm_grid(ev: Evaluation) -> Mapping[str, Any]:
     return ev.spec.make().get_params()
 
 
-def gbm_features(ev: Evaluation) -> tuple[str, ...]:
+def gbm_features(
+    ev: Evaluation,
+    rows: Mapping[str, str] = ablation.FEATURE_ROWS,
+    reasons: Mapping[str, str] = MONOTONE_REASONS,
+    note: str = MONOTONE_NOTE,
+) -> tuple[str, ...]:
     """The GBM card's Features section: the feature table, then the fitted sign map.
 
     The sign lines come from the ``monotone:`` rows of ``ev.coefficients`` (the dev fit), so
-    a non-default map prints as fitted.
+    a non-default map prints as fitted. ``rows`` (feature -> table row), ``reasons`` (feature
+    -> why its sign) and ``note`` (the sentence after the signs) default to the xG GBM's;
+    another GBM passes its own.
 
     Examples
     --------
@@ -335,17 +369,17 @@ def gbm_features(ev: Evaluation) -> tuple[str, ...]:
     return (
         "| Feature | Definition | Source field(s) |",
         "|---|---|---|",
-        *(ablation.FEATURE_ROWS[f] for f in feats),
+        *(rows[f] for f in feats),
         "",
         "Monotone constraints of the fitted model (every other column is free):",
         "",
         *(
             f"- {col}: {'non-increasing' if s < 0 else 'non-decreasing'}"
-            + (f" — {MONOTONE_REASONS[col]}" if col in MONOTONE_REASONS else "")
+            + (f" — {reasons[col]}" if col in reasons else "")
             for col, s in signs
         ),
         "",
-        MONOTONE_NOTE,
+        note,
     )
 
 
@@ -400,6 +434,8 @@ CARD: Final[CardText] = CardText(
         "v2 (MS3 assessment): the benchmark sentence names the benchmark; the training-mix line "
         "makes no causal claim; the hold-out women's line is computed.",
     ),
+    task=cards.TASK,
+    target=cards.TARGET,
     best_label="model",
 )
 
@@ -579,7 +615,7 @@ def run(
     by_name = {ev.spec.name: ev for ev in (*base, *steps, *variants)}
     chain = (s0.spec.name, *(ev.spec.name for ev in steps))
     rows = ablation.comparisons(by_name, sb, dev, held, chain=chain)
-    head, gbm_gain = headline(best((*base, *steps)), gbm, dev, held)
+    head, gbm_gain = select_headline((*base, *steps), gbm, dev, held)
     gbm_rows = (gbm_gain, *(compare(f"over {r.spec.title}", r, gbm, dev, held) for r in (s0, sb)))
     s0_gain, sb_gain = (
         gbm_rows[1:] if head is gbm
@@ -600,7 +636,8 @@ def run(
         gbm, sb, gain=gbm_gain, sb_gain=gbm_rows[2], dev=dev, held=held, context=context
     )
     cards[gbm.spec.name] = render_card(
-        gbm, text, evaluations=evaluations, benchmark=sb, dev=dev, context=context, thresholds=(),
+        gbm, text, evaluations=evaluations, benchmark=sb, dev=dev, context=context,
+        provider=STATSBOMB_TEXT, thresholds=(),
         comparisons=gbm_rows, checks=checks if head is gbm else (),
         verdict=f"{verdicts[gbm.spec.name]} {benchmark_sentence(gbm, gbm_rows[2], sb)}",
     )  # fmt: skip

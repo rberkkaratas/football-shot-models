@@ -855,3 +855,35 @@ def test_v1_card_holds_no_ids(real_v1: dict[str, Any]) -> None:
     ho = data.season_holdout(xg.matches, vc.TRAIN_SEASONS, vc.TEST_SEASONS)
     test_comps = xg.matches.filter(ho.expr)["competition_name"].n_unique()
     assert len(_rows(_block(card, "Test by competition"))) == test_comps
+
+
+def test_v1_card_whoscored_text(v1r: dict[str, Any]) -> None:
+    """MS5.goalmouth §8, §10.8: ``v1_card`` reads its source lead, filter labels and licensing
+    from ``release.WHOSCORED_TEXT`` (the strings v1 printed before); the module constants are
+    gone and the StatsBomb-only fields are None."""
+    _, release, _ = _mods()
+    wt = release.WHOSCORED_TEXT
+    assert isinstance(wt, cards.ProviderText)
+    assert wt.source == "private WhoScored / Opta event archive"
+    assert wt.licensing == (
+        "Data: a private WhoScored / Opta archive, never committed or redistributed; this card "
+        "holds counts and metrics only."
+    )
+    assert dict(wt.filter_labels) == {
+        "own_goal": f"own goal (Opta q{whoscored.OWN_GOAL})",
+        "shootout": "shoot-out (period 5)",
+        "penalty": "penalty (in-game; the penalty probability below)",
+        "direct_corner": f"direct corner (Opta q{whoscored.DIRECT_CORNER})",
+        "no_freeze_frame": "no freeze frame",
+    }
+    assert (wt.benchmark_name, wt.benchmark_caveat, wt.families, wt.exclusions_log) == (
+        None, None, None, None,
+    )  # fmt: skip
+    for name in ("LICENSING", "FILTER_LABELS"):
+        assert not hasattr(release, name), name
+    card = release.v1_card(v1r["run"])
+    assert f"- **Source(s):** {wt.source}, source revision `" in card
+    assert wt.licensing in _block(card, "Data licensing")
+    data_rows = [r[0] for r in _rows(_block(card, "Data"))]
+    for reason, _, _ in v1r["run"].context.exclusions:
+        assert wt.label(reason) in data_rows, reason

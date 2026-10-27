@@ -24,6 +24,14 @@ predictions would be wrong without any error.
 code, the spec and the rows all match; everything after the fits (scores, comparisons, cards)
 is computed the same way either way. The leakage guard runs on a hit too.
 
+**Other targets and folds.** A spec names its own registry (``derived``) and guard, so an xGOT
+model goes through the same harness with the xGOT guard
+(:func:`~football_shot_models.features.check_xgot_features`); a spec that reads the cross-fitted
+xG (``xg_logit``) must name its source (``xg_input``), which the cache identity hashes with the
+column's values. Any fold assignment that partitions dev works
+(:func:`check_partition`); :func:`restrict_folds` keeps it on a subset of the rows (the on-target
+shots of an xGOT model), so the subset's folds are the parent's.
+
 **Fits fail closed.** A ``ConvergenceWarning`` and, for the ``newton-cholesky`` solver, a
 singular Hessian (``scipy.linalg.LinAlgWarning``, after which scikit-learn would quietly switch
 to lbfgs) are errors, so every fit is the one the model card describes.
@@ -46,9 +54,9 @@ from sklearn.model_selection import GroupKFold
 from sklearn.pipeline import Pipeline
 
 from football_shot_models import features
-from football_shot_models.cache import PredictionCache, Predictions
+from football_shot_models.cache import PredictionCache, Predictions, column_digest
 from football_shot_models.cache import identity as cache_identity
-from football_shot_models.features import Guard, design_matrix
+from football_shot_models.features import DerivedFeature, Guard, design_matrix
 from football_shot_models.metrics import GainCI, Scores, bootstrap_gain, mean_scores, score
 
 FloatArray = npt.NDArray[np.float64]
@@ -136,6 +144,13 @@ class ModelSpec:
         on every fit, prediction and cache hit; ``None`` is
         :func:`~football_shot_models.features.check_xg_features`, looked up when called. A
         guard decides only whether a fit may run, never what it computes.
+    derived : mapping of str to DerivedFeature, optional
+        The derived-feature registry of ``features``, passed to the guard and to
+        ``design_matrix``; ``None`` is :data:`~football_shot_models.features.DERIVED`, looked
+        up when called (an xGOT spec passes ``features.XGOT_DERIVED``).
+    xg_input : str, optional
+        The name of the xG spec whose cross-fitted predictions fill ``xg_logit``; required
+        when ``xg_logit`` is a feature, and part of the cache identity.
     """
 
     name: str
@@ -144,6 +159,8 @@ class ModelSpec:
     make: Callable[[], Estimator]
     coefficients: Callable[[Estimator, tuple[str, ...]], Coefficients] | None = None
     guard: Guard | None = None
+    derived: Mapping[str, DerivedFeature] | None = None
+    xg_input: str | None = None
 
 
 @dataclass(frozen=True)
@@ -210,13 +227,31 @@ def _require_model(spec: object) -> ModelSpec:
         raise TypeError(
             f"expected a ModelSpec, not {spec!r}; score a Benchmark with evaluate_benchmark"
         )
+    if features.XG_INPUT in spec.features and spec.xg_input is None:
+        raise ValueError(
+            f"{spec.name}: reads {features.XG_INPUT!r} but names no xg_input (the xG spec whose "
+            "cross-fitted predictions fill it)"
+        )
     return spec
+
+
+def _registry(spec: ModelSpec) -> Mapping[str, DerivedFeature]:
+    return features.DERIVED if spec.derived is None else spec.derived
+
+
+def _design(
+    spec: ModelSpec, shots: pl.DataFrame, freeze_frames: pl.DataFrame | None
+) -> tuple[FloatArray, tuple[str, ...]]:
+    return design_matrix(
+        shots, spec.features, derived=_registry(spec), freeze_frames=freeze_frames,
+        guard=spec.guard,
+    )  # fmt: skip
 
 
 def _fit(spec: ModelSpec, train: pl.DataFrame, freeze_frames: pl.DataFrame | None) -> Estimator:
     if train.height == 0:
         raise ValueError(f"{spec.name}: empty training set")
-    x, names = design_matrix(train, spec.features, freeze_frames=freeze_frames, guard=spec.guard)
+    x, names = _design(spec, train, freeze_frames)
     model = spec.make()
     if isinstance(model, DesignFit) and (nulls := train["match_id"].null_count()):
         raise ValueError(f"{spec.name}: match_id has {nulls} null value(s) in the training rows")
@@ -248,7 +283,7 @@ def _fit(spec: ModelSpec, train: pl.DataFrame, freeze_frames: pl.DataFrame | Non
 def _predict(
     model: Estimator, spec: ModelSpec, shots: pl.DataFrame, freeze_frames: pl.DataFrame | None
 ) -> FloatArray:
-    x, _ = design_matrix(shots, spec.features, freeze_frames=freeze_frames, guard=spec.guard)
+    x, _ = _design(spec, shots, freeze_frames)
     p: FloatArray = np.ascontiguousarray(model.predict_proba(x)[:, 1], dtype=np.float64)
     return p
 
@@ -281,7 +316,8 @@ def fit_predict(
     TypeError
         ``spec`` is not a ``ModelSpec``.
     ValueError
-        An empty training set, a feature problem (``design_matrix``), a
+        ``xg_logit`` among the features without ``spec.xg_input``; an empty training set, a
+        feature problem (``design_matrix``), a
         ``ConvergenceWarning`` from the fit, or a singular Hessian under ``newton-cholesky``
         (the message names the design columns that are constant on the training rows); for a
         :class:`DesignFit`, a null ``match_id`` in the training rows.
@@ -317,6 +353,77 @@ def cv_folds(dev: pl.DataFrame) -> Folds:
         (np.asarray(train, dtype=np.intp), np.asarray(test, dtype=np.intp))
         for train, test in splitter.split(np.zeros((dev.height, 1)), groups=groups)
     )
+
+
+def check_partition(folds: Folds, n: int) -> None:
+    """Refuse folds whose test sets are not a partition of the ``n`` dev rows.
+
+    Forward-chaining or overlapping folds would leave NaN out-of-fold predictions, or score a
+    row twice, without any other error.
+
+    Raises
+    ------
+    ValueError
+        An index outside ``0..n-1`` (train or test), a row in no test fold or in more than
+        one (counts in the message).
+
+    Examples
+    --------
+    >>> folds = ((np.array([2, 3]), np.array([0, 1])), (np.array([0, 1]), np.array([2, 3])))
+    >>> check_partition(folds, 4)
+    >>> check_partition(folds[:1], 4)
+    Traceback (most recent call last):
+    ...
+    ValueError: folds are not a partition of the 4 dev row(s): 2 in no test fold, 0 in more than one
+    """
+    counts = np.zeros(n, dtype=np.int64)
+    for i, (train, test) in enumerate(folds):
+        for idx in (train, test):
+            if idx.size and (int(idx.min()) < 0 or int(idx.max()) >= n):
+                raise ValueError(f"fold {i}: an index is outside 0..{n - 1}")
+        np.add.at(counts, test, 1)
+    none, many = int((counts == 0).sum()), int((counts > 1).sum())
+    if none or many:
+        raise ValueError(
+            f"folds are not a partition of the {n} dev row(s): {none} in no test fold, {many} in "
+            "more than one"
+        )
+
+
+def restrict_folds(folds: Folds, mask: BoolArray) -> Folds:
+    """The same fold assignment on the rows where ``mask`` is True, re-indexed in row order.
+
+    A row keeps its fold, so an xGOT row in test fold k reads the xG of the fit that never saw
+    fold k. Any partition passes (season-grouped folds included).
+
+    Raises
+    ------
+    ValueError
+        ``mask`` not 1-D bool, or its length not the folds' row count; folds that are not a
+        partition (:func:`check_partition`); a fold with no test row left.
+
+    Examples
+    --------
+    >>> folds = ((np.array([2, 3]), np.array([0, 1])), (np.array([0, 1]), np.array([2, 3])))
+    >>> [(tr.tolist(), te.tolist()) for tr, te in restrict_folds(folds, np.array(
+    ...     [True, False, True, True]))]
+    [([1, 2], [0]), ([0], [1, 2])]
+    """
+    m = np.asarray(mask)
+    rows = sum(test.size for _, test in folds)
+    if m.dtype != np.bool_ or m.ndim != 1 or m.size != rows:
+        raise ValueError(
+            f"mask must be a 1-D bool array of the folds' {rows} row(s), got {m.dtype} {m.shape}"
+        )
+    check_partition(folds, rows)
+    new = np.cumsum(m) - 1
+    out = []
+    for i, (train, test) in enumerate(folds):
+        kept = np.sort(new[test[m[test]]]).astype(np.intp)
+        if kept.size == 0:
+            raise ValueError(f"fold {i} has no test row left after the mask")
+        out.append((np.sort(new[train[m[train]]]).astype(np.intp), kept))
+    return tuple(out)
 
 
 def _evaluation(
@@ -360,16 +467,20 @@ def _cached(
     for side, frame in (("dev", dev), ("held", held)):
         if "shot_id" not in frame.columns:
             raise ValueError(f"{spec.name}: the prediction cache needs shot_id in {side}")
+    reads_xg = features.XG_INPUT in spec.features
+    inputs = f"{spec.xg_input} {column_digest(dev, held, features.XG_INPUT)}" if reads_xg else ""
     key = cache_identity(
-        spec.name, spec.features, spec.make().get_params(), dev["shot_id"], held["shot_id"]
-    )
+        spec.name, spec.features, spec.make().get_params(), dev["shot_id"], held["shot_id"],
+        inputs=inputs,
+    )  # fmt: skip
     hit = cache.load(spec.name, key, folds)
     if hit is None:
         return key, None
     # a warm run refuses what a cold one refuses: the leakage guard, a frame feature without frames
-    (spec.guard or features.check_xg_features)(spec.features, features.DERIVED)
+    registry = _registry(spec)
+    (spec.guard or features.check_xg_features)(spec.features, registry)
     for name in spec.features:
-        sources = features.DERIVED[name].sources if name in features.DERIVED else ()
+        sources = registry[name].sources if name in registry else ()
         if freeze_frames is None and any(table == "freeze_frames" for table, _ in sources):
             raise ValueError(f"derived feature {name!r} reads freeze_frames; pass freeze_frames=")
     sizes = (hit.oof.size, hit.train.size, hit.holdout.size)
@@ -397,7 +508,8 @@ def evaluate(
     ------
     TypeError, ValueError
         As :func:`fit_predict`; with a cache, also a frame without ``shot_id``, a bad
-        ``shot_id`` (:func:`~football_shot_models.cache.identity`) or an unreadable entry.
+        ``shot_id`` (:func:`~football_shot_models.cache.identity`), a missing or null
+        ``xg_logit`` for a spec that reads it, or an unreadable entry.
 
     Examples
     --------
@@ -414,7 +526,7 @@ def evaluate(
     model = _fit(spec, dev, ff)
     coefficients: Coefficients = ()
     if spec.coefficients is not None:
-        _, names = design_matrix(dev.head(0), spec.features, freeze_frames=ff, guard=spec.guard)
+        _, names = _design(spec, dev.head(0), ff)
         coefficients = spec.coefficients(model, names)
     p_train, p_held = _predict(model, spec, dev, ff), _predict(model, spec, held, ff)
     ev = _evaluation(spec, dev, held, fold_p, folds, p_train, p_held, coefficients)

@@ -23,6 +23,12 @@ another on the same shots, with a 95 % percentile interval from resampling **mat
 in one match share the keepers, the game state and the annotators, so resampling shots would
 treat them as independent and give too narrow an interval.
 
+**Expected calibration error.** :func:`ece` is the shot-weighted mean gap between the mean
+prediction and the goal rate over the equal-count bins of :func:`reliability` (the cards'
+reliability table). Even a perfectly calibrated model has an ECE above 0 on a finite sample, so
+:func:`ece_floor` gives the mean ECE of outcomes drawn from the predictions themselves: the
+value noise alone reaches on that many shots.
+
 **A rate with an interval.** :func:`beta_interval` treats ``goals`` of ``n`` kicks as
 binomial draws of one conversion probability with a Beta prior (Jeffreys, Beta(1/2, 1/2), by
 default). The posterior is Beta(prior + goals, prior + misses); its mean is the model's
@@ -54,6 +60,8 @@ METRICS: Final[tuple[Metric, ...]] = get_args(Metric)
 EPS: Final[float] = 1e-15
 N_BOOT: Final[int] = 2000
 SEED: Final[int] = 0
+ECE_BINS: Final[int] = 10
+_LOGIT_EPS: Final[float] = float(np.log(EPS) - np.log1p(-EPS))
 
 
 @dataclass(frozen=True)
@@ -152,9 +160,20 @@ def _check_pair(y: npt.NDArray[np.generic], p: FloatArray) -> None:
         raise ValueError(f"y and p differ in length: {y.size} vs {p.size}")
 
 
-def _logit(p: FloatArray) -> FloatArray:
-    q = np.clip(p, EPS, 1.0 - EPS)
-    out: FloatArray = np.log(q) - np.log1p(-q)
+def logit(p: FloatArray) -> FloatArray:
+    """``log(p / (1 - p))``, clipped to ``±logit(EPS)`` so 0 and 1 stay finite.
+
+    The clip is on the logit, not on ``p``: the double nearest ``1 - EPS`` is ``1 - 0.999 EPS``,
+    so clipping ``p`` would make ``logit(1)`` differ from ``-logit(0)`` by 8e-4.
+
+    Examples
+    --------
+    >>> [round(float(v), 4) for v in logit(np.array([0.5, 0.25, 0.0, 1.0]))]
+    [0.0, -1.0986, -34.5388, 34.5388]
+    """
+    with np.errstate(divide="ignore"):
+        raw = np.log(p) - np.log1p(-p)
+    out: FloatArray = np.clip(raw, _LOGIT_EPS, -_LOGIT_EPS)
     return out
 
 
@@ -201,7 +220,7 @@ def calibration(y: FloatArray, p: FloatArray) -> tuple[float | None, float | Non
     >>> calibration(y, np.full(6, 0.5))
     (0.0, None)
     """
-    lp = _logit(p)
+    lp = logit(p)
     one = np.ones((lp.size, 1))
     intercept = _irls(one, y, lp)
     slope = _irls(np.column_stack([one, lp]), y, np.zeros(lp.size)) if np.ptp(lp) > 0 else None
@@ -400,6 +419,49 @@ def reliability(y: Outcomes, p: FloatArray, bins: int = 10) -> pl.DataFrame:
         )
         .sort("bin")
     )
+
+
+def ece(y: Outcomes, p: FloatArray, bins: int = ECE_BINS) -> float:
+    """Expected calibration error over ``bins`` equal-count bins (:func:`reliability`).
+
+    ``Σ_b n_b / n · |mean p_b − goal rate_b|``.
+
+    Raises
+    ------
+    ValueError
+        As :func:`reliability`.
+
+    Examples
+    --------
+    >>> y = np.array([False, False, True, True])
+    >>> round(ece(y, np.array([0.1, 0.3, 0.8, 0.6]), bins=2), 4)
+    0.25
+    """
+    rel = reliability(y, p, bins)
+    gap = (rel["mean_xg"] - rel["goal_rate"]).abs() * rel["shots"]
+    return float(gap.sum()) / y.size
+
+
+def ece_floor(p: FloatArray, bins: int = ECE_BINS, reps: int = 200, seed: int = SEED) -> float:
+    """The mean ECE of outcomes drawn as Bernoulli(``p``): what a calibrated model scores by noise.
+
+    Raises
+    ------
+    ValueError
+        ``p`` not 1-D, NaN or outside [0, 1]; ``reps`` a bool or ``< 1``; as :func:`reliability`.
+
+    Examples
+    --------
+    >>> p = np.linspace(0.05, 0.95, 400)
+    >>> 0.0 < ece_floor(p, reps=50) < 0.1, ece_floor(p, reps=50) == ece_floor(p, reps=50)
+    (True, True)
+    """
+    if p.ndim != 1 or not np.all((p >= 0.0) & (p <= 1.0)):
+        raise ValueError("p must be 1-D probabilities in [0, 1] (no NaN)")
+    if isinstance(reps, bool) or reps < 1:
+        raise ValueError(f"reps must be an int >= 1, got {reps!r}")
+    rng = np.random.default_rng(seed)
+    return float(np.mean([ece(rng.uniform(size=p.size) < p, p, bins) for _ in range(reps)]))
 
 
 def check_thresholds(

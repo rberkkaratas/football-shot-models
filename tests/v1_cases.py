@@ -132,6 +132,9 @@ def _to_whoscored(shots: pl.DataFrame) -> pl.DataFrame:
     return shots.with_columns(
         pl.lit("whoscored").cast(schema.PROVIDER).alias("provider"),
         (pl.lit("ws:p-") + pl.col("team_id").str.slice(3)).alias("player_id"),
+        pl.when(pl.col("gk_id").is_not_null())
+        .then(pl.lit("ws:gk-") + pl.col("opponent_team_id").str.slice(3))
+        .alias("gk_id"),  # MS5.goalmouth: the keeper id carries the provider prefix too
         *(pl.lit(None).cast(shots.schema[c]).alias(c)
           for c in ("technique", "open_goal", "follows_dribble", "provider_xg")),
         pl.lit("[]").alias("raw_qualifiers"),

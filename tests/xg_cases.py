@@ -87,6 +87,8 @@ def shots_frame(shots: Sequence[Shot]) -> pl.DataFrame:
         "team_id": [s.team_id for s in shots],
         "opponent_team_id": [s.opponent_team_id for s in shots],
         "player_id": [f"sb:p-{s.team_id[3:]}" for s in shots],
+        # MS5.goalmouth (schema 1.2): the facing keeper; null for own goals
+        "gk_id": [None if s.own_goal else f"sb:gk-{s.opponent_team_id[3:]}" for s in shots],
         "is_home": [s.is_home for s in shots],
         "period": [s.period for s in shots],
         "minute": [s.minute for s in shots],

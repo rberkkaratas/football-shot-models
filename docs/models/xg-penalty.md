@@ -10,7 +10,7 @@
 The penalty term of match xG. Match xG = Σ non-penalty xG (headline model) + P(goal | in-game penalty) × in-game penalties; shoot-out kicks are not part of match xG, and own goals and direct corners carry no xG. Not for rating takers or keepers: every in-game penalty gets the same probability.
 
 ## Data
-- **Source(s):** StatsBomb open data, revision `4b73468fc5b0f1950f9f66fada70ad3a4f9327cb`; snapshot `statsbomb-open-v1`, data digest `31146e70cefb5fe39056b8ef24216724a5d5162601decb2e214c0608b2eb3e78`
+- **Source(s):** StatsBomb open data, revision `4b73468fc5b0f1950f9f66fada70ad3a4f9327cb`; snapshot `statsbomb-open-v1`, data digest `63002fdd75a8889807a717c20035b3c42132534408074f2ecdd40118b35d62be`
 - **Rows:** the shots the xG population excludes as in-game penalties, dev and hold-out (Premier League 2015/2016) together, from 55 competition-seasons.
 
 ## Target

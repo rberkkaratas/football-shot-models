@@ -39,7 +39,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from football_shot_models import baselines, features
+from football_shot_models import baselines, cards, features
 from football_shot_models.cache import PredictionCache
 from football_shot_models.cards import CardContext, CardText, fmt, gain_cell, render_card, side
 from football_shot_models.evaluation import (
@@ -411,6 +411,8 @@ def _text(spec: ModelSpec, role: str, limitations: tuple[str, ...]) -> CardText:
         model=_model,
         limitations=limitations,
         changelog=CHANGELOG,
+        task=cards.TASK,
+        target=cards.TARGET,
         best_label="model",
     )
 
@@ -542,6 +544,7 @@ def step_cards(
             benchmark=benchmark,
             dev=dev,
             context=context,
+            provider=cards.STATSBOMB_TEXT,
             thresholds=(),
             comparisons=rows[name],
             verdict=verdicts.get(name),

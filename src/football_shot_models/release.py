@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Final
 
 from football_core import schema
@@ -205,17 +206,24 @@ INTENDED_USE: Final[str] = (
     "shots; not for rating players or teams without that comparison, not for penalties (a "
     "separate probability, below), and not for other providers' data without re-fitting."
 )
-LICENSING: Final[str] = (
-    "Data: a private WhoScored / Opta archive, never committed or redistributed; this card holds "
-    "counts and metrics only."
-)
-FILTER_LABELS: Final[dict[str, str]] = {
-    "own_goal": f"own goal (Opta q{whoscored.OWN_GOAL})",
-    "shootout": "shoot-out (period 5)",
-    "penalty": "penalty (in-game; the penalty probability below)",
-    "direct_corner": f"direct corner (Opta q{whoscored.DIRECT_CORNER})",
-    "no_freeze_frame": "no freeze frame",
-}
+WHOSCORED_TEXT: Final[cards.ProviderText] = cards.ProviderText(
+    source="private WhoScored / Opta event archive",
+    licensing=(
+        "Data: a private WhoScored / Opta archive, never committed or redistributed; this card "
+        "holds counts and metrics only."
+    ),
+    filter_labels=MappingProxyType({
+        "own_goal": f"own goal (Opta q{whoscored.OWN_GOAL})",
+        "shootout": "shoot-out (period 5)",
+        "penalty": "penalty (in-game; the penalty probability below)",
+        "direct_corner": f"direct corner (Opta q{whoscored.DIRECT_CORNER})",
+        "no_freeze_frame": "no freeze frame",
+    }),
+    benchmark_name=None,  # v0 is the benchmark, in v1's own sections
+    benchmark_caveat=None,
+    families=None,
+    exclusions_log=None,
+)  # fmt: skip
 
 
 def _ci(ci: tuple[float, float] | None, f: str) -> str:
@@ -363,9 +371,9 @@ def v1_card(r: V1Run) -> str:
     feats = dict.fromkeys(f for ev in (*r.steps, r.gbm) if isinstance(ev.spec, ModelSpec)
                           for f in ev.spec.features)  # fmt: skip
     exclusions = [
-        f"| {FILTER_LABELS[reason]} | n/a (no frames) | n/a |"
+        f"| {WHOSCORED_TEXT.label(reason)} | n/a (no frames) | n/a |"
         if reason == "no_freeze_frame"
-        else f"| {FILTER_LABELS[reason]} | {shots:,} | {goals:,} |"
+        else f"| {WHOSCORED_TEXT.label(reason)} | {shots:,} | {goals:,} |"
         for reason, shots, goals in c.exclusions
     ]
     models_rows = [
@@ -411,7 +419,7 @@ def v1_card(r: V1Run) -> str:
         "- No provider xG benchmark: v0 is the benchmark.",
         "",
         "## Data",
-        f"- **Source(s):** private WhoScored / Opta event archive, source revision "
+        f"- **Source(s):** {WHOSCORED_TEXT.source}, source revision "
         f"`{c.source_revision}`; snapshot `{c.manifest_name}`, data digest `{c.data_digest}`; "
         f"v0 file SHA-256 `{r.v0.sha256[:16]}…`",
         f"- **Competitions & seasons:** {c.competition_seasons:,} competition-seasons; train "
@@ -540,7 +548,7 @@ def v1_card(r: V1Run) -> str:
         "(see Data).",
         "",
         "## Data licensing",
-        LICENSING,
+        WHOSCORED_TEXT.licensing,
         "",
         "## Changelog",
         *(f"- {item}" for item in CHANGELOG),

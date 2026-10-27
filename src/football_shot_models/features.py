@@ -41,6 +41,18 @@ recorded at the strike, so it is pre-shot.
 :func:`design_matrix` is the only way the models turn a frame into numbers, and it calls the
 guard first. It never fills a missing value: a null, NaN or infinity is an error, because a
 fill value would be a modelling decision taken silently.
+
+**xGOT (MS5).** The leakage rule is target-specific. xG keeps :func:`check_xg_features`. An
+xGOT model (P(goal | on-target shot)) may read the goal-mouth point, but only through the
+placement features of :data:`PLACEMENT`, each of which declares the post-shot columns it reads
+(``DerivedFeature.reads``, a subset of :data:`XGOT_DECLARED`) and refuses a shot that is not on
+target. :func:`check_xgot_features` is the xGOT guard: it accepts those objects and the
+cross-fitted xG input :data:`XG_INPUT`, refuses the raw columns and every keeper-position
+feature (:data:`KEEPER_POSITION`: xGOT is keeper-neutral, so the keeper's positioning stays in
+the goals-saved measure), and sends every other name through :func:`check_xg_features`.
+Placement is read through ``pitch.to_goal_frame``, clipped to the frame plus the goal-mouth
+tolerance and rounded to :data:`PLACEMENT_STEP`, so the providers' recording grids do not
+separate goals from saves.
 """
 
 from __future__ import annotations
@@ -55,7 +67,7 @@ from typing import Final
 import numpy as np
 import numpy.typing as npt
 import polars as pl
-from football_core import pitch, schema
+from football_core import goalmouth, pitch, schema
 
 FloatArray = npt.NDArray[np.float64]
 Source = tuple[schema.Table, str]
@@ -83,16 +95,36 @@ _ROLES: Final[Mapping[Source, str]] = MappingProxyType(
     | {("freeze_frames", c.name): c.role for c in schema.FREEZE_FRAME_COLUMNS}
     | {("matches", c.name): c.role for c in schema.MATCH_COLUMNS}
 )
+# The non-pre_shot columns an xGOT derived feature may declare in ``reads``, with the reason.
+XGOT_DECLARED: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "goal_y": "placement, read through pitch.to_goal_frame",
+        "goal_z": "placement, read through pitch.to_goal_frame",
+        "on_target": "population check only",
+    }
+)
+XG_INPUT: Final[str] = "xg_logit"  # the cross-fitted xG input of an xGOT model, by name
+# Where the keeper stood: refused by the xGOT guard (PM E3; open_goal is the annotator's
+# "keeper out of position"). gk_x / gk_y are named so that a later column cannot slip in.
+KEEPER_POSITION: Final[frozenset[str]] = frozenset(
+    {"gk_x", "gk_y", "gk_in_cone", "gk_absent", "gk_to_goal_m", "gk_to_shot_m",
+     "gk_off_line_m", "open_goal"}
+)  # fmt: skip
 
 
-def _check_source(table: str, column: str, reader: str | None = None) -> None:
-    """The guard for one C3 column: ``pre_shot``, and not restricted unless ``reader`` may."""
+def _check_source(
+    table: str, column: str, reader: str | None = None, reads: frozenset[str] = frozenset()
+) -> None:
+    """The guard for one C3 column: ``pre_shot`` (or declared in ``reads``), and not restricted
+    unless ``reader`` may."""
     known = next((t for t in _TABLES if t == table), None)
     if known is None:
         raise ValueError(f"unknown table {table!r}; expected one of {_TABLES}")
     key: Source = (known, column)
     if key not in _ROLES:
         raise ValueError(f"{column!r} is not a column of the C3 {table} table")
+    if table == "shots" and column in reads:
+        return
     role = _ROLES[key]
     prefix = "" if table == "shots" else f"{table} "
     if role != "pre_shot":
@@ -125,12 +157,16 @@ class DerivedFeature:
     needs : tuple of str, default ()
         Other feature names that must be in the same feature list (checked by
         :func:`check_xg_features`); never the feature's own name.
+    reads : frozenset of str, default frozenset()
+        Shots columns of a non-``pre_shot`` role that ``fn`` may read, a subset of
+        :data:`XGOT_DECLARED`. A feature with ``reads`` is refused by :func:`check_xg_features`;
+        :func:`check_xgot_features` accepts only the :data:`XGOT_DERIVED` object of its name.
 
     Raises
     ------
     ValueError
-        A bad name, no sources, a source that fails the guard (the message names its role), or
-        a bad ``needs``.
+        A bad name, no sources, a source that fails the guard (the message names its role), a
+        bad ``needs``, or ``reads`` outside :data:`XGOT_DECLARED`.
 
     Examples
     --------
@@ -144,6 +180,7 @@ class DerivedFeature:
     sources: tuple[Source, ...]
     fn: DeriveFn
     needs: tuple[str, ...] = ()
+    reads: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         taken = ("shots", self.name) in _ROLES or ("matches", self.name) in _ROLES
@@ -154,8 +191,13 @@ class DerivedFeature:
             )
         if not isinstance(self.sources, tuple) or not self.sources:
             raise ValueError(f"derived feature {self.name!r} needs a tuple of (table, column)")
+        if not isinstance(self.reads, frozenset) or not self.reads <= set(XGOT_DECLARED):
+            raise ValueError(
+                f"derived feature {self.name!r}: reads must be a frozenset within "
+                f"{sorted(XGOT_DECLARED)}, got {self.reads!r}"
+            )
         for table, column in self.sources:
-            _check_source(table, column, reader=self.name)
+            _check_source(table, column, reader=self.name, reads=self.reads)
         named = isinstance(self.needs, tuple) and all(isinstance(n, str) for n in self.needs)
         if not named or self.name in self.needs:
             raise ValueError(
@@ -397,6 +439,125 @@ DERIVED: Final[Mapping[str, DerivedFeature]] = MappingProxyType(
     }
 )
 
+# ---- MS5 xGOT placement: where the ball crossed the goal line ------------------------------
+
+PLACEMENT_STEP: Final[float] = 0.1  # metres; both providers, before any feature reads the frame
+_PER_METRE: Final[float] = round(1 / PLACEMENT_STEP)  # k / 10, not k * 0.1: 3.7, not 3.70...02
+EDGE_Y: Final[float] = pitch.GOAL_WIDTH / 2 + goalmouth.GOAL_TOLERANCE  # 3.81
+EDGE_Z: Final[float] = pitch.GOAL_HEIGHT + goalmouth.GOAL_TOLERANCE  # 2.59
+CENTRE_DEAD_ZONE: Final[float] = 0.5  # metres: a shot this close to the centre line has no side
+# rounded 5 / 27.5 / 50 / 72.5 / 95 % quantiles of on-target |y| and z, both providers
+MOUTH_Y_KNOTS: Final[tuple[float, ...]] = (0.15, 0.9, 1.7, 2.5, 3.25)
+MOUTH_Z_KNOTS: Final[tuple[float, ...]] = (0.1, 0.3, 0.8, 1.25, 2.0)
+_MOUTH: Final[frozenset[str]] = frozenset({"goal_y", "goal_z", "on_target"})
+
+
+def _step(v: FloatArray, low: float, high: float) -> FloatArray:
+    """Clip to ``[low, high]``, then round to the ``PLACEMENT_STEP`` grid (half to even)."""
+    out: FloatArray = np.round(np.clip(v, low, high) / PLACEMENT_STEP) / _PER_METRE
+    return out
+
+
+def placement(shots: pl.DataFrame) -> pl.DataFrame:
+    """The placement of on-target shots in the goal frame, one row per shot.
+
+    ``goal_y`` / ``goal_z`` go through ``pitch.to_goal_frame`` (``y`` positive towards the
+    shooter's right post), are clipped to the frame plus ``goalmouth.GOAL_TOLERANCE``
+    (:data:`EDGE_Y`, :data:`EDGE_Z`) and rounded to :data:`PLACEMENT_STEP` with ``np.round``
+    (half to even): a goal on one provider grid and a projected save in the same 0.1 m cell
+    get the same values. A non-finite value is an error, never clipped.
+
+    Parameters
+    ----------
+    shots : polars.DataFrame
+        ``goal_y``, ``goal_z``, ``on_target``; ``y`` adds the side columns and ``angle_rad``
+        the interactions.
+
+    Returns
+    -------
+    polars.DataFrame
+        Float64 ``mouth_y`` (signed), ``mouth_y_abs`` and ``mouth_z`` with their spline terms
+        ``*_rcs1..3`` (:data:`MOUTH_Y_KNOTS`, :data:`MOUTH_Z_KNOTS`) and ``mouth_yz``; with
+        ``y``: ``far_side`` (+1 far post, -1 near post, 0 when the shot is within
+        :data:`CENTRE_DEAD_ZONE` of the centre line or the ball is rounded to the centre) and
+        ``mouth_far = far_side * mouth_y_abs``; with ``angle_rad``: ``angle_x_mouth_y`` and
+        ``angle_x_mouth_z``.
+
+    Raises
+    ------
+    ValueError
+        A missing ``goal_y`` / ``goal_z`` / ``on_target``; a shot that is not on target (or a
+        null ``on_target``); a null, NaN or infinite ``goal_y``, ``goal_z``, ``y`` or
+        ``angle_rad`` (counts in the message).
+
+    Examples
+    --------
+    >>> shots = pl.DataFrame({"goal_y": [30.34, 33.95, 33.75], "goal_z": [0.0, 2.7, 1.0],
+    ...                       "on_target": [True] * 3, "y": [20.0, 50.0, 34.2]})
+    >>> p = placement(shots)
+    >>> p["mouth_y"].to_list(), p["mouth_z"].to_list(), p["far_side"].to_list()
+    ([3.7, 0.0, 0.2], [0.0, 2.6, 1.0], [-1.0, 0.0, 0.0])
+    """
+    if missing := sorted(_MOUTH - set(shots.columns)):
+        raise ValueError(f"placement: the shots lack {missing}")
+    if off := shots.height - int(shots["on_target"].fill_null(False).sum()):
+        raise ValueError(
+            f"placement: {off} shot(s) are not on target (or have a null on_target); xGOT "
+            "placement is defined on on-target shots only"
+        )
+    read = [c for c in ("goal_y", "goal_z", "y", "angle_rad") if c in shots.columns]
+    for c in read:
+        if bad := shots.height - int(shots[c].cast(pl.Float64).is_finite().fill_null(False).sum()):
+            raise ValueError(f"placement: {c} has {bad} null, NaN or infinite value(s)")
+    v = {c: shots[c].cast(pl.Float64).to_numpy() for c in read}
+    gy, gz = pitch.to_goal_frame(v["goal_y"], v["goal_z"])
+    gy, gz = _step(gy, -EDGE_Y, EDGE_Y), _step(gz, 0.0, EDGE_Z)
+    cols = {"mouth_y": gy, "mouth_y_abs": np.abs(gy), "mouth_z": gz, "mouth_yz": np.abs(gy) * gz}
+    if "y" in v:
+        off_centre = pitch.GOAL_CENTRE_Y - v["y"]
+        side = np.where(np.abs(off_centre) < CENTRE_DEAD_ZONE, 0.0, np.sign(off_centre))
+        cols["far_side"] = -side * np.sign(gy) + 0.0  # + 0.0: no -0.0
+        cols["mouth_far"] = cols["far_side"] * np.abs(gy) + 0.0
+    if "angle_rad" in v:
+        cols["angle_x_mouth_y"] = v["angle_rad"] * np.abs(gy)
+        cols["angle_x_mouth_z"] = v["angle_rad"] * gz
+    out = pl.DataFrame(cols)
+    terms = [
+        rcs_term(pl.col(col), knots, j).alias(f"{col}_rcs{j + 1}")
+        for col, knots in (("mouth_y_abs", MOUTH_Y_KNOTS), ("mouth_z", MOUTH_Z_KNOTS))
+        for j in range(len(knots) - 2)
+    ]
+    return out.with_columns(terms)
+
+
+def _placed(name: str, extra: tuple[str, ...] = ()) -> DerivedFeature:
+    sources: tuple[Source, ...] = tuple(("shots", c) for c in ("goal_y", "goal_z", "on_target"))
+    return DerivedFeature(
+        name,
+        sources + tuple(("shots", c) for c in extra),
+        lambda t: placement(t["shots"])[name],
+        reads=_MOUTH,
+    )
+
+
+PLACEMENT: Final[Mapping[str, DerivedFeature]] = MappingProxyType(
+    {
+        f.name: f
+        for f in (
+            _placed("mouth_y_abs"),
+            *(_placed(f"mouth_y_abs_rcs{j + 1}") for j in range(len(MOUTH_Y_KNOTS) - 2)),
+            _placed("mouth_z"),
+            *(_placed(f"mouth_z_rcs{j + 1}") for j in range(len(MOUTH_Z_KNOTS) - 2)),
+            _placed("far_side", ("y",)),
+            _placed("mouth_far", ("y",)),
+            _placed("angle_x_mouth_y", ("angle_rad",)),
+            _placed("angle_x_mouth_z", ("angle_rad",)),
+            _placed("mouth_yz"),
+        )
+    }
+)
+XGOT_DERIVED: Final[Mapping[str, DerivedFeature]] = MappingProxyType({**DERIVED, **PLACEMENT})
+
 
 def check_xg_features(
     features: Sequence[str], derived: Mapping[str, DerivedFeature] = DERIVED
@@ -425,7 +586,8 @@ def check_xg_features(
         ``pre_shot`` (the message names the role), a column in ``RESTRICTED_UNTIL`` (the
         message gives the reason), a registry key that is not its feature's name, a derived
         feature reading a restricted column that is not the :data:`DERIVED` object of that
-        name, a derived feature without the features in its ``needs``, or a duplicate name.
+        name, a derived feature that reads post-shot columns (an xGOT placement feature), a
+        derived feature without the features in its ``needs``, or a duplicate name.
 
     Examples
     --------
@@ -448,6 +610,11 @@ def check_xg_features(
             feature = derived[name]
             if feature.name != name:
                 raise ValueError(f"derived feature registered as {name!r} is {feature.name!r}")
+            if feature.reads:
+                raise ValueError(
+                    f"derived feature {name!r} reads post-shot column(s) "
+                    f"{sorted(feature.reads)}; only the xGOT guard accepts it"
+                )
             cols = [c for t, c in feature.sources if t == "shots" and c in RESTRICTED_UNTIL]
             if cols and feature is not DERIVED.get(name):
                 raise ValueError(
@@ -546,6 +713,110 @@ def check_ablation_features(
         raise ValueError(f"duplicate feature names in {out}")
     check_xg_features([n for n in out if n not in ABLATION_ONLY], derived)
     return out
+
+
+def check_xgot_features(
+    features: Sequence[str], derived: Mapping[str, DerivedFeature] = XGOT_DERIVED
+) -> tuple[str, ...]:
+    """The xGOT guard: placement, shot context and the cross-fitted xG, never the keeper.
+
+    ``xg_logit`` (:data:`XG_INPUT`) passes; a derived feature with ``reads`` passes only as the
+    :data:`XGOT_DERIVED` object of its name; every other name goes through
+    :func:`check_xg_features`, so its outcome, identity, lineage, restricted and ``needs``
+    rules hold unchanged.
+
+    Parameters
+    ----------
+    features : sequence of str
+        Candidate xGOT feature names.
+    derived : mapping of str to DerivedFeature, default XGOT_DERIVED
+        Registered derived features.
+
+    Returns
+    -------
+    tuple of str
+        The names, in the given order.
+
+    Raises
+    ------
+    TypeError
+        If ``features`` is a single ``str``.
+    ValueError
+        A duplicate; a :data:`KEEPER_POSITION` name; ``goal_y``, ``goal_z`` or ``on_target``
+        named directly; a derived feature with ``reads`` that is not the :data:`XGOT_DERIVED`
+        object of that name; any refusal of :func:`check_xg_features` on the other names.
+
+    Examples
+    --------
+    >>> check_xgot_features(["xg_logit", "mouth_y_abs", "far_side", "angle_rad"])
+    ('xg_logit', 'mouth_y_abs', 'far_side', 'angle_rad')
+    >>> check_xgot_features(["goal_y"])  # doctest: +ELLIPSIS
+    Traceback (most recent call last):
+    ...
+    ValueError: column 'goal_y' is not an xGOT feature itself (placement, ...); read it ...
+    >>> check_xgot_features(["xg_logit", "gk_absent"])  # doctest: +ELLIPSIS
+    Traceback (most recent call last):
+    ...
+    ValueError: 'gk_absent' is a keeper-position feature; xGOT is keeper-neutral ...
+    """
+    if isinstance(features, str):
+        raise TypeError("features must be a sequence of column names, not a single str")
+    names = tuple(features)
+    if len(set(names)) != len(names):
+        raise ValueError(f"duplicate feature names in {names}")
+    rest = []
+    for name in names:
+        if name in KEEPER_POSITION:
+            raise ValueError(
+                f"{name!r} is a keeper-position feature; xGOT is keeper-neutral (PM E3: "
+                "placement, shot context and out-of-fold xG only, so goals saved keep the "
+                "keeper's positioning)"
+            )
+        if name in XGOT_DECLARED:
+            raise ValueError(
+                f"column {name!r} is not an xGOT feature itself ({XGOT_DECLARED[name]}); read "
+                f"it through the placement features {sorted(PLACEMENT)}"
+            )
+        feature = derived.get(name)
+        if feature is not None and feature.reads and feature is not XGOT_DERIVED.get(name):
+            raise ValueError(
+                f"derived feature {name!r} reads post-shot column(s) {sorted(feature.reads)}; "
+                f"only features.XGOT_DERIVED[{name!r}] may read them"
+            )
+        if name != XG_INPUT and not (feature is not None and feature.reads):
+            rest.append(name)
+    check_xg_features(rest, derived)
+    return names
+
+
+def check_keeper_neutral(features: Sequence[str]) -> tuple[str, ...]:
+    """Refuse any :data:`KEEPER_POSITION` feature: the check run on the xGOT's xG input.
+
+    Raises
+    ------
+    TypeError
+        If ``features`` is a single ``str``.
+    ValueError
+        Naming the keeper-position features found.
+
+    Examples
+    --------
+    >>> check_keeper_neutral(["distance_m", "angle_rad"])
+    ('distance_m', 'angle_rad')
+    >>> check_keeper_neutral(["distance_m", "open_goal", "gk_absent"])  # doctest: +ELLIPSIS
+    Traceback (most recent call last):
+    ...
+    ValueError: the xG input reads keeper-position feature(s) ['open_goal', 'gk_absent']; ...
+    """
+    if isinstance(features, str):
+        raise TypeError("features must be a sequence of column names, not a single str")
+    names = tuple(features)
+    if found := [n for n in names if n in KEEPER_POSITION]:
+        raise ValueError(
+            f"the xG input reads keeper-position feature(s) {found}; the xGOT input must be "
+            "keeper-neutral (PM E3, X1)"
+        )
+    return names
 
 
 def _derive(

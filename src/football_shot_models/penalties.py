@@ -22,7 +22,7 @@ import polars as pl
 from scipy import stats
 
 from football_shot_models import data
-from football_shot_models.cards import LICENSING, CardContext, fmt
+from football_shot_models.cards import STATSBOMB_TEXT, CardContext, fmt
 from football_shot_models.metrics import JEFFREYS, LEVEL, Rate, beta_interval
 
 PENALTY_NAME: Final[str] = "xg-penalty"
@@ -310,7 +310,7 @@ def penalty_card(rows: Sequence[PenaltyRow], spread: Spread, context: CardContex
             "in-game penalty gets the same probability."
         ]),
         ("Data", [
-            f"- **Source(s):** StatsBomb open data, revision `{c.source_revision}`; snapshot "
+            f"- **Source(s):** {STATSBOMB_TEXT.source}, revision `{c.source_revision}`; snapshot "
             f"`{c.manifest_name}`, data digest `{c.data_digest}`",
             "- **Rows:** the shots the xG population excludes as in-game penalties, dev and "
             f"hold-out ({c.holdout_label}) together, from {spread.groups:,} competition-seasons.",
@@ -338,7 +338,7 @@ def penalty_card(rows: Sequence[PenaltyRow], spread: Spread, context: CardContex
             f"- In-game conversion by family: {spread_by_family}.",
             f"- {shootouts}",
         ]),
-        ("Data licensing", [LICENSING]),
+        ("Data licensing", [STATSBOMB_TEXT.licensing]),
         ("Changelog", [f"- {item}" for item in PENALTY_CHANGELOG]),
     ]  # fmt: skip
     body = "\n\n".join(f"## {title}\n" + "\n".join(text) for title, text in sections)

@@ -46,9 +46,64 @@ model) + P(goal | in-game penalty) × in-game penalties; shoot-out kicks are not
 xG, and own goals and direct corners carry no xG.
 
 ## Phase 2: xGOT / PSxG (post-shot)
-**Population:** on-target shots only. Off-target and blocked shots have post-shot value 0.
-**Features:** pre-shot xG + goal-mouth end location (`goal_y`, `goal_z`). Corner placement
-should score higher than shots struck at the middle of the goal.
+xGOT is P(goal) of a shot that reached the goal frame, given where it crossed the line and its
+pre-shot xG (`football_shot_models.xgot`, MS5). Results are in the [xGOT cards](models/xgot-gbm.md)
+and the README block written by `make xgot`; none is typed here.
+
+**Population (P2.2).** On target means a goal or a keeper save (C3 `on_target`; own goals are
+never on target). Two populations, never mixed:
+
+| Population | Rows | Model |
+|---|---|---|
+| open play | the provider's non-penalty xG population ∩ on target (deflected shots stay in) | LR and monotone GBM |
+| in-game penalties | penalty kicks of periods 1–4 on target | penalty xGOT, fitted on dev kicks |
+| shoot-out kicks | period 5 on target, a separately labelled sub-population | scored by the penalty xGOT dev fit, reported apart |
+| direct corners | on target but outside the xG population | not scored (the reconciliation gap) |
+
+Every C3 on-target shot falls in one row of the card's Filters table, and the shots and goals
+actually scored must reconcile with C3 within 1 % per provider. Opta's published shots on target
+also count last-line blocks and clearances off the line (Stats Perform, Opta event
+definitions); here those are C3 `blocked` (WhoScored q101 SavedOffline), so our on-target counts
+are lower by them. That is intended: the keeper did not stop those shots, so a keeper-neutral
+xGOT and the goalkeeper models must not credit them.
+
+**Placement.** The goal mouth is read only through `pitch.to_goal_frame` (metres from the goal
+centre, y positive = the shooter's right) and only by the placement features of the xGOT guard
+(`features.check_xgot_features`). Each point is clipped to the frame + 0.15 m, then rounded to
+0.1 m (half to even) for both providers: StatsBomb goals keep the provider's coordinate grid
+while projected saves are off it, so unrounded |y| would separate goals from saves by the grid
+alone. Near / far post is the ball's side against the shot's side; a shot within 0.5 m of the
+centre line has no near or far post (`far_side = 0`). StatsBomb saves stopped short of the line
+are projected to the goal line from the shot location (see football-core's conventions); their
+height is the stop height, and a deflected save is projected from the shot, not the deflection.
+The cards count both cases.
+
+**Keeper-neutral (PM E3, X1).** xGOT reads placement, shot context and xG only, never keeper
+position (`gk_x`, `gk_y`, the freeze-frame keeper features or `open_goal`), so goals saved
+against it credit the keeper's positioning too, and both providers' xGOT measure the same thing.
+The StatsBomb xG input is therefore the headline xG refitted without the keeper-position
+features; WhoScored's headline reads none and is used as it is.
+
+**Cross-fitting.** The xG input is cross-fitted on the same match folds: an xGOT test row in
+fold k reads the xG of the fit that never saw fold k, and a hold-out row the xG of the fit on
+all of dev. The folds are the xG folds restricted to on-target rows, so every shot keeps its
+fold.
+
+**Models (P2.3, P2.4).** LR on logit xG, placement splines, angle × placement and the near /
+far term; a monotone GBM on xG, |y|, height, side and angle (non-decreasing in xG and in |y|
+at a fixed side), headline only when its CV gain over the LR has a match-bootstrap interval
+above 0; a placement-only penalty xGOT, reported apart with no target.
+
+**Checks.** AUC ≥ 0.80, ECE < 0.02 and calibration slope in [0.9, 1.1], on CV and on the hold-out
+(StatsBomb PL 2015/16) or test season (WhoScored 2026-27). ECE uses ten equal-count bins; on CV
+it is judged on the fold mean with the worst fold and the pooled value beside it, and the
+hold-out / test value has beside it its noise floor, the mean ECE of outcomes drawn from its own
+predictions (PM X3).
+
+**Shooting goals added (P2.5).** SGA = xGOT − xG per shot, next to goals − xG; both subtract the
+same xG (the xGOT input). Blocked and off-target shots count as 0 xGOT. Reported only as
+split-half correlations (each player's matches alternated by date) at 20 / 40 / 80 shots: a
+descriptive measure, not a finishing-skill claim.
 
 ## Phase 3: Goalkeeper shot-stopping
 **Goals prevented = Σ PSxG faced − goals conceded** (penalties reported separately).

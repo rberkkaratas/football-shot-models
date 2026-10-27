@@ -42,7 +42,7 @@ def test_card_benchmark_slopes(run_result: tuple[Any, Path], xg_data: Any, dev_h
     card = cards.render_card(
         evaluations[2], baselines.CARDS[evaluations[2].spec.name],
         evaluations=(evaluations[0], none, evaluations[2]), benchmark=evaluations[3], dev=dev,
-        context=cards.card_context(xg_data, dev, held),
+        context=cards.card_context(xg_data, dev, held), provider=cards.STATSBOMB_TEXT,
     )  # fmt: skip
     block = _section(card, "## Benchmarks")
     header = _header(block)

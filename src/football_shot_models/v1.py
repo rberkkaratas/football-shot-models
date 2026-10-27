@@ -12,7 +12,7 @@ and counted (:func:`population`).
 (:data:`STEPS`: splines, then the context :data:`CONTEXT` without freeze frames; gender is one
 value on every shot, so it is left out) and a monotone GBM (:data:`GBM`) on the same inputs
 without splines. The GBM is the headline only if its CV gain over the best LR has a 95 %
-match-bootstrap interval above 0 (``models.headline``).
+match-bootstrap interval above 0 (``models.select_headline``).
 
 **Big chance** (Opta q214) enters one labelled ablation (:func:`ablation_spec`), with the
 ablation guard; ``evaluation.best`` can never pick it.
@@ -308,7 +308,7 @@ def run(
         raise TypeError(f"best returned a benchmark: {best_lr.spec!r}")
     gbm_ev = evaluate(GBM, dev, held, folds, cache=pc)  # the module global: tests patch it
     abl = evaluate(ablation_spec(best_lr.spec), dev, held, folds, cache=pc)
-    head, gbm_gain = models.headline(best_lr, gbm_ev, dev, held)
+    head, gbm_gain = models.select_headline((*base, *steps), gbm_ev, dev, held)
     da = next(e for e in base if e.spec.name == DISTANCE_ANGLE)
 
     cov = legacy.covered(held)

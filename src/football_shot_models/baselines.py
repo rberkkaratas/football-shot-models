@@ -30,7 +30,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from football_shot_models import data
+from football_shot_models import cards, data
 from football_shot_models.cards import CardContext, CardText, card_context, fmt, pct, render_card
 from football_shot_models.evaluation import (
     BaseRate,
@@ -193,6 +193,8 @@ def _text(spec: ModelSpec) -> CardText:
         model=_lr_model if spec.features else _base_rate_model,
         limitations=LIMITATIONS,
         changelog=CHANGELOG,
+        task=cards.TASK,
+        target=cards.TARGET,
     )
 
 
@@ -261,6 +263,7 @@ def run(
             benchmark=benchmark,
             dev=dev,
             context=context,
+            provider=cards.STATSBOMB_TEXT,
         )
         (out / f"{ev.spec.name}.md").write_text(card, encoding="utf-8", newline="\n")
     counts = ", ".join(f"{reason} {shots:,}" for reason, shots, _ in context.exclusions)

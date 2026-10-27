@@ -3,9 +3,12 @@
 A card follows ``docs/model-card-template.md``. The parts that every xG card shares (data
 provenance, validation design, metrics, thresholds, reliability, segments, benchmarks,
 licensing) are rendered here from an :class:`~football_shot_models.evaluation.Evaluation`.
-The parts that belong to one model (its role, intended use, features, model description,
-limitations and changelog) come from a :class:`CardText` written next to the model's spec, so
-a new model brings its own text instead of inheriting the M1.1 wording.
+The parts that belong to one model (its role, task, target, intended use, features, model
+description, limitations and changelog) come from a :class:`CardText` written next to the
+model's spec, so a new model brings its own text instead of inheriting the M1.1 wording. The
+parts that belong to the data provider (source, licensing, filter labels, benchmark wording)
+come from a :class:`ProviderText`: :data:`STATSBOMB_TEXT` here, WhoScored's in
+:mod:`football_shot_models.release`.
 
 A card can also carry the log-loss gains of its model over other models
 (:class:`~football_shot_models.evaluation.Comparison` rows, with match-bootstrap intervals),
@@ -19,8 +22,9 @@ carries no date or time, so rerunning on the same snapshot gives identical bytes
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Final, Literal
 
 import numpy as np
@@ -82,6 +86,10 @@ class CardText:
     ----------
     role : str
         Overview line, e.g. ``"Baseline for M1.1."``.
+    task : str
+        The Overview Task line: what is predicted, for which population (e.g. ``TASK``).
+    target : str
+        The Target section (e.g. ``TARGET``).
     intended_use : str
         The Intended use section.
     features : tuple of str
@@ -96,6 +104,9 @@ class CardText:
     checks_title, checks_note : str, default CHECKS_TITLE, CHECKS_NOTE
         The heading and the sentence of the milestone checks section, so a later milestone's
         checks render under their own name.
+    quantity : str, default "xG"
+        What the model predicts, in the Σ / Mean labels of the metrics, segments and
+        reliability tables (an xGOT card passes ``"xGOT"``).
     """
 
     role: str
@@ -104,9 +115,12 @@ class CardText:
     model: Callable[[Evaluation, CardContext], Sequence[str]]
     limitations: tuple[str, ...]
     changelog: tuple[str, ...]
+    task: str
+    target: str
     best_label: str = "baseline"
     checks_title: str = "Milestone checks (MS3)"
     checks_note: str = "Thresholds re-baselined by the PM: targets are relative to the same shots."
+    quantity: str = "xG"
 
 
 CHECKS_TITLE: Final[str] = CardText.checks_title
@@ -188,13 +202,9 @@ TASK: Final[str] = (
     "included; direct free kicks and corners from open play or set pieces included; direct "
     "corners, own goals and shoot-outs excluded)"
 )
-FILTER_LABELS: Final[dict[str, str]] = {
-    "own_goal": "own goal (Own Goal Against events; not shots)",
-    "shootout": "shoot-out (period 5; all are penalties)",
-    "penalty": "penalty (in-game)",
-    "direct_corner": "direct corner (logged as a shot on outcome)",
-    "no_freeze_frame": "no freeze frame",
-}
+TARGET: Final[str] = (
+    "`is_goal`: the ball went in. Own goals are excluded, so every goal is the shooter's."
+)
 VALIDATION: Final[str] = (
     "Grouped 5-fold cross-validation by `match_id` on dev (`GroupKFold`, no shuffle): no match "
     "has shots in two folds, and every model uses the same folds. **Validation** is the mean "
@@ -204,11 +214,6 @@ VALIDATION: Final[str] = (
     "It tests transfer to an unseen league in the same season and data spec, not across time "
     "or gender."
 )
-BENCHMARK_CAVEAT: Final[str] = (
-    "StatsBomb xG is a reference ceiling, not a like-for-like out-of-sample competitor: "
-    "StatsBomb fits it on its own data, which likely includes these matches, and it uses "
-    "freeze-frame and other inputs."
-)
 THRESHOLD_NOTE: Final[str] = (
     "Σ xG and calibration on grouped CV are close to their targets by construction for the "
     "base rate and for an unpenalised logistic regression with an intercept; see the hold-out "
@@ -217,16 +222,99 @@ THRESHOLD_NOTE: Final[str] = (
 RELIABILITY_NOTE: Final[str] = (
     "This table stands in for a reliability plot until a reliability chart is added to `viz` (F1)."
 )
-LICENSING: Final[str] = (
-    "Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Never "
-    "committed or redistributed; this card holds aggregates only."
-)
 METRIC_LABELS: Final[dict[Metric, str]] = {
     "log_loss": "log loss",
     "brier": "Brier",
     "auc": "ROC AUC",
     "xg_error": "abs(Σ xG − goals) / goals",  # no "|": it would split a table cell
 }
+
+
+@dataclass(frozen=True)
+class ProviderText:
+    """The provider wording a card prints (a later card passes its own).
+
+    Attributes
+    ----------
+    source : str
+        The lead of the Source(s) line, e.g. ``"StatsBomb open data"``.
+    licensing : str
+        The Data licensing section.
+    filter_labels : mapping of str to str
+        Read-only; exclusion reason -> its label in the Filters table.
+    benchmark_name : str or None
+        The provider benchmark as the "Why" paragraph names it, followed there by a comma and
+        its scores; None leaves that sentence out.
+    benchmark_caveat : str or None
+        The paragraph after the Benchmarks table; None prints nothing.
+    families : callable or None
+        ``families(context)`` gives the Families (segments) bullet, without its ``- ``; None
+        leaves it out, and the men / women clause of the Rows line with it.
+    exclusions_log : str or None
+        The Filters sentence after "by first matching reason."; None prints nothing.
+    """
+
+    source: str
+    licensing: str
+    filter_labels: Mapping[str, str]
+    benchmark_name: str | None
+    benchmark_caveat: str | None
+    families: Callable[[CardContext], str] | None
+    exclusions_log: str | None
+
+    def label(self, reason: str) -> str:
+        """The Filters label of an exclusion reason.
+
+        Raises
+        ------
+        ValueError
+            An unknown reason, named with the known ones.
+
+        Examples
+        --------
+        >>> STATSBOMB_TEXT.label("penalty")
+        'penalty (in-game)'
+        """
+        if reason not in self.filter_labels:
+            known = ", ".join(self.filter_labels)
+            raise ValueError(f"no filter label for exclusion reason {reason!r}; known: {known}")
+        return self.filter_labels[reason]
+
+
+def _statsbomb_families(c: CardContext) -> str:
+    return (
+        f"**Families (segments):** women; team-selected, where one team plays in at least half "
+        f"of a competition-season's matches ({c.team_selected_seasons:,} competition-seasons, "
+        f"{c.team_selected_short:,} of them with one or two matches, mostly single finals, "
+        "where both teams qualify trivially); league or tournament, the rest"
+    )
+
+
+STATSBOMB_TEXT: Final[ProviderText] = ProviderText(
+    source="StatsBomb open data",
+    licensing=(
+        "Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Never "
+        "committed or redistributed; this card holds aggregates only."
+    ),
+    filter_labels=MappingProxyType({
+        "own_goal": "own goal (Own Goal Against events; not shots)",
+        "shootout": "shoot-out (period 5; all are penalties)",
+        "penalty": "penalty (in-game)",
+        "direct_corner": "direct corner (logged as a shot on outcome)",
+        "no_freeze_frame": "no freeze frame",
+    }),
+    benchmark_name="StatsBomb xG, with freeze-frame inputs",
+    benchmark_caveat=(
+        "StatsBomb xG is a reference ceiling, not a like-for-like out-of-sample competitor: "
+        "StatsBomb fits it on its own data, which likely includes these matches, and it uses "
+        "freeze-frame and other inputs."
+    ),
+    families=_statsbomb_families,
+    exclusions_log=(
+        f"The per-shot log is snapshot `{data.EXCLUSIONS_SNAPSHOT}` (git-ignored; its committed "
+        "manifest holds counts only)."
+    ),
+)  # fmt: skip
 
 
 def fmt(x: float | None) -> str:
@@ -316,7 +404,13 @@ def _skill(metric: Metric, ev: Evaluation, base: Evaluation, split: Split) -> st
     return fmt(1.0 - value / metric_value(_split(base, split), metric))
 
 
-def _why(ev: Evaluation, base: Evaluation, benchmark: Evaluation, dev: pl.DataFrame) -> str:
+def _why(
+    ev: Evaluation,
+    base: Evaluation,
+    benchmark: Evaluation,
+    dev: pl.DataFrame,
+    benchmark_name: str | None,
+) -> str:
     seg = {v: _segment(dev, ev.oof, "family", v) for v in data.FAMILIES}
 
     def scored(s: dict[str, float]) -> str:
@@ -336,6 +430,12 @@ def _why(ev: Evaluation, base: Evaluation, benchmark: Evaluation, dev: pl.DataFr
     if s := seg["women"]:
         clauses.append(f"{scored(s)} on women's shots ({ratio(s)})")
     listed = clauses[0] if len(clauses) == 1 else ", ".join(clauses[:-1]) + " and " + clauses[-1]
+    named = (
+        ""
+        if benchmark_name is None
+        else f"{benchmark_name}, scores {fmt(benchmark.cv.log_loss)} / {fmt(benchmark.cv.brier)} "
+        "on the CV shots. "
+    )
     return (
         "**Why.** Absolute log loss and Brier depend on the goal rate and on which matches are "
         f"in the sample. The base rate alone scores {fmt(base.cv.log_loss)} / "
@@ -345,10 +445,8 @@ def _why(ev: Evaluation, base: Evaluation, benchmark: Evaluation, dev: pl.DataFr
         f"scores {listed}; skill is against each segment's own goal rate. Its log-loss "
         "skill against the base rate is "
         f"{_skill('log_loss', ev, base, 'cv')} on CV and "
-        f"{_skill('log_loss', ev, base, 'holdout')} on the hold-out. StatsBomb xG, with "
-        f"freeze-frame inputs, scores {fmt(benchmark.cv.log_loss)} / {fmt(benchmark.cv.brier)} "
-        "on the CV shots. Thresholds come from a single-season pilot (roadmap); they are "
-        "reported, not tuned to."
+        f"{_skill('log_loss', ev, base, 'holdout')} on the hold-out. {named}Thresholds come "
+        "from a single-season pilot (roadmap); they are reported, not tuned to."
     )
 
 
@@ -357,10 +455,15 @@ def _fold_error(ev: Evaluation) -> str:
     return f"{pct(mean)} (max {pct(worst)})"
 
 
-def metrics_table(ev: Evaluation, base: Evaluation) -> list[str]:
+def _error_label(quantity: str) -> str:
+    return METRIC_LABELS["xg_error"].replace("Σ xG", f"Σ {quantity}")
+
+
+def metrics_table(ev: Evaluation, base: Evaluation, quantity: str = "xG") -> list[str]:
     """The card's metrics table: train, validation (CV mean ± fold SD) and test columns.
 
-    Skill is against ``base`` (the base rate) on the same split.
+    Skill is against ``base`` (the base rate) on the same split; ``quantity`` names the
+    predicted sum (``Σ xG``).
 
     Examples
     --------
@@ -383,10 +486,10 @@ def metrics_table(ev: Evaluation, base: Evaluation) -> list[str]:
         ("Brier skill", [_skill("brier", ev, base, s) for s in names]),
         ("Calibration intercept", [fmt(s.cal_intercept) for s in splits]),
         ("Calibration slope", [fmt(s.cal_slope) for s in splits]),
-        ("Σ xG", [fmt(s.xg) for s in splits]),
+        (f"Σ {quantity}", [fmt(s.xg) for s in splits]),
         ("Goals", [f"{s.goals:,}" for s in splits]),
-        (METRIC_LABELS["xg_error"], [pct(s.xg_error) for s in splits]),
-        (f"{METRIC_LABELS['xg_error']}, fold mean (max)", ["n/a", _fold_error(ev), "n/a"]),
+        (_error_label(quantity), [pct(s.xg_error) for s in splits]),
+        (f"{_error_label(quantity)}, fold mean (max)", ["n/a", _fold_error(ev), "n/a"]),
     ]  # fmt: skip
     return [
         "| Metric | Train | Validation | Test |",
@@ -483,6 +586,7 @@ def _thresholds_section(
     benchmark: Evaluation,
     dev: pl.DataFrame,
     thresholds: Sequence[Threshold],
+    benchmark_name: str | None,
 ) -> list[str]:
     if not thresholds:
         return []
@@ -504,11 +608,11 @@ def _thresholds_section(
         lines.append(f"| {label} | {cv_cell} | {_measured(t.metric, h.measured)} | {result} |")
     lines += ["", THRESHOLD_NOTE]
     if not all(c.passed for c in cv):
-        lines += ["", _why(ev, base, benchmark, dev)]
+        lines += ["", _why(ev, base, benchmark, dev, benchmark_name)]
     return [*lines, ""]
 
 
-def _segments_section(ev: Evaluation, dev: pl.DataFrame) -> list[str]:
+def _segments_section(ev: Evaluation, dev: pl.DataFrame, quantity: str) -> list[str]:
     lines = [
         "### Segments",
         "",
@@ -516,8 +620,8 @@ def _segments_section(ev: Evaluation, dev: pl.DataFrame) -> list[str]:
         "segment's own goal rate`, so segments with different goal rates can be compared; "
         "`n/a` for a segment with one class.",
         "",
-        "| Segment | Shots | Goals | Goal rate | Σ xG | Σ xG / goals | Log loss | Brier "
-        "| Log-loss skill | Cal. slope (pooled OOF) |",
+        f"| Segment | Shots | Goals | Goal rate | Σ {quantity} | Σ {quantity} / goals | Log loss "
+        "| Brier | Log-loss skill | Cal. slope (pooled OOF) |",
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for column, value in _segments(dev):
@@ -537,13 +641,16 @@ def render_card(
     text: CardText,
     *,
     evaluations: Sequence[Evaluation],
-    benchmark: Evaluation,
+    benchmark: Evaluation | None,
     dev: pl.DataFrame,
     context: CardContext,
+    provider: ProviderText,
+    validation: str = VALIDATION,
     thresholds: Sequence[Threshold] = THRESHOLDS,
     comparisons: Sequence[Comparison] = (),
     verdict: str | None = None,
     checks: Sequence[Check] = (),
+    extra: Sequence[str] = (),
 ) -> str:
     """The model card of one model, following ``docs/model-card-template.md``.
 
@@ -555,12 +662,18 @@ def render_card(
         That model's own text.
     evaluations : sequence of Evaluation
         Every model on the same folds; the first is the base rate (the skill reference).
-    benchmark : Evaluation
-        StatsBomb xG.
+    benchmark : Evaluation or None
+        The provider's benchmark, ``provider.benchmark_name``; None leaves its row and the
+        provider's benchmark caveat out of the Benchmarks section (and needs ``thresholds=()``).
     dev : polars.DataFrame
         The development shots ``ev`` was evaluated on (for the segments).
     context : CardContext
         Provenance and population counts.
+    provider : ProviderText
+        The data provider's wording (source, licensing, filter labels, benchmark), e.g.
+        ``STATSBOMB_TEXT``; required, so no card inherits another provider's text.
+    validation : str, default VALIDATION
+        The Validation design paragraph (it describes the split, not the provider).
     thresholds : sequence of Threshold, default THRESHOLDS
         The retired MS2 targets; empty leaves out their section (``THRESHOLDS_TITLE``).
     comparisons : sequence of Comparison, default ()
@@ -571,19 +684,29 @@ def render_card(
         model's verdict, :func:`football_shot_models.models.verdict`).
     checks : sequence of Check, default ()
         Non-empty adds the ``text.checks_title`` section where the thresholds go.
+    extra : sequence of str, default ()
+        Lines of the model's own sections, printed before "## Benchmarks"; each block ends with
+        a blank line.
 
     Returns
     -------
     str
         Markdown, with no date or time, so a rerun gives identical bytes.
 
+    Raises
+    ------
+    ValueError
+        ``thresholds`` with no ``benchmark`` (their "Why" paragraph quotes it).
+
     Examples
     --------
     >>> card = render_card(ev, text, evaluations=evs, benchmark=b, dev=dev,
-    ...                    context=c)  # doctest: +SKIP
+    ...                    context=c, provider=STATSBOMB_TEXT)  # doctest: +SKIP
     >>> card.splitlines()[0]  # doctest: +SKIP
     '# Model card: Base rate'
     """
+    if benchmark is None and thresholds:
+        raise ValueError("render_card: thresholds need a benchmark; pass thresholds=()")
     base = evaluations[0]
     top = best(evaluations)
     label = text.best_label
@@ -593,11 +716,14 @@ def render_card(
             if top is ev
             else f"Not the best {label}; that is {top.spec.title}."
         )
-    c = context
+    c, p = context, provider
     filters = [
-        f"| {FILTER_LABELS[reason]} | {shots:,} | {goals:,} |"
-        for reason, shots, goals in c.exclusions
+        f"| {p.label(reason)} | {shots:,} | {goals:,} |" for reason, shots, goals in c.exclusions
     ]
+    genders = (
+        "" if p.families is None else f"; men {c.male_shots:,} shots, women {c.female_shots:,}"
+    )
+    log = "" if p.exclusions_log is None else f" {p.exclusions_log}"
     benchmarks = [
         "| Model | CV log loss | CV Brier | CV AUC | CV cal. slope | Hold-out log loss "
         "| Hold-out Brier | Hold-out AUC | Hold-out cal. slope |",
@@ -606,7 +732,7 @@ def render_card(
             f"| {e.spec.title} | {fmt(e.cv.log_loss)} | {fmt(e.cv.brier)} | {fmt(e.cv.auc)} | "
             f"{fmt(e.cv.cal_slope)} | {fmt(e.holdout.log_loss)} | {fmt(e.holdout.brier)} | "
             f"{fmt(e.holdout.auc)} | {fmt(e.holdout.cal_slope)} |"
-            for e in (*evaluations, benchmark)
+            for e in (*evaluations, *(() if benchmark is None else (benchmark,)))
         ),
     ]
     rel = reliability(labels(dev), ev.oof)
@@ -616,7 +742,7 @@ def render_card(
         "",
         "## Overview",
         f"- **Name / version:** `{ev.spec.name}` v{len(text.changelog)}",
-        f"- **Task:** {TASK}",
+        f"- **Task:** {text.task}",
         "- **Status:** experimental",
         f"- {text.role} {verdict}",
         "",
@@ -624,26 +750,22 @@ def render_card(
         text.intended_use,
         "",
         "## Data",
-        f"- **Source(s):** StatsBomb open data, revision `{c.source_revision}`; snapshot "
+        f"- **Source(s):** {p.source}, revision `{c.source_revision}`; snapshot "
         f"`{c.manifest_name}`, data digest `{c.data_digest}`",
         f"- **Competitions & seasons:** {c.competition_seasons:,} competition-seasons; hold-out "
         f"{c.holdout_label}",
         f"- **Rows:** train and validation (dev) {c.dev_shots:,} shots in {c.dev_matches:,} "
         f"matches / test (hold-out) {c.holdout_shots:,} shots in {c.holdout_matches:,} "
-        f"matches; men {c.male_shots:,} shots, women {c.female_shots:,}",
-        f"- **Families (segments):** women; team-selected, where one team plays in at least half "
-        f"of a competition-season's matches ({c.team_selected_seasons:,} competition-seasons, "
-        f"{c.team_selected_short:,} of them with one or two matches, mostly single finals, "
-        "where both teams qualify trivially); league or tournament, the rest",
-        f"- **Filters:** excluded shots, by first matching reason. The per-shot log is snapshot "
-        f"`{data.EXCLUSIONS_SNAPSHOT}` (git-ignored; its committed manifest holds counts only).",
+        f"matches{genders}",
+        *([] if p.families is None else [f"- {p.families(c)}"]),
+        f"- **Filters:** excluded shots, by first matching reason.{log}",
         "",
         "| Filter | Shots | Goals |",
         "|---|---|---|",
         *filters,
         "",
         "## Target",
-        "`is_goal`: the ball went in. Own goals are excluded, so every goal is the shooter's.",
+        text.target,
         "",
         "## Features",
         *text.features,
@@ -652,38 +774,42 @@ def render_card(
         *text.model(ev, c),
         "",
         "## Validation design",
-        VALIDATION,
+        validation,
         "",
         "## Metrics",
-        *metrics_table(ev, base),
+        *metrics_table(ev, base, text.quantity),
         "",
         "Skill is `1 − metric / base-rate metric` on the same shots and column.",
         "",
         *(_gain_section(comparisons) if comparisons else []),
-        *_thresholds_section(ev, base, benchmark, dev, thresholds),
+        *(
+            []
+            if benchmark is None
+            else _thresholds_section(ev, base, benchmark, dev, thresholds, p.benchmark_name)
+        ),
         *checks_table(checks, text.checks_title, text.checks_note),
         "### Reliability",
         "",
         "Ten equal-count bins of the out-of-fold predictions.",
         "",
-        "| Bin | Shots | Mean xG | Goal rate |",
+        f"| Bin | Shots | Mean {text.quantity} | Goal rate |",
         "|---|---|---|---|",
         *reliability_rows,
         "",
         RELIABILITY_NOTE,
         "",
-        *_segments_section(ev, dev),
+        *_segments_section(ev, dev, text.quantity),
         "",
+        *extra,
         "## Benchmarks",
         *benchmarks,
         "",
-        BENCHMARK_CAVEAT,
-        "",
+        *([] if p.benchmark_caveat is None or benchmark is None else [p.benchmark_caveat, ""]),
         "## Limitations & known biases",
         *(f"- {item}" for item in text.limitations),
         "",
         "## Data licensing",
-        LICENSING,
+        p.licensing,
         "",
         "## Changelog",
         *(f"- {item}" for item in text.changelog),

@@ -300,7 +300,7 @@ def test_penalty_card() -> None:
         f"is 0.32 on 4 df (p {p:.2f}), and the most frequent taker has 3 of 10 kicks."
     ) in limits
     assert "cluster in 2 matches" in limits
-    assert cards.LICENSING in _section(card, "## Data licensing")
+    assert cards.STATSBOMB_TEXT.licensing in _section(card, "## Data licensing")
     assert not re.search(r"\d{4}-\d{2}-\d{2}", card)
     assert "CI inside" not in card and "sb:" not in card
 

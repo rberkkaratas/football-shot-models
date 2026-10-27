@@ -1,5 +1,5 @@
 .PHONY: check lint format typecheck test docs docs-notebooks docs-serve snapshot xg-baselines xg-models reproduce \
-	reproduce-cold reproduce-public reproduce-public-cold snapshot-whoscored legacy-v0 xg-v1
+	reproduce-cold reproduce-public reproduce-public-cold snapshot-whoscored legacy-v0 xg-v1 xgot
 
 ## Run every quality gate (CI runs the same target)
 check: lint typecheck test docs
@@ -30,9 +30,12 @@ docs: docs-notebooks
 docs-serve: docs-notebooks
 	uv run zensical serve
 
+## Rebuild a snapshot after a schema bump with OVERWRITE=--overwrite (default: refuse to replace)
+OVERWRITE ?=
+
 ## Freeze StatsBomb open data (football-core's raw checkout) as the 'statsbomb-open-v1' snapshot
 snapshot:
-	uv run fc snapshot statsbomb-open-v1 --builder statsbomb --input ../football-core/data/raw/statsbomb/open-data
+	uv run fc snapshot statsbomb-open-v1 --builder statsbomb --input ../football-core/data/raw/statsbomb/open-data $(OVERWRITE)
 
 ## Freeze the private WhoScored CSV archive as 'whoscored-v1' (WHOSCORED_ARCHIVE=<archive>/data).
 ## The data and the manifest are git-ignored; the manifest check fails closed (exit code only).
@@ -42,7 +45,7 @@ snapshot-whoscored:
 	@git check-ignore -q manifests/whoscored-v1.json; rc=$$?; test $$rc -eq 0 || { echo \
 	"snapshot-whoscored: manifests/whoscored-v1.json is not git-ignored (git check-ignore exit \
 	$$rc); refusing to write it" >&2; exit 1; }
-	uv run fc snapshot whoscored-v1 --builder whoscored --input "$(WHOSCORED_ARCHIVE)"
+	uv run fc snapshot whoscored-v1 --builder whoscored --input "$(WHOSCORED_ARCHIVE)" $(OVERWRITE)
 
 ## Copy the legacy v0 xG (LEGACY_V0=<path>/xg_model.json) to the git-ignored data/legacy/
 legacy-v0:
@@ -64,7 +67,14 @@ xg-baselines:
 xg-models:
 	uv run python -m football_shot_models.models
 
+## Evaluate the MS5 xGOT models of both providers and write docs/models/xgot-*.md and ws-xgot-*.md
+## (about 30 min cold). No Make prerequisites (xg-models / xg-v1 are phony and would re-run):
+## run `make xg-models xg-v1 xgot` so the xG candidates come from the prediction cache.
+xgot:
+	uv run python -m football_shot_models.xgot --provider both
+
 ## Regenerate the model cards from the real snapshot and compare them with the committed ones.
+## pytest -m slow runs test_models_run and test_v1_run before test_xgot_run, which warm the cache.
 ## Without the snapshot this fails: a skipped comparison must not look like a reproduction.
 ## Reads the prediction cache (data/cache) when data and code match; reproduce-cold does not.
 reproduce:

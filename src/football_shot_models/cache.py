@@ -10,9 +10,11 @@ this package and of ``football_core`` plus the Python and library versions: any 
 (card prose included) makes the next run cold. **The identity** of one entry
 (:func:`identity`) is the spec's name, features and ``get_params()``, and a digest of the
 ``shot_id`` values of dev and the hold-out in frame order, so a cached prediction can never
-serve another split or rows that no longer line up. The fold assignment is stored and compared
-too. Any difference is a miss that refits and overwrites; an entry that cannot be read is an
-error naming the file.
+serve another split or rows that no longer line up. A spec that reads a computed input (the
+xGOT's cross-fitted ``xg_logit``) adds the input's source name and :func:`column_digest` of its
+values, so a changed input is a miss. The fold assignment is stored and compared too. Any
+difference is a miss that refits and overwrites; an entry that cannot be read is an error
+naming the file.
 
 Entries are written only where git ignores them (``data/cache``), through a temporary file
 and an atomic rename, so a killed run never leaves half an entry. The cache is opt-in: only
@@ -135,14 +137,44 @@ def rows_digest(dev_ids: pl.Series, held_ids: pl.Series) -> str:
     return hashlib.sha256("\n\n".join(parts).encode()).hexdigest()
 
 
+def column_digest(dev: pl.DataFrame, held: pl.DataFrame, column: str) -> str:
+    """SHA-256 of the Float64 values of ``column`` in ``dev``, then in ``held``.
+
+    Raises
+    ------
+    ValueError
+        The column is missing from either frame or holds a null.
+
+    Examples
+    --------
+    >>> a, b = pl.DataFrame({"x": [0.5, 1.0]}), pl.DataFrame({"x": [2.0]})
+    >>> column_digest(a, b, "x") == column_digest(a, b, "x"), column_digest(a, b, "x") == (
+    ...     column_digest(b, a, "x"))
+    (True, False)
+    """
+    h = hashlib.sha256()
+    for side, frame in (("dev", dev), ("held", held)):
+        if column not in frame.columns:
+            raise ValueError(f"cache: {side} has no {column!r} column")
+        values = frame[column].cast(pl.Float64)
+        if n := values.null_count():
+            raise ValueError(f"cache: {column!r} has {n} null value(s) in {side}")
+        h.update(values.to_numpy().astype("<f8").tobytes() + side.encode())
+    return h.hexdigest()
+
+
 def identity(
     name: str,
     features: tuple[str, ...],
     params: Mapping[str, object],
     dev_ids: pl.Series,
     held_ids: pl.Series,
+    inputs: str = "",
 ) -> str:
-    """What one cache entry was fitted on: spec name, features, settings and rows.
+    """What one cache entry was fitted on: spec name, features, settings, rows and inputs.
+
+    ``inputs`` (a computed input's source and :func:`column_digest`) is appended as
+    ``|inputs <inputs>`` when not empty; empty keeps the text of a spec without inputs.
 
     Raises
     ------
@@ -157,6 +189,7 @@ def identity(
     "xg-x|('distance_m',)|{'C': 1.0}"
     """
     text = f"{name}|{features}|{params!r}|rows {rows_digest(dev_ids, held_ids)}"
+    text += f"|inputs {inputs}" if inputs else ""
     if _ADDRESS.search(text):
         raise ValueError(f"cache: the identity of {name!r} holds a memory address: {text[:200]}")
     return text
