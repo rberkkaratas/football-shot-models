@@ -11,7 +11,7 @@ Shrinks each keeper-season's GSAx towards the league according to how many shots
 
 ## Model
 
-Each on-target open-play shot's goal is Bernoulli with logit = logit q + u, q the rated xGOT (so the league level is fixed per season and there is no intercept), u ~ N(0, τ²) per group. τ̂ maximises the Laplace approximation of the marginal likelihood (bounded search on log τ in [0.001, 3]); u is the posterior mode at τ̂, by Newton steps. The Laplace τ̂ is biased low when the true τ is small (a simulation probe in the run folder), so the shrinkage is on the strong side. No PyMC or Stan: the closed-form Laplace fit is exact enough for one random effect and takes well under a second.
+Each on-target open-play shot's goal is Bernoulli with logit = logit q + u, q the rated xGOT (so the league level is fixed per season and there is no intercept), u ~ N(0, τ²) per group. τ̂ maximises the Laplace approximation of the marginal likelihood (bounded search on log τ in [0.001, 3]); u is the posterior mode at τ̂, by Newton steps. The Laplace τ̂ is biased low when the true τ is small, so the shrinkage is on the strong side. No PyMC or Stan: one random effect needs only the closed-form Laplace fit.
 
 | Grouping | τ̂ (logit) | At a bound | One SD in goals per 100 shots |
 |---|---|---|---|
@@ -37,7 +37,7 @@ Disclosures: (1) the test offsets use the test season's δ, which the paired kee
 
 | Target | Measured | Result |
 |---|---|---|
-| Shrunken estimates predict the next season better than raw GSAx (log-loss gain, 95% match-bootstrap interval above 0) | +0.01047 [+0.00513, +0.01630] on 3,234 shots, 148 pairs | met |
+| Shrunken estimates predict the next season better than raw GSAx (log-loss gain, 95% match-bootstrap interval above 0; judged on the keeper-season grouping, the career grouping (1 | keeper) beside it) | keeper-season +0.01047 [+0.00513, +0.01630] on 3,234 shots, 148 pairs; career +0.01050 [+0.00514, +0.01633] | met |
 
 ## Data licensing
 Data: a private WhoScored / Opta archive, never committed or redistributed; this card holds counts and metrics only.

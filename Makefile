@@ -96,9 +96,13 @@ xgot:
 ## Rate the goalkeepers (MS6 P3.1-P3.3) of both providers from season-out xGOT refits; write
 ## docs/models/gsax.md, gk-model.md, ws-gsax.md, ws-gk-model.md and the git-ignored StatsBomb
 ## chart data/charts/gsax-keepers.svg. Run after `make xgot` (the xGOT fits come from the cache).
+## GSAX_DOCS=<dir> writes the cards elsewhere, so the chart can be made (e.g. on a fresh clone)
+## without touching the committed cards; the StatsBomb card carries the chart's SHA-256.
+GSAX_DOCS ?= docs/models
 gsax:
 	$(NEED_STATSBOMB_EXTRAS)
-	uv run python -m football_shot_models.gsax_cards --provider both --statsbomb-raw "$(STATSBOMB_RAW)"
+	uv run python -m football_shot_models.gsax_cards --provider both --statsbomb-raw "$(STATSBOMB_RAW)" \
+		--docs-dir "$(GSAX_DOCS)"
 
 ## Regenerate the model cards from the real snapshot and compare them with the committed ones.
 ## First `fc goalmouth --check`: >= 99 % of each provider's goals in the frame, Opta direction confirmed.

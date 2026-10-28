@@ -193,14 +193,41 @@ def test_team_selected_split() -> None:
                 dtype=pl.String,
             ),  # fmt: skip
             "shots": pl.Series([29, 200, 30, 120, 4], dtype=pl.Int64),
+            "gsax_raw": pl.Series([-1.0, 8.0, 1.5, 4.0, -0.5], dtype=pl.Float64),
             "gsax": pl.Series([-1.5, 9.0, 0.5, 3.0, -0.25], dtype=pl.Float64),
             "sd": pl.Series([2.0, 5.0, 3.0, 4.0, 1.0], dtype=pl.Float64),
         }
     )
     got = gsax.team_selected_split(t)
-    assert got.columns == ["side", "keeper_seasons", "shots", "gsax", "sd"]
+    # run6-ms6 (football 4): raw (before δ) beside rated
+    assert got.columns == ["side", "keeper_seasons", "shots", "gsax_raw", "gsax", "sd"]
     rows = got.rows()
     assert [r[:3] for r in rows] == [("selected side", 2, 150), ("opponents", 2, 33)]
-    assert math.isclose(rows[0][3], 3.5) and math.isclose(rows[1][3], -1.75)
-    assert math.isclose(rows[0][4], 5.0) and math.isclose(rows[1][4], math.sqrt(5.0))
+    assert math.isclose(rows[0][3], 5.5) and math.isclose(rows[1][3], -1.5)
+    assert math.isclose(rows[0][4], 3.5) and math.isclose(rows[1][4], -1.75)
+    assert math.isclose(rows[0][5], 5.0) and math.isclose(rows[1][5], math.sqrt(5.0))
     assert gsax.team_selected_split(t.filter(pl.col("family") == "women")).height == 0
+
+
+def test_band_table_rule_between_two_and_three_sd(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run6-ms6 (QA 8, architect A5): a judged band at 2.6 SD (100 shots, q 0.5, 37 goals: gap
+    +13, SD 5) is outside the 2-SD rule; the rule is ``xgot.within`` read when called, so at
+    ``BAND_SDS`` 3 the same band is within (one rule for the xGOT and GSAx band tables)."""
+    gsax = _gsax()
+    n = 100
+    ids = [f"sb:r{i:03d}" for i in range(n)]
+    rated = pl.DataFrame({
+        "shot_id": ids, "q": [0.5] * n, "is_goal": [i < 37 for i in range(n)],
+        "kind": ["open_play"] * n, "source": ["season_folds"] * n,
+    })  # fmt: skip
+    geo = pl.DataFrame({
+        "shot_id": ids, "goal_y": [34.0] * n, "goal_z": [1.2] * n, "on_target": [True] * n,
+        "angle_rad": [0.45] * n,
+    })  # fmt: skip
+    row = _row(gsax.band_table(rated, geo), "mouth_y_abs", "[0, 1)", "season_folds")
+    assert (row["shots"], row["judged"]) == (100, True)
+    assert math.isclose(row["gap"], 13.0) and math.isclose(row["sd"], 5.0)
+    assert row["within"] is False and xgot.within(row["gap"], row["sd"]) is False
+    monkeypatch.setattr(xgot, "BAND_SDS", 3.0)
+    row = _row(gsax.band_table(rated, geo), "mouth_y_abs", "[0, 1)", "season_folds")
+    assert row["within"] is True and xgot.within(13.0, 5.0) is True

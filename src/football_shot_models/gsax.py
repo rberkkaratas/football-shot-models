@@ -56,8 +56,9 @@ IntArray = npt.NDArray[np.intp]
 SEASON_KEY: Final = xgot.SEASON_KEY
 RATED_KINDS: Final = ("open_play", "penalty")
 WITHOUT: Final = "without penalties"
+WITH: Final = "with penalties"
 VARIANTS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
-    {WITHOUT: ("open_play",), "with penalties": RATED_KINDS}
+    {WITHOUT: ("open_play",), WITH: RATED_KINDS}
 )
 KEEPER_SEASON: Final = ("gk_id", *SEASON_KEY)
 CAREER: Final = ("gk_id",)
@@ -67,6 +68,7 @@ PRINT_FLOOR: Final[float] = 1e-12  # sums below it print as "< 1e-12": thread-or
 TIERS: Final[tuple[int, ...]] = (100, 250, 500)
 MIN_TIER_KEEPERS: Final[int] = 30  # Fisher-z 95 % half-width about 0.37 at 30 keepers
 TABLE_MIN_SHOTS: Final[int] = 100
+NEXT_SEASON_CHECK: Final[int] = 5  # the check row (1-based) the keeper-model card prints
 TEAM_SELECTED: Final[str] = "team-selected"
 # keeper-season shots from which a team-selected keeper is the selected side's, not an opponent's
 SELECTED_SIDE: Final[int] = 30
@@ -111,7 +113,7 @@ def league_shift(p: npt.ArrayLike, goals: npt.ArrayLike) -> float:
     Raises
     ------
     ValueError
-        An empty input; shapes that differ; a ``p`` NaN or outside [0, 1].
+        An empty input; shapes that differ; a ``p`` NaN or outside [0, 1]; a goal not 0 / 1.
 
     Examples
     --------
@@ -127,6 +129,8 @@ def league_shift(p: npt.ArrayLike, goals: npt.ArrayLike) -> float:
         )
     if not np.all((q >= 0) & (q <= 1)):
         raise ValueError("league_shift: a probability is NaN or outside [0, 1]")
+    if not np.all((y == 0) | (y == 1)):
+        raise ValueError("league_shift: a goal is not 0 / 1")
     total = float(y.sum())
     if total == 0:
         return -math.inf
@@ -398,14 +402,16 @@ def team_selected_split(table: pl.DataFrame) -> pl.DataFrame:
     -------
     polars.DataFrame
         ``side`` ("selected side", then "opponents"; a side without rows is absent),
-        ``keeper_seasons``, ``shots`` (Int64), ``gsax`` and ``sd`` = √Σ sd² (Float64).
+        ``keeper_seasons``, ``shots`` (Int64), ``gsax_raw`` (before δ), ``gsax`` and ``sd`` =
+        √Σ sd² (Float64).
 
     Examples
     --------
     >>> t = pl.DataFrame({"family": [TEAM_SELECTED] * 3 + ["women"], "shots": [40, 5, 3, 9],
-    ...                   "gsax": [2.0, -1.0, -0.5, 4.0], "sd": [3.0, 1.0, 0.0, 1.0]})
+    ...                   "gsax_raw": [2.5, -1.0, -1.0, 4.0], "gsax": [2.0, -1.0, -0.5, 4.0],
+    ...                   "sd": [3.0, 1.0, 0.0, 1.0]})
     >>> team_selected_split(t).rows()
-    [('selected side', 1, 40, 2.0, 3.0), ('opponents', 2, 8, -1.5, 1.0)]
+    [('selected side', 1, 40, 2.5, 2.0, 3.0), ('opponents', 2, 8, -2.0, -1.5, 1.0)]
     """
     side = pl.when(pl.col("shots") >= SELECTED_SIDE).then(pl.lit("selected side"))
     return (
@@ -414,6 +420,7 @@ def team_selected_split(table: pl.DataFrame) -> pl.DataFrame:
         .agg(
             keeper_seasons=pl.len().cast(pl.Int64),
             shots=pl.col("shots").sum().cast(pl.Int64),
+            gsax_raw=pl.col("gsax_raw").sum(),
             gsax=pl.col("gsax").sum(),
             sd=(pl.col("sd") ** 2).sum().sqrt(),
         )  # fmt: skip
@@ -429,8 +436,8 @@ def band_table(rated: pl.DataFrame, geometry: pl.DataFrame) -> pl.DataFrame:
     league shift δ removes a level gap, not a shape one. Bands of ``BAND_CUTS`` on
     ``features.placement``'s ``mouth_y_abs`` / ``mouth_z`` and on ``angle_rad``; the points
     recorded outside the frame are a ``|y|`` row of their own (``OUTSIDE``), as on the xGOT
-    card. ``gap`` = Σ q − goals, ``sd`` = √Σ q(1 − q); a band is judged with at least
-    ``xgot.MIN_BAND_SHOTS`` shots (read when called) and ``within`` ``xgot.BAND_SDS`` SD.
+    card. ``gap`` = Σ q − goals, ``sd`` = √Σ q(1 − q); ``judged`` and ``within`` are the
+    xGOT card's rule (``xgot.judged``, ``xgot.within``, read when called).
 
     Parameters
     ----------
@@ -479,7 +486,7 @@ def band_table(rated: pl.DataFrame, geometry: pl.DataFrame) -> pl.DataFrame:
               "angle_rad": rows["angle_rad"]}  # fmt: skip
     q, y = rows["q"].to_numpy(), rows["is_goal"].cast(pl.Float64).to_numpy()
     src = rows["source"].cast(pl.String).to_numpy()
-    least, out = xgot.MIN_BAND_SHOTS, place["mouth_out"].to_numpy() > 0
+    out = place["mouth_out"].to_numpy() > 0
     records = []
     for feature, cuts in BAND_CUTS.items():
         idx = np.searchsorted(cuts, values[feature].cast(pl.Float64).to_numpy(), side="right")
@@ -492,12 +499,19 @@ def band_table(rated: pl.DataFrame, geometry: pl.DataFrame) -> pl.DataFrame:
                 m = (idx == i) & ((src == s) | (s == POOLED))
                 n, goals = int(m.sum()), int(y[m].sum())
                 gap, sd = float(q[m].sum()) - goals, math.sqrt(float((q[m] * (1 - q[m])).sum()))
-                records.append((feature, band, s, n, goals, gap, sd, n >= least,
-                                abs(gap) <= xgot.BAND_SDS * sd))  # fmt: skip
-    schema = {"feature": pl.String, "band": pl.String, "source": pl.String, "shots": pl.Int64,
-              "goals": pl.Int64, "gap": pl.Float64, "sd": pl.Float64, "judged": pl.Boolean,
-              "within": pl.Boolean}  # fmt: skip
-    return pl.DataFrame(records, schema=schema, orient="row")
+                records.append((feature, band, s, n, goals, gap, sd, xgot.within(gap, sd)))
+    schema = {
+        "feature": pl.String,
+        "band": pl.String,
+        "source": pl.String,
+        "shots": pl.Int64,
+        "goals": pl.Int64,
+        "gap": pl.Float64,
+        "sd": pl.Float64,
+        "within": pl.Boolean,
+    }
+    table = pl.DataFrame(records, schema=schema, orient="row")
+    return table.insert_column(7, xgot.judged(table))
 
 
 # ---- P3.2 keeper model ---------------------------------------------------------------------
@@ -515,7 +529,8 @@ def keeper_modes(
     ------
     ValueError
         An empty input; unequal lengths; a non-finite offset; a goal not 0 / 1; a code outside
-        0 … G − 1 (G = max code + 1); no convergence in ``NEWTON_MAX`` steps.
+        0 … G − 1 (G = max code + 1); ``tau`` not finite and > 0; no convergence in
+        ``NEWTON_MAX`` steps.
 
     Examples
     --------
@@ -523,6 +538,8 @@ def keeper_modes(
     >>> [round(float(v), 4) for v in u]
     [0.6748, -0.6748]
     """
+    if not (math.isfinite(tau) and tau > 0):
+        raise ValueError(f"keeper_modes: tau must be finite and > 0, not {tau!r}")
     y = np.asarray(goal, dtype=np.float64)
     off, grp = np.asarray(offset, dtype=np.float64), np.asarray(group)
     if off.size == 0 or not off.shape == y.shape == grp.shape:
@@ -635,16 +652,18 @@ def season_start(name: str) -> int:
     Raises
     ------
     ValueError
-        Any other value (a trailing newline included), named.
+        Any other value (a trailing newline, non-ASCII digits or a second year that is not the
+        first + 1 included), named.
 
     Examples
     --------
     >>> season_start("2015/2016"), season_start("2018")
     (2015, 2018)
     """
-    if not isinstance(name, str) or re.fullmatch(r"\d{4}(/\d{4})?", name) is None:
-        raise ValueError(f"season_start: {name!r} is not 'YYYY' or 'YYYY/YYYY'")
-    return int(name[:4])
+    m = re.fullmatch(r"([0-9]{4})(?:/([0-9]{4}))?", name) if isinstance(name, str) else None
+    if m is None or (m[2] is not None and int(m[2]) != int(m[1]) + 1):
+        raise ValueError(f"season_start: {name!r} is not 'YYYY' or 'YYYY/YYYY+1'")
+    return int(m[1])
 
 
 @dataclass(frozen=True)
@@ -653,9 +672,11 @@ class NextSeason:
 
     ``log_loss`` is (none, raw, shrunk); ``gain`` is shrunk over raw and ``gain_none`` shrunk
     over xGOT alone (``metrics.GAIN_LEVEL`` match-bootstrap intervals); the ``_loo`` pair uses
-    the test season's δ fitted without the paired keepers' rows (None, with ``loo_missing``
-    test seasons counted, when one has no unpaired row or a non-finite δ). ``untestable``
-    names why there is no test, with the counts.
+    the test season's δ fitted without the paired keepers' rows (δ = 0 in a ``small`` season,
+    PM E2 (b)). A test season with no unpaired row or a non-finite δ without them is left out
+    of the ``_loo`` pair: ``loo_missing`` seasons, ``loo_shots`` test shots and ``loo_pairs``
+    pairs (the ``_loo`` gains are None when fewer than 2 test matches are left).
+    ``untestable`` names why there is no test, with the counts.
     """
 
     pairs: int
@@ -669,6 +690,8 @@ class NextSeason:
     gain_none_loo: GainCI | None
     loo_missing: int
     untestable: str | None
+    loo_shots: int = 0
+    loo_pairs: int = 0
 
 
 def _log_loss(y: FloatArray, p: FloatArray) -> float:
@@ -736,35 +759,39 @@ def next_season(rated: pl.DataFrame, *, by: Sequence[str]) -> NextSeason:
     ur, uh = test["u_raw"].to_numpy(), test["u_hat"].to_numpy()
     p = (expit(lq), expit(lq + ur), expit(lq + uh))
     loo, missing = _loo_logits(rows, test)
+    ok = np.isfinite(loo)
     gains_loo: tuple[GainCI | None, GainCI | None] = (None, None)
-    if loo is not None:
-        pp = (expit(loo), expit(loo + ur), expit(loo + uh))
-        gains_loo = (metrics.bootstrap_gain(y, pp[1], pp[2], ids),
-                     metrics.bootstrap_gain(y, pp[0], pp[2], ids))  # fmt: skip
+    if len(set(ids[ok])) >= 2:
+        pp = (expit(loo[ok]), expit(loo[ok] + ur[ok]), expit(loo[ok] + uh[ok]))
+        gains_loo = (metrics.bootstrap_gain(y[ok], pp[1], pp[2], ids[ok]),
+                     metrics.bootstrap_gain(y[ok], pp[0], pp[2], ids[ok]))  # fmt: skip
+    dropped = test.filter(pl.Series(~ok))
     return NextSeason(
         kept, left_out, test.height, matches,
         (_log_loss(y, p[0]), _log_loss(y, p[1]), _log_loss(y, p[2])),
         metrics.bootstrap_gain(y, p[1], p[2], ids), metrics.bootstrap_gain(y, p[0], p[2], ids),
-        *gains_loo, missing, None,
+        *gains_loo, missing, None, dropped.height,
+        dropped.select(KEEPER_SEASON).n_unique() if dropped.height else 0,
     )  # fmt: skip
 
 
-def _loo_logits(rows: pl.DataFrame, test: pl.DataFrame) -> tuple[FloatArray | None, int]:
-    """logit xgot + δ_loo per test row, δ_loo fitted on its season's rows of unpaired keepers;
-    None with the count of test seasons that have no unpaired row or a non-finite δ."""
+def _loo_logits(rows: pl.DataFrame, test: pl.DataFrame) -> tuple[FloatArray, int]:
+    """logit xgot + δ_loo per test row, δ_loo fitted on its season's rows of unpaired keepers,
+    or 0 in a ``small`` season (PM E2 (b), as :func:`rate`); NaN on the rows of a test season
+    with no unpaired row or a non-finite δ, with the count of such seasons."""
     faced = test.select("gk_id", *SEASON_KEY).unique()
     shifts: dict[tuple[str, str], float] = {}
-    missing = 0
     for key in test.select(SEASON_KEY).unique().iter_rows():
         season = rows.filter((pl.col(SEASON_KEY[0]) == key[0]) & (pl.col(SEASON_KEY[1]) == key[1]))
         others = season.join(faced, on=["gk_id", *SEASON_KEY], how="anti")
-        d = league_shift(others["xgot"], others["is_goal"]) if others.height else math.nan
-        missing += not math.isfinite(d)
-        shifts[key] = d
-    if missing:
-        return None, missing
+        if "small" in season.columns and bool(season["small"].any()):
+            d = 0.0
+        else:
+            d = league_shift(others["xgot"], others["is_goal"]) if others.height else math.nan
+        shifts[key] = d if math.isfinite(d) else math.nan
     deltas = np.array([shifts[k] for k in test.select(SEASON_KEY).iter_rows()])
-    return metrics.logit(test["xgot"].to_numpy()) + deltas, 0
+    missing = sum(math.isnan(d) for d in shifts.values())
+    return metrics.logit(test["xgot"].to_numpy()) + deltas, missing
 
 
 # ---- P3.3 reliability ----------------------------------------------------------------------
@@ -856,7 +883,7 @@ def keeper_rows(g: GsaxFit) -> pl.DataFrame:
     >>> keeper_rows(g).columns[-2:]  # doctest: +SKIP
     ['gsax_shrunk', 'gsax_with']
     """
-    with_ = g.keepers["with penalties"].select(*KEEPER_SEASON, gsax_with=pl.col("gsax"))
+    with_ = g.keepers[WITH].select(*KEEPER_SEASON, gsax_with=pl.col("gsax"))
     return (
         g.keepers[WITHOUT].filter(pl.col("shots") >= TABLE_MIN_SHOTS)
         .join(g.model.estimates.select(*KEEPER_SEASON, "gsax_shrunk"), on=KEEPER_SEASON,
@@ -874,8 +901,11 @@ def oof_rated(g: GsaxFit) -> pl.DataFrame:
 
     Examples
     --------
-    >>> oof_rated(g)["q"].sum() - oof_rated(g)["is_goal"].sum()  # doctest: +SKIP
-    0.0
+    Σ q = goals in every competition-season rated with a δ (not in a ``small`` one, at δ = 0):
+
+    >>> r = oof_rated(g).filter(~pl.col("small"))  # doctest: +SKIP
+    >>> abs(r["q"].sum() - r["is_goal"].sum()) < 1e-6  # doctest: +SKIP
+    True
     """
     oof = g.xgot.predictions.select("shot_id", oof="xgot")
     pred = g.predictions.join(oof, on="shot_id", how="left", validate="1:1", maintain_order="left")
@@ -912,12 +942,25 @@ def _tiny(x: float) -> str:
     return f"< {PRINT_FLOOR:g}" if x < PRINT_FLOOR else f"{x:.1e}"
 
 
-def _gain(c: GainCI | None) -> str:
+def gain_text(c: GainCI | None) -> str:
+    """A next-season gain and its interval as card text; ``n/a`` for None.
+
+    Examples
+    --------
+    >>> gain_text(GainCI(0.001, -0.0005, 0.002, 2000, 40)), gain_text(None)
+    ('+0.00100 [-0.00050, +0.00200]', 'n/a')
+    """
     return "n/a" if c is None else f"{c.gain:+.5f} [{c.low:+.5f}, {c.high:+.5f}]"
 
 
 def checks(g: GsaxFit) -> tuple[Check, ...]:
     """The six checks of the P3 criterion, in the card's order (spec §4.7).
+
+    Rows 1-5 can be missed. Row 1: the rated rows carry ``g.predictions``' season-out xGOT
+    (``season_out`` raises on a fold that saw its season) and some of it differs from the match
+    out-of-fold xGOT, which saw the season. Row 5 is judged on the keeper-season grouping and
+    prints the career grouping, ``(1 | keeper)``, beside it. Row 6 is a reporting check: it is
+    met when every ``TIERS`` value is reported, an empty tier included.
 
     Examples
     --------
@@ -925,6 +968,15 @@ def checks(g: GsaxFit) -> tuple[Check, ...]:
     ['met', 'met', 'met', 'met', 'met', 'met']
     """
     by_source = g.rated.group_by("source").len().sort("source")
+    xg_cols = ("shot_id", "xgot")
+    read = (
+        g.rated.select(xg_cols)
+        .sort("shot_id")
+        .equals(g.predictions.select(xg_cols).sort("shot_id"))
+    )
+    oof = g.predictions.join(g.xgot.predictions.select("shot_id", oof="xgot"), on="shot_id",
+                             how="left")  # fmt: skip
+    moved = oof.filter(pl.col("oof").is_null() | (pl.col("xgot") != pl.col("oof"))).height
     sums, worst = [], 0.0
     for name in VARIANTS:
         rows, table = variant(g.rated, name), g.keepers[name]
@@ -949,13 +1001,17 @@ def checks(g: GsaxFit) -> tuple[Check, ...]:
     ci_ok = all(t.filter(pl.col("ci_low").is_null() != (pl.col("matches") == 1)).height == 0
                 for t in tables)  # fmt: skip
     one = int((g.keepers[WITHOUT]["matches"] == 1).sum())
-    ns = g.next_season
+    ns, nc = g.next_season, g.next_career
     five: Result = "n/a" if ns.untestable else "met" if ns.gain and ns.gain.low > 0 else "missed"
+    career = nc.untestable or gain_text(nc.gain)
     tiers = "; ".join(f"{t.tier}: {t.keepers} keepers" + (" (empty)" if not t.keepers else "")
                       for t in g.tiers)  # fmt: skip
     return (
         Check("Every rated row's xGOT from fits that never saw its season (season_out raises "
-              "otherwise)", ", ".join(f"{s} {n:,}" for s, n in by_source.iter_rows()), "met"),
+              "otherwise); the rating reads those rows, not the match out-of-fold xGOT",
+              ", ".join(f"{s} {n:,}" for s, n in by_source.iter_rows())
+              + f"; {moved:,} of {oof.height:,} differ from the match out-of-fold xGOT",
+              "met" if read and moved > 0 else "missed"),
         Check(f"Keeper totals sum to the league sum of xGOT − goals (raw and rated), both "
               f"variants, within {SUM_TOL:g}; table shots = rated rows",
               f"max abs. difference {_tiny(worst)}", "met" if worst <= SUM_TOL and all(sums)
@@ -967,11 +1023,13 @@ def checks(g: GsaxFit) -> tuple[Check, ...]:
               f"SD finite; CI null on the {one:,} one-match keeper-seasons", "met"
               if sd_ok and ci_ok else "missed"),
         Check("Shrunken estimates predict the next season better than raw GSAx (log-loss "
-              f"gain, {metrics.GAIN_LEVEL:.0%} match-bootstrap interval above 0)",
-              ns.untestable or f"{_gain(ns.gain)} on {ns.test_shots:,} shots, {ns.pairs} pairs",
-              five),
+              f"gain, {metrics.GAIN_LEVEL:.0%} match-bootstrap interval above 0; judged on the "
+              "keeper-season grouping, the career grouping (1 | keeper) beside it)",
+              (ns.untestable or f"keeper-season {gain_text(ns.gain)} on {ns.test_shots:,} shots, "
+               f"{ns.pairs} pairs") + f"; career {career}", five),
         Check(f"Split-half reliability at {' / '.join(map(str, TIERS))} shots faced, empty tiers "
-              "reported", tiers, "met" if [t.tier for t in g.tiers] == list(TIERS) else "missed"),
+              "reported (a reporting check: met when every tier is reported)", tiers,
+              "met" if [t.tier for t in g.tiers] == list(TIERS) else "missed"),
     )  # fmt: skip
 
 

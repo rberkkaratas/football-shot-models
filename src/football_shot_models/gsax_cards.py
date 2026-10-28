@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import io
 import math
 import os
@@ -49,7 +50,9 @@ from football_shot_models.gsax import (
     NextSeason,
     Tier,
 )
-from football_shot_models.metrics import Check, GainCI, SplitHalf
+from football_shot_models.gsax import gain_text as _gain
+from football_shot_models.metrics import Check, GainCI
+from football_shot_models.xgot_cards import split_half_cell
 
 StrPath = str | os.PathLike[str]
 
@@ -68,21 +71,8 @@ FLAG: Final[str] = "†"  # marks a team-selected keeper-season in the table and
 # ---- sentences -----------------------------------------------------------------------------
 
 
-def _r(s: SplitHalf) -> str:
-    if s.r is None:
-        return "n/a"
-    return f"{s.r:+.2f} [{fmt_opt(s.low)}, {fmt_opt(s.high)}]"
-
-
-def fmt_opt(v: float | None) -> str:
-    """``+0.12`` style, ``n/a`` for None.
-
-    Examples
-    --------
-    >>> fmt_opt(0.123), fmt_opt(None)
-    ('+0.12', 'n/a')
-    """
-    return "n/a" if v is None else f"{v:+.2f}"
+def _r(s: metrics.SplitHalf) -> str:
+    return split_half_cell(s, 2)
 
 
 def stability_sentence(tier: Tier) -> str:
@@ -90,7 +80,7 @@ def stability_sentence(tier: Tier) -> str:
 
     Examples
     --------
-    >>> none = SplitHalf(0, None, None, None)
+    >>> none = metrics.SplitHalf(0, None, None, None)
     >>> stability_sentence(Tier(500, 0, none, none, none, none))
     'no keeper reaches 500 shots (empty tier)'
     """
@@ -103,18 +93,21 @@ def stability_sentence(tier: Tier) -> str:
         return f"{k} keepers reach {t} shots: too few to judge (r {_r(tier.first)})"
     if a.low is not None and b.low is not None and a.low > 0 and b.low > 0:
         return (
-            f"keeper-season records are repeatable beyond chance at {t} shots; this measures "
+            f"keeper records are repeatable beyond chance at {t} shots; this measures "
             "the keeper and the defence in front of him, not the keeper alone"
         )
     return f"not distinguishable from noise at {t} shots"
 
 
-def _gain(c: GainCI | None) -> str:
-    return "n/a" if c is None else f"{c.gain:+.5f} [{c.low:+.5f}, {c.high:+.5f}]"
+def _above(c: GainCI | None) -> str:
+    return "n/a" if c is None else "above 0" if c.low > 0 else "not above 0"
 
 
-def next_season_sentence(ns: NextSeason) -> str:
+def next_season_sentence(ns: NextSeason, no_team: NextSeason | None = None) -> str:
     """The next-season result in words; each clause holds in its own branch.
+
+    With ``no_team`` (the same test without team-selected competition-seasons) a second
+    sentence gives its gains and whether each interval is above 0 (the small-margin rule).
 
     Examples
     --------
@@ -131,11 +124,22 @@ def next_season_sentence(ns: NextSeason) -> str:
         else "Shrunken estimates do not predict next season better than raw GSAx"
     )
     second = (
-        f"and add {ns.gain_none.gain:+.5f} log loss over xGOT alone"
+        f"and improve log loss by {ns.gain_none.gain:.5f} over xGOT alone"
         if ns.gain_none.low > 0
         else "and predict next season no better than xGOT alone (the league average)"
     )
-    return f"{first}, {second}."
+    out = f"{first}, {second}."
+    if no_team is None:
+        return out
+    if no_team.untestable is not None:
+        return (
+            f"{out} Without {TEAM_SELECTED} competition-seasons: untestable ({no_team.untestable})."
+        )
+    return (
+        f"{out} Without {TEAM_SELECTED} competition-seasons ({no_team.pairs:,} pairs) the gain "
+        f"over raw is {_gain(no_team.gain)}, its interval {_above(no_team.gain)}, and over xGOT "
+        f"alone {_gain(no_team.gain_none)}, its interval {_above(no_team.gain_none)}."
+    )
 
 
 # ---- shared tables -------------------------------------------------------------------------
@@ -269,26 +273,32 @@ def _team_lines(g: GsaxFit) -> list[str]:
     rows = gsax.keeper_rows(g)
     flagged = rows.filter(pl.col("family").cast(pl.String) == TEAM_SELECTED).height
     sides = "; ".join(
-        f"{r['side']}: {r['keeper_seasons']:,} keeper-seasons, {r['shots']:,} shots, GSAx "
-        f"{signed(r['gsax'])} (SD {r['sd']:.1f})"
+        f"{r['side']}: {r['keeper_seasons']:,} keeper-seasons, {r['shots']:,} shots, GSAx raw "
+        f"{signed(r['gsax_raw'])}, rated {signed(r['gsax'])} (SD {r['sd']:.1f})"
         for r in split.iter_rows(named=True)
     )
+    sel = int(split.filter(pl.col("side") == "selected side")["shots"].sum())
+    share = sel / int(split["shots"].sum())
     return [
         f"Limitation ({FLAG} {TEAM_SELECTED}): {flagged:,} of the {rows.height:,} keeper-seasons "
         f"with >= {gsax.TABLE_MIN_SHOTS} shots are in team-selected competition-seasons, marked "
-        f"{FLAG} where named. One δ per competition-season mixes the selected side's finishing "
-        "with its opponents', so their GSAx includes credit for facing weaker finishers than "
-        f"that season's average. Team-selected keeper-seasons by side (the selected side's "
-        f"keeper faces at least {gsax.SELECTED_SIDE} shots): {sides}. A team- or "
+        f"{FLAG} where named. One δ per competition-season rates the selected side's keeper and "
+        "its opponents' keepers against one league sum, and xGOT has no finisher term: the "
+        "opponents' keepers are charged or credited for the selected side's finishing, and the "
+        f"selected side's keepers face {share:.0%} of the team-selected rated shots, so δ "
+        "absorbs part of their own record (the reason for PM E2 (b)). Team-selected "
+        f"keeper-seasons by side (the selected side's keeper faces at least "
+        f"{gsax.SELECTED_SIDE} shots), raw (before δ) and rated: {sides}. A team- or "
         "shooter-strength term is a polish-round item.",
         "",
     ]
 
 
 def _tier_rows(tiers: Sequence[Tier]) -> list[str]:
+    ci = f"{metrics.LEVEL:.0%} CI"
     return [
-        "| Shots faced (tier) | Keepers | First T shots: r [95% CI] | Spearman-Brown | All their "
-        "shots: r [95% CI] | Spearman-Brown | Reading |",
+        f"| Shots faced (tier) | Keepers | First T shots: r [{ci}] | Spearman-Brown | All their "
+        f"shots: r [{ci}] | Spearman-Brown | Reading |",
         "|---|---|---|---|---|---|---|",
         *(
             f"| {t.tier} | {t.keepers:,} | {_r(t.first)} | {_r(t.first_sb)} | {_r(t.all_shots)} "
@@ -376,7 +386,7 @@ def _ci_lines(g: GsaxFit) -> list[str]:
     ]
 
 
-def _keeper_table(g: GsaxFit, names: pl.DataFrame) -> list[str]:
+def _keeper_table(g: GsaxFit, names: pl.DataFrame, chart_sha256: str | None) -> list[str]:
     rows = gsax.keeper_rows(g)
     named = rows.join(names.select(gk_id="player_id", name="player_name"), on="gk_id",
                       how="left")  # fmt: skip
@@ -389,7 +399,13 @@ def _keeper_table(g: GsaxFit, names: pl.DataFrame) -> list[str]:
         f"{rows.height:,} keeper-seasons. Names are the lineup display names (the nickname when "
         f"StatsBomb gives one); {int((conflicts['names'] > 1).sum()):,} table keeper(s) appear "
         "under two spellings, resolved to the latest match. The chart is written by `make "
-        f"gsax` to `{CHART_FILE}` (git-ignored: it embeds the StatsBomb logo, PM E3).",
+        f"gsax` to `{CHART_FILE}` (git-ignored: it embeds the StatsBomb logo, PM E3)"
+        + (
+            "."
+            if chart_sha256 is None
+            else f"; its SHA-256 is `{chart_sha256}`, so `make "
+            "reproduce` checks the chart through this card."
+        ),
         "",
         "| # | Keeper | Family | Competition season | Shots | Goals | Open goals | Open-goal "
         f"GSAx | GSAx raw | GSAx | SD | {CI_LEVEL:.0%} CI | Shrunken GSAx | GSAx with penalties |",
@@ -434,7 +450,7 @@ def _distribution(g: GsaxFit) -> list[str]:
     return [*out, ""]
 
 
-def _gsax_card(g: GsaxFit, names: pl.DataFrame | None, name: str) -> str:
+def _gsax_card(g: GsaxFit, names: pl.DataFrame | None, name: str, chart_sha256: str | None) -> str:
     f = g.xgot
     text = f.setup.text
     lines = [
@@ -477,12 +493,13 @@ def _gsax_card(g: GsaxFit, names: pl.DataFrame | None, name: str) -> str:
         f"Split-half reliability of q − goal per shot ({WITHOUT}), shots alternated within a "
         "keeper by match date, period, time and shot id (PM X5), over the keepers whose total "
         "shots faced (all seasons) reach the tier: first on each keeper's first T shots, then "
-        "on all their shots; Spearman-Brown steps r up to the whole. 95% intervals by Fisher z. "
+        f"on all their shots; Spearman-Brown steps r up to the whole. {metrics.LEVEL:.0%} "
+        "intervals by Fisher z. "
         f"A tier is judged only with at least {MIN_TIER_KEEPERS} keepers.",
         "",
         *_tier_rows(g.tiers),
         *_team_lines(g),
-        *(_keeper_table(g, names) if names is not None else _distribution(g)),
+        *(_keeper_table(g, names, chart_sha256) if names is not None else _distribution(g)),
         "## Columns",
         "",
         "- `goals`: goals from rated shots only (own goals, direct corners and shoot-outs are "
@@ -524,6 +541,10 @@ def _model_card(g: GsaxFit, name: str) -> str:
     loo = [
         f"Leave-out columns of *{label}*: n/a, because {ns.loo_missing:,} test season(s) have "
         "no shot faced by an unpaired keeper, or no finite δ without the paired ones."
+        if ns.gain_loo is None
+        else f"Leave-out columns of *{label}*: {ns.loo_missing:,} test season(s) with no shot "
+        "faced by an unpaired keeper, or no finite δ without the paired ones, are left out "
+        f"({ns.loo_shots:,} test shots, {ns.loo_pairs:,} pairs)."
         for label, ns in rows
         if ns.loo_missing
     ]
@@ -546,9 +567,8 @@ def _model_card(g: GsaxFit, name: str) -> str:
         "per group. τ̂ maximises the Laplace approximation of the marginal likelihood (bounded "
         f"search on log τ in [{gsax.TAU_BOUNDS[0]:g}, {gsax.TAU_BOUNDS[1]:g}]); u is the "
         "posterior mode at τ̂, by Newton steps. The Laplace τ̂ is biased low when the true τ is "
-        "small (a simulation probe in the run folder), so the shrinkage is on the strong side. "
-        "No PyMC or Stan: the closed-form Laplace fit is exact enough for one random effect and "
-        "takes well under a second.",
+        "small, so the shrinkage is on the strong side. No PyMC or Stan: one random effect needs "
+        "only the closed-form Laplace fit.",
         "",
         "| Grouping | τ̂ (logit) | At a bound | One SD in goals per 100 shots |",
         "|---|---|---|---|",
@@ -571,7 +591,7 @@ def _model_card(g: GsaxFit, name: str) -> str:
         *(_next_rows(label, ns) for label, ns in rows),
         "",
         *loo,
-        next_season_sentence(g.next_season),
+        next_season_sentence(g.next_season, g.next_no_team),
         "",
         "Raw GSAx is the unpooled estimate on small samples, so beating it says raw overfits; "
         "keeper differences are read from the gain over none.",
@@ -584,7 +604,7 @@ def _model_card(g: GsaxFit, name: str) -> str:
         "",
         "## Checks",
         "",
-        *_checks(g.checks[4:5]),
+        *_checks(g.checks[gsax.NEXT_SEASON_CHECK - 1 : gsax.NEXT_SEASON_CHECK]),
         "## Data licensing",
         f.setup.text.licensing,
         "",
@@ -595,8 +615,14 @@ def _model_card(g: GsaxFit, name: str) -> str:
     return "\n".join(lines)
 
 
-def render(g: GsaxFit, *, names: pl.DataFrame | None) -> Mapping[str, str]:
+def render(
+    g: GsaxFit, *, names: pl.DataFrame | None, chart_sha256: str | None = None
+) -> Mapping[str, str]:
     """The two cards of one provider, card name → Markdown; pure.
+
+    ``chart_sha256`` (StatsBomb) is the SHA-256 of the keeper chart's bytes, printed beside
+    ``CHART_FILE``: the chart is git-ignored (PM E3 (b)), so the committed card carries its
+    digest and the card's byte check covers the chart.
 
     Raises
     ------
@@ -616,7 +642,7 @@ def render(g: GsaxFit, *, names: pl.DataFrame | None) -> Mapping[str, str]:
         raise ValueError(f"render: {p} cards {'need' if p in NAMED else 'take no'} keeper names")
     pre = CARD_PREFIX[p]
     return MappingProxyType({
-        f"{pre}gsax": _gsax_card(g, names, f"{pre}gsax"),
+        f"{pre}gsax": _gsax_card(g, names, f"{pre}gsax", chart_sha256),
         f"{pre}gk-model": _model_card(g, f"{pre}gk-model"),
     })  # fmt: skip
 
@@ -675,8 +701,8 @@ def chart(table: pl.DataFrame, *, names: pl.DataFrame, logo: StrPath) -> str:
         ax.set_ylim(-1, n)
         ax.legend(loc="lower right", fontsize=7, frameon=False)
     ax.axvline(0.0, color=viz.INK, lw=0.6)
-    note = (f"\n{FLAG} {TEAM_SELECTED}: one league shift for the selected side and its opponents "
-            "credits its keeper for weaker finishers (see the card)"
+    note = (f"\n{FLAG} {TEAM_SELECTED}: one league shift for the selected side and its "
+            "opponents (see the card's limitation)"
             if (rows["family"] == TEAM_SELECTED).any() else "")  # fmt: skip
     ax.set_xlabel(f"Goals saved above expected ({WITHOUT}; {CI_LEVEL:.0%} match-bootstrap CI)"
                   + note, fontsize=8)  # fmt: skip
@@ -714,7 +740,7 @@ def summary_block(fits: Sequence[GsaxFit]) -> str:
             f"{ks.filter(pl.col('shots') >= gsax.TABLE_MIN_SHOTS).height:,} | {met} of "
             f"{len(g.checks)} | {g.model.tau:.4f} | {_gain(ns.gain)} | {_gain(ns.gain_none)} |"
         )
-        notes += [f"{src}: {next_season_sentence(ns)} Stability: "
+        notes += [f"{src}: {next_season_sentence(ns, g.next_no_team)} Stability: "
                   + "; ".join(stability_sentence(t) for t in g.tiers) + ".", ""]  # fmt: skip
     return "\n".join([*lines, "", *notes[:-1]]) + "\n"
 
@@ -750,7 +776,7 @@ def write(
     if svg is None:
         return None
     path = Path(chart_path)
-    snapshot._check_ignored(
+    snapshot.check_ignored(
         Path(os.path.abspath(path)),
         "keeper chart",
         "keep it under the git-ignored data/ (it embeds the StatsBomb logo)",
@@ -763,9 +789,9 @@ def write(
 def run_from(f: xgot.XgotFit, *, docs_dir: StrPath, raw: StrPath) -> GsaxRun:
     """Fit, name (StatsBomb), render, write and print one provider's goalkeeper results.
 
-    The chart goes to ``CHART_PATH``, read when called; ``raw`` is the StatsBomb open-data
-    cache whose ``<commit>`` checkout holds the lineups (read, never synced: a missing file is
-    an error, not a download).
+    The chart goes to ``CHART_PATH``, read when called, and its SHA-256 onto the StatsBomb GSAx
+    card; ``raw`` is the StatsBomb open-data cache whose ``<commit>`` checkout holds the lineups
+    (read, never synced: a missing file is an error, not a download).
 
     Examples
     --------
@@ -783,7 +809,8 @@ def run_from(f: xgot.XgotFit, *, docs_dir: StrPath, raw: StrPath) -> GsaxRun:
         names = statsbomb.player_names(checkout, ids,
                                        player_ids=table["gk_id"].to_list())  # fmt: skip
         svg = chart(table, names=names, logo=statsbomb.logo_file())
-    written = render(g, names=names)
+    sha = None if svg is None else hashlib.sha256(svg.encode("utf-8")).hexdigest()
+    written = render(g, names=names, chart_sha256=sha)
     path = write(written, svg, docs_dir=docs_dir, chart_path=CHART_PATH)
     print(*(f"check | {c.target} | {c.measured} | {c.result}" for c in g.checks), sep="\n")
     print(f"cards: {Path(docs_dir)}" + ("" if path is None else f"; chart: {path}"))
@@ -803,12 +830,15 @@ def run(provider: str, *, docs_dir: StrPath, cache: StrPath | None, raw: StrPath
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Command-line entry point; exit 0 even when a check is missed (it reports), 1 on an error.
+    """Command-line entry point; exit 0 even when a check is missed (it reports), 1 on an error
+    (a StatsBomb run without ``tree.json`` in ``--statsbomb-raw`` fails before any fit), 2 on
+    bad arguments (argparse's ``SystemExit``).
 
     Examples
     --------
-    >>> main(["--provider", "nobody"])  # doctest: +SKIP
-    2
+    >>> main(["--provider", "nobody"])
+    Traceback (most recent call last):
+    SystemExit: 2
     """
     parser = argparse.ArgumentParser(
         prog="python -m football_shot_models.gsax_cards",
@@ -825,6 +855,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     keys = providers if args.provider == "both" else (args.provider,)
     cache = None if args.no_cache else args.cache
+    tree = Path(args.statsbomb_raw) / statsbomb.OPEN_DATA_COMMIT / "tree.json"
+    if any(k in NAMED for k in keys) and not tree.is_file():
+        print(f"fsm: error: no StatsBomb checkout at {tree} (the lineups name the keepers); "
+              "pass --statsbomb-raw", file=sys.stderr)  # fmt: skip
+        return 1
     try:
         runs = [run(k, docs_dir=args.docs_dir, cache=cache, raw=args.statsbomb_raw) for k in keys]
     except (ValueError, OSError, snapshot.SnapshotError) as e:

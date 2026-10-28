@@ -169,6 +169,20 @@ Dev out-of-fold xGOT by the ball's distance from the goal centre (`mouth_y_abs`,
 | >= 3.55 | 147 | 52 | 0.3537 | 0.3435 | -1.5 | 5.2 | yes |
 | outside the frame + 0.15 m | 30 | 3 | 0.1000 | 0.3449 | +7.3 | 2.4 | not judged (n < 100) |
 
+### Calibration by placement band, hold-out
+
+The same table on the 3,134 on-target shots of the hold-out (the fit on all of dev), with the same rule and the same 100-shot minimum; printed beside check row 12, which judges dev out of fold.
+
+| abs(y) band (m) | Shots | Goals | Goal rate | Mean xGOT | Σ xGOT − goals | SD | Within 2 SD |
+|---|---|---|---|---|---|---|---|
+| [0, 1) | 916 | 119 | 0.1299 | 0.1400 | +9.3 | 8.9 | yes |
+| [1, 2) | 867 | 158 | 0.1822 | 0.1869 | +4.0 | 9.5 | yes |
+| [2, 3) | 921 | 376 | 0.4083 | 0.3861 | -20.4 | 12.2 | yes |
+| [3, 3.3) | 310 | 190 | 0.6129 | 0.5882 | -7.7 | 7.6 | yes |
+| [3.3, 3.55) | 104 | 67 | 0.6442 | 0.6149 | -3.0 | 4.4 | yes |
+| >= 3.55 | 12 | 3 | 0.2500 | 0.3992 | +1.8 | 1.6 | not judged (n < 100) |
+| outside the frame + 0.15 m | 4 | 0 | 0.0000 | 0.2713 | +1.1 | 0.8 | not judged (n < 100) |
+
 ### Reconciliation with C3
 
 Every C3 on-target shot is in one row of the Filters table; the scored rows are the open-play and penalty xGOT predictions, compared with C3 less the rows a PM ruling leaves out.

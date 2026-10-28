@@ -810,7 +810,7 @@ def band_table(p: FloatArray, dev: pl.DataFrame) -> pl.DataFrame:
         n, goals = int(m.sum()), int(y[m].sum())
         gap, sd = float(p[m].sum()) - goals, math.sqrt(float((p[m] * (1 - p[m])).sum()))
         rate, mean = (goals / n, float(p[m].mean())) if n else (None, None)
-        rows.append((band, n, goals, rate, mean, gap, sd, abs(gap) <= BAND_SDS * sd))
+        rows.append((band, n, goals, rate, mean, gap, sd, within(gap, sd)))
     schema = {
         "band": pl.String,
         "shots": pl.Int64,
@@ -822,6 +822,20 @@ def band_table(p: FloatArray, dev: pl.DataFrame) -> pl.DataFrame:
         "within": pl.Boolean,
     }
     return pl.DataFrame(rows, schema=schema, orient="row")  # fmt: skip
+
+
+def within(gap: float, sd: float) -> bool:
+    """The band rule (PM, MS6): ``|gap| <= BAND_SDS · sd``, ``BAND_SDS`` read when called.
+
+    The one expression behind :func:`band_table` and ``gsax.band_table``; a band is judged by
+    it only when :func:`judged`.
+
+    Examples
+    --------
+    >>> within(-2.0, 1.0), within(2.0001, 1.0), within(0.0, 0.0)
+    (True, False, True)
+    """
+    return abs(gap) <= BAND_SDS * sd
 
 
 def judged(table: pl.DataFrame) -> pl.Series:
@@ -1073,6 +1087,13 @@ class XgotFit:
     grid : polars.DataFrame
         :func:`grid_counts`: the on-target shots of coarse-grid matches left out (PM E1 (a)),
         per competition-season; empty for WhoScored.
+    coarse : polars.Series
+        :func:`coarse_matches`: the ``match_id`` values left out of ``inp`` after the xG input
+        fit (empty for WhoScored).
+    frames : tuple of polars.DataFrame
+        The xG population's dev and hold-out shots before :func:`drop_matches`: the frames the
+        xG input is fitted on, coarse-grid matches included (R1); :func:`season_out` refits on
+        them.
     checks : tuple of Check
     split_half : tuple
         (min shots, blocked shots left in, SGA, goals − xG) rows.
@@ -1098,6 +1119,8 @@ class XgotFit:
     shootouts: Scores | None
     recon: Reconciliation
     grid: pl.DataFrame
+    coarse: pl.Series
+    frames: tuple[pl.DataFrame, pl.DataFrame]
     checks: tuple[Check, ...]
     split_half: tuple[tuple[int, bool, SplitHalf, SplitHalf], ...]
     predictions: pl.DataFrame
@@ -1187,8 +1210,8 @@ def fit(provider: str, *, cache: StrPath | None) -> XgotFit:
     )  # fmt: skip
     return XgotFit(
         provider, p, xg, ho, inp, xg_ev, xg_head, evs, head, gbm_gain, far_gain, kicks,
-        pen_base, shootouts, recon, grid_counts(c3, coarse, xg.matches), run_checks, halves, pred,
-        pc,
+        pen_base, shootouts, recon, grid_counts(c3, coarse, xg.matches), coarse, (dev, held),
+        run_checks, halves, pred, pc,
     )  # fmt: skip
 
 
@@ -1221,14 +1244,17 @@ def refit(
     kicks_dev: pl.DataFrame,
     kicks_held: pl.DataFrame,
     kicks_folds: Folds,
+    drop: pl.Series,
     suffix: str,
 ) -> pl.DataFrame:
     """The :func:`fit` chain of ``f`` on other frames and folds: xG input, headline, penalty.
 
     Every spec is ``f``'s, renamed ``name + suffix`` so its cache entry never evicts the match
-    out-of-fold one. The xG input is refitted on ``dev`` with ``folds`` and cross-fitted into
-    the frames (:func:`xg_input`), then the headline xGOT and the penalty xGOT are refitted on
-    them; shoot-out kicks keep ``f``'s scores.
+    out-of-fold one. As in :func:`fit`, the xG input is refitted on ``dev`` with ``folds`` and
+    cross-fitted into the frames (:func:`xg_input`), and only then are the matches ``drop``
+    left out (:func:`drop_matches`: the coarse-grid ones still feed the xG input, R1); the
+    headline xGOT and the penalty xGOT are refitted on what is left; shoot-out kicks keep
+    ``f``'s scores.
 
     Returns
     -------
@@ -1242,14 +1268,15 @@ def refit(
 
     Examples
     --------
-    >>> pred = refit(f, dev=f.inp.dev, held=f.inp.held, folds=folds, kicks_dev=f.kicks.dev,
-    ...              kicks_held=f.kicks.held, kicks_folds=k_folds, suffix="-x")  # doctest: +SKIP
+    >>> pred = refit(f, dev=f.frames[0], held=f.frames[1], folds=folds, kicks_dev=f.kicks.dev,
+    ...              kicks_held=f.kicks.held, kicks_folds=k_folds, drop=f.coarse, suffix="-x")
+    ... # doctest: +SKIP
     """
-    ff = None if f.xg.freeze_frames.height == 0 else f.xg.freeze_frames
+    ff = models.freeze_frames_or_none(f.xg.freeze_frames)
     xg_ev = evaluate(
         _renamed(f.xg_input.spec, suffix), dev, held, folds, freeze_frames=ff, cache=f.cache
     )
-    inp = xg_input(xg_ev, dev, held, folds)
+    inp = drop_matches(xg_input(xg_ev, dev, held, folds), drop)
     head = evaluate(
         _renamed(f.head.spec, suffix, xg_ev.spec.name),
         inp.on_dev, inp.on_held, inp.folds, cache=f.cache,
@@ -1283,13 +1310,14 @@ def season_out(f: XgotFit) -> pl.DataFrame:
     """Every on-target open-play and in-game penalty row of ``f``, its xGOT season-out.
 
     Each row's ``xgot`` comes from fits (xG input and xGOT both) that never saw its season,
-    built by :func:`refit` on ``f``'s own frames, so a population ruling made in :func:`fit`
-    (coarse-grid matches out) carries over. StatsBomb (``SEASON_OUT``: ``season_folds``): dev
-    rows from folds grouped by competition-season, hold-out rows from that refit's dev fit
-    (``holdout_fit``). WhoScored (``swapped_fit``): the test-season rows are ``f.predictions``
-    as they are (the train-only fit, ``holdout_fit``); the train-season rows are the hold-out
-    rows of a fit on the test season (MS5 O1). Shoot-out kicks are left out. Pure: the cache of
-    ``f`` is the only place it writes.
+    built by :func:`refit` on ``f``'s own frames (``f.frames``, with ``f.coarse`` dropped after
+    the xG input as in :func:`fit`), so a population ruling made in :func:`fit` (coarse-grid
+    matches out of the xGOT, still in the xG input) carries over. StatsBomb (``SEASON_OUT``:
+    ``season_folds``): dev rows from folds grouped by competition-season, hold-out rows from
+    that refit's dev fit (``holdout_fit``). WhoScored (``swapped_fit``): the test-season rows
+    are ``f.predictions`` as they are (the train-only fit, ``holdout_fit``); the train-season
+    rows are the hold-out rows of a fit on the test season (MS5 O1). Shoot-out kicks are left
+    out. Pure: the cache of ``f`` is the only place it writes.
 
     Returns
     -------
@@ -1316,27 +1344,30 @@ def season_out(f: XgotFit) -> pl.DataFrame:
         raise ValueError(f"season_out: unknown provider {f.provider!r}; {sorted(SEASON_OUT)}")
     source = SEASON_OUT[f.provider]
     suffix, rated = SUFFIX[source], pl.col("on_target") & (pl.col("kind") != "shootout")
+    dev, held = f.frames
     if source == "season_folds":
-        folds = evaluation.season_folds(f.inp.dev, by=SEASON_KEY)
+        folds = evaluation.season_folds(dev, by=SEASON_KEY)
         k_folds = evaluation.season_folds(f.kicks.dev, by=SEASON_KEY)
-        _check_season_folds(f.inp.dev, folds, "open-play")
+        _check_season_folds(dev, folds, "open-play")
         _check_season_folds(f.kicks.dev, k_folds, "kick")
-        _disjoint(pl.concat([f.inp.held.select(SEASON_KEY), f.kicks.held.select(SEASON_KEY)]),
-                  pl.concat([f.inp.dev.select(SEASON_KEY), f.kicks.dev.select(SEASON_KEY)]),
+        _disjoint(pl.concat([held.select(SEASON_KEY), f.kicks.held.select(SEASON_KEY)]),
+                  pl.concat([dev.select(SEASON_KEY), f.kicks.dev.select(SEASON_KEY)]),
                   "hold-out")  # fmt: skip
-        new = refit(f, dev=f.inp.dev, held=f.inp.held, folds=folds, kicks_dev=f.kicks.dev,
-                    kicks_held=f.kicks.held, kicks_folds=k_folds, suffix=suffix)  # fmt: skip
+        new = refit(f, dev=dev, held=held, folds=folds, kicks_dev=f.kicks.dev,
+                    kicks_held=f.kicks.held, kicks_folds=k_folds, drop=f.coarse,
+                    suffix=suffix)  # fmt: skip
         out = new.filter(rated).with_columns(
             source=pl.when(pl.col("split") == "dev").then(pl.lit(source)).otherwise(
                 pl.lit("holdout_fit")).cast(SOURCE)
         )  # fmt: skip
     else:
-        train = pl.concat([f.inp.dev.select(SEASON_KEY), f.kicks.dev.select(SEASON_KEY)])
-        test = pl.concat([f.inp.held.select(SEASON_KEY), f.kicks.held.select(SEASON_KEY)])
+        train = pl.concat([dev.select(SEASON_KEY), f.kicks.dev.select(SEASON_KEY)])
+        test = pl.concat([held.select(SEASON_KEY), f.kicks.held.select(SEASON_KEY)])
         _disjoint(test, train, "test")
-        new = refit(f, dev=f.inp.held, held=f.inp.dev, folds=evaluation.cv_folds(f.inp.held),
+        new = refit(f, dev=held, held=dev, folds=evaluation.cv_folds(held),
                     kicks_dev=f.kicks.held, kicks_held=f.kicks.dev,
-                    kicks_folds=evaluation.cv_folds(f.kicks.held), suffix=suffix)  # fmt: skip
+                    kicks_folds=evaluation.cv_folds(f.kicks.held), drop=f.coarse,
+                    suffix=suffix)  # fmt: skip
         out = pl.concat([
             new.filter(rated & (pl.col("split") == "holdout")).with_columns(
                 source=pl.lit(source, dtype=SOURCE)),

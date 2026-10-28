@@ -3,7 +3,8 @@
 ``gsax_cards.run_from`` runs on the session ``XgotRun`` per provider (``conftest.real_xgot``, the
 one ``test_xgot_run`` uses), so ``make reproduce`` adds only the season-out fits. The cards
 must come back byte for byte; the StatsBomb chart, git-ignored under ``data/charts/`` (PM E3
-(b)), is written to a tmp path here and compared with the one ``make gsax`` wrote; the README
+(b)), is written to a tmp path here, and its SHA-256 is on the committed GSAx card, so the
+card's byte check covers the chart without any local copy (run6-ms6 architect A2); the README
 block (both providers) must match. A second ``gsax.fit`` on the same fit reads every season-out
 fit from the cache (0 entries written); a cold run has no cache, which the test names.
 """
@@ -11,6 +12,7 @@ fit from the cache (0 entries written); a cold run has no cache, which the test 
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import os
 import re
@@ -84,9 +86,9 @@ def test_reproduce_statsbomb(gsax_real: dict[str, Any]) -> None:
     for name in CARDS["statsbomb"]:
         committed = (REPO / "docs" / "models" / f"{name}.md").read_bytes()
         assert (sb["docs"] / f"{name}.md").read_bytes() == committed, name
-    made = REPO / "data" / "charts" / "gsax-keepers.svg"
-    assert made.is_file(), "no keeper chart at data/charts/gsax-keepers.svg: run make gsax"
-    assert sb["chart"].read_bytes() == made.read_bytes()
+    digest = hashlib.sha256(sb["chart"].read_bytes()).hexdigest()
+    committed = (REPO / "docs" / "models" / "gsax.md").read_text(encoding="utf-8")
+    assert f"its SHA-256 is `{digest}`" in committed, "the chart differs from the committed card's"
     _checks(sb["run"])
     _warm_refit(sb["fit"])
 

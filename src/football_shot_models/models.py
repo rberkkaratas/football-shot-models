@@ -167,6 +167,18 @@ class Candidates:
         return (*self.baselines, *self.steps)
 
 
+def freeze_frames_or_none(freeze_frames: pl.DataFrame | None) -> pl.DataFrame | None:
+    """``None`` for no freeze frames or an empty table: a frame feature then raises instead of
+    being derived from an empty table (WhoScored has no frames).
+
+    Examples
+    --------
+    >>> freeze_frames_or_none(pl.DataFrame({"shot_id": []})) is None
+    True
+    """
+    return None if freeze_frames is None or freeze_frames.height == 0 else freeze_frames
+
+
 def evaluate_candidates(
     steps: Sequence[ModelSpec],
     gbm_spec: ModelSpec,
@@ -202,7 +214,7 @@ def evaluate_candidates(
     names = [s.name for s in (*base_specs, *steps, gbm_spec)]
     if dupes := sorted({n for n in names if names.count(n) > 1}):
         raise ValueError(f"evaluate_candidates: spec name(s) {dupes} used twice")
-    ff = None if freeze_frames is None or freeze_frames.height == 0 else freeze_frames
+    ff = freeze_frames_or_none(freeze_frames)
 
     def run(spec: ModelSpec) -> Evaluation:
         return evaluate(spec, dev, held, folds, freeze_frames=ff, cache=cache)

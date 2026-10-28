@@ -105,10 +105,10 @@ Printed by `make gsax` (paste it between the markers) and checked byte for byte 
 <!-- gsax:summary:start -->
 | Provider | Rated shots | Keeper-seasons | Keeper-seasons >= 100 shots | Checks met | τ̂ keeper-season | Next season: gain over raw | Gain over xGOT alone |
 |---|---|---|---|---|---|---|---|
-| StatsBomb open data | 33,483 | 1,205 | 97 | 6 of 6 | 0.1225 | +0.03501 [+0.02677, +0.04361] | +0.00099 [+0.00015, +0.00183] |
+| StatsBomb open data | 33,483 | 1,205 | 97 | 6 of 6 | 0.1267 | +0.03630 [+0.02779, +0.04520] | +0.00105 [+0.00014, +0.00193] |
 | private WhoScored / Opta event archive | 32,464 | 674 | 126 | 6 of 6 | 0.0770 | +0.01047 [+0.00513, +0.01630] | +0.00001 [-0.00007, +0.00010] |
 
-StatsBomb open data: Shrunken estimates predict next season better than raw GSAx, because raw GSAx overfits small samples, and add +0.00099 log loss over xGOT alone. Stability: not distinguishable from noise at 100 shots; 6 keepers reach 250 shots: too few to judge (r +0.85 [+0.13, +0.98]); 2 keepers reach 500 shots: too few to estimate.
+StatsBomb open data: Shrunken estimates predict next season better than raw GSAx, because raw GSAx overfits small samples, and improve log loss by 0.00105 over xGOT alone. Without team-selected competition-seasons (22 pairs) the gain over raw is +0.01177 [-0.00097, +0.02546], its interval not above 0, and over xGOT alone +0.00060 [-0.00041, +0.00164], its interval not above 0. Stability: not distinguishable from noise at 100 shots; 6 keepers reach 250 shots: too few to judge (r +0.87 [+0.18, +0.99]); 2 keepers reach 500 shots: too few to estimate.
 
 private WhoScored / Opta event archive: Shrunken estimates predict next season better than raw GSAx, because raw GSAx overfits small samples, and predict next season no better than xGOT alone (the league average). Stability: not distinguishable from noise at 100 shots; no keeper reaches 250 shots (empty tier); no keeper reaches 500 shots (empty tier).
 <!-- gsax:summary:end -->

@@ -241,3 +241,38 @@ def test_rate_errors(col: str, value: Any) -> None:
     f = _bad(gc.table_frame(), col, value)
     with pytest.raises(ValueError, match=r"\b3\b"):
         _gsax().rate(f, small=None)
+
+
+def test_rate_small_two_keepers_many_shots() -> None:
+    """PM E2 (b), the keeper clause on its own (run6-ms6 QA 4): a 2-keeper competition-season
+    with 60 open-play shots (at least 50) is flagged small and rated at δ = 0 in both kinds; a
+    rule allowing 1 keeper rates it, so the flag comes from the keeper count."""
+    gsax = _gsax()
+    f = gc.blocks(
+        gc.block("sb:gf1", "F1", goals=gc.pattern(30, 5), xgot=0.3, matches=["sb:f1", "sb:f2"]),
+        gc.block("sb:gf2", "F1", goals=gc.pattern(30, 3), xgot=0.3, matches=["sb:f1", "sb:f2"]),
+        gc.block("sb:gf1", "F1", goals=[True, False], xgot=0.7, matches=["sb:f1"], kind="penalty"),
+    )
+    open_play = f.filter(pl.col("kind") == "open_play")
+    assert open_play.height >= gsax.SMALL_LEAGUE.min_shots  # precondition: the shots clause is off
+    assert open_play["gk_id"].n_unique() == gsax.SMALL_LEAGUE.max_keepers == 2
+    rated = gsax.rate(f, small=gsax.SMALL_LEAGUE)
+    assert rated["small"].all() and (rated["delta"] == 0.0).all()
+    assert set(rated["kind"].cast(pl.String).to_list()) == {"open_play", "penalty"}
+    assert np.allclose(rated["q"].to_numpy(), rated["xgot"].to_numpy(), rtol=0.0, atol=1e-12)
+    one = gsax.rate(f, small=gsax.SmallLeague(1, gsax.SMALL_LEAGUE.min_shots))
+    assert not one["small"].any() and (one["delta"] != 0.0).all()
+
+
+def test_guards_on_hostile_primitives() -> None:
+    """Run6-ms6 QA 11: ``league_shift`` refuses a goal outside {0, 1} (2, −1, 0.5, NaN) with its
+    own message; ``keeper_modes`` refuses τ that is 0, negative, NaN or infinite."""
+    gsax = _gsax()
+    for goals in ([2.0, 0.0], [-1.0, 1.0], [0.5, 0.0], [math.nan, 1.0]):
+        with pytest.raises(ValueError, match="goal is not 0 / 1"):
+            gsax.league_shift(np.array([0.3, 0.6]), np.array(goals))
+    off, y, grp = np.zeros(4), np.array([1.0, 0.0, 1.0, 0.0]), np.array([0, 0, 1, 1])
+    for tau in (0.0, -1.0, math.nan, math.inf):
+        with pytest.raises(ValueError, match="tau"):
+            gsax.keeper_modes(off, y, grp, tau=tau)
+    assert gsax.keeper_modes(off, y, grp, tau=1.0)[0].shape == (2,)

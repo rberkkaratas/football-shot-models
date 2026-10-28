@@ -243,16 +243,8 @@ def band_lines(ev: Evaluation, dev: pl.DataFrame) -> list[str]:
     >>> band_lines(head, inp.on_dev)[0]  # doctest: +SKIP
     '### Calibration by placement band'
     """
-    rows = []
     least = xgot.MIN_BAND_SHOTS  # read when called, like ``xgot.judged``
-    table = band_table(ev.oof, dev)
-    for r, ok in zip(table.iter_rows(named=True), judged(table), strict=True):
-        gap = f"{r['gap']:+.1f}" if r["shots"] else "n/a"
-        within = ("yes" if r["within"] else "no") if ok else f"not judged (n < {least})"
-        rows.append(
-            f"| {r['band']} | {r['shots']:,} | {r['goals']:,} | {fmt(r['goal_rate'])} | "
-            f"{fmt(r['mean_xgot'])} | {gap} | {r['sd']:.1f} | {within} |"
-        )
+    rows = _band_rows(band_table(ev.oof, dev))
     chance = math.erfc(BAND_SDS / math.sqrt(2))
     return [
         "### Calibration by placement band",
@@ -266,10 +258,50 @@ def band_lines(ev: Evaluation, dev: pl.DataFrame) -> list[str]:
         f"{chance:.1%} of cases. The rule is a normal approximation, so a band with fewer than "
         f"{least} shots is printed but not judged (PM, MS6).",
         "",
+        *rows,
+        "",
+    ]
+
+
+def _band_rows(table: pl.DataFrame) -> list[str]:
+    """The header and rows of a :func:`xgot.band_table`, judged by the PM's rule."""
+    least, out = xgot.MIN_BAND_SHOTS, []
+    for r, ok in zip(table.iter_rows(named=True), judged(table), strict=True):
+        gap = f"{r['gap']:+.1f}" if r["shots"] else "n/a"
+        within = ("yes" if r["within"] else "no") if ok else f"not judged (n < {least})"
+        out.append(
+            f"| {r['band']} | {r['shots']:,} | {r['goals']:,} | {fmt(r['goal_rate'])} | "
+            f"{fmt(r['mean_xgot'])} | {gap} | {r['sd']:.1f} | {within} |"
+        )
+    return [
         f"| abs(y) band (m) | Shots | Goals | Goal rate | Mean xGOT | Σ xGOT − goals | SD | "
         f"Within {BAND_SDS:g} SD |",
         "|---|---|---|---|---|---|---|---|",
-        *rows,
+        *out,
+    ]
+
+
+def held_band_lines(ev: Evaluation, held: pl.DataFrame, split: str) -> list[str]:
+    """The band table of ``ev.holdout_p`` on ``held`` (the hold-out or test split), rendered.
+
+    The PM names the hold-out / test splits as the clean evidence (after MS5); check row 12
+    judges dev out of fold, so this table is printed beside it with the same rule, not judged
+    as a check.
+
+    Examples
+    --------
+    >>> held_band_lines(head, inp.on_held, "test")[0]  # doctest: +SKIP
+    '### Calibration by placement band, test'
+    """
+    n = held.height
+    return [
+        f"### Calibration by placement band, {split}",
+        "",
+        f"The same table on the {n:,} on-target shots of the {split} (the fit on all of dev), "
+        f"with the same rule and the same {xgot.MIN_BAND_SHOTS}-shot minimum; printed beside "
+        "check row 12, which judges dev out of fold.",
+        "",
+        *_band_rows(band_table(ev.holdout_p, held)),
         "",
     ]
 
@@ -388,10 +420,19 @@ def xgot_context(
     )
 
 
-def _r(s: SplitHalf) -> str:
+def split_half_cell(s: SplitHalf, digits: int = 3) -> str:
+    """A split-half r and its interval as a card cell; ``n/a`` when r or a bound is None.
+
+    Examples
+    --------
+    >>> split_half_cell(SplitHalf(30, 0.4, 0.05, 0.66), 2)
+    '+0.40 [+0.05, +0.66]'
+    >>> split_half_cell(SplitHalf(3, None, None, None))
+    'n/a'
+    """
     if s.r is None or s.low is None or s.high is None:
         return "n/a"
-    return f"{s.r:+.3f} [{s.low:+.3f}, {s.high:+.3f}]"
+    return f"{s.r:+.{digits}f} [{s.low:+.{digits}f}, {s.high:+.{digits}f}]"
 
 
 def _halves(rows: Sequence[tuple[int, bool, SplitHalf, SplitHalf]]) -> list[str]:
@@ -410,7 +451,8 @@ def _halves(rows: Sequence[tuple[int, bool, SplitHalf, SplitHalf]]) -> list[str]
         "shot: r [95% CI] |",
         "|---|---|---|---|---|",
         *(
-            f"| {m} | {'in' if blocked else 'left out'} | {a.keys:,} | {_r(a)} | {_r(b)} |"
+            f"| {m} | {'in' if blocked else 'left out'} | {a.keys:,} | {split_half_cell(a)} | "
+            f"{split_half_cell(b)} |"
             for m, blocked, a, b in rows
         ),
         "",
@@ -504,8 +546,8 @@ def summary_block(runs: Sequence[XgotFit]) -> str:
                f"loss {fmt(so.log_loss)}."),
             "",
             f"{source}, shooting goals added (descriptive), split-half r at >= {sga40[0]} shots, "
-            f"{sga40[2].keys:,} players: SGA per shot {_r(sga40[2])}, goals − xG per shot "
-            f"{_r(sga40[3])}.",
+            f"{sga40[2].keys:,} players: SGA per shot {split_half_cell(sga40[2])}, goals − xG "
+            f"per shot {split_half_cell(sga40[3])}.",
             "",
         ]  # fmt: skip
     return "\n".join([*lines, "", *notes[:-1]]) + "\n"
@@ -581,6 +623,7 @@ def render(fit: XgotFit) -> Mapping[str, str]:
             verdict=models.verdict(ev, head, fit.gbm_gain, split=p.split),
             checks=fit.checks if ev is head else (),
             extra=[*ece_lines(ev, y_dev, y_held, split=p.split), *band_lines(ev, on_dev),
+                   *(held_band_lines(ev, on_held, p.split) if ev is evs[4] else ()),
                    *((*_recon_lines(fit.recon), *_halves(fit.split_half)) if ev is head else ()),
                    *grid_lines(fit.grid)],
         )

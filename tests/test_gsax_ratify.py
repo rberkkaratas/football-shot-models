@@ -181,16 +181,23 @@ def test_next_season_left_out_by_grouping() -> None:
 def test_next_season_loo_missing() -> None:
     """R8: ``loo_missing`` counts the test seasons with no unpaired row (B19 without g06) or a
     non-finite δ without the paired keepers (A20 whose unpaired keepers concede 0); 0 when
-    every test season has one, and then the leave-out gains exist."""
+    every test season has one. Amended in run6-ms6 (football 5): such a season leaves the
+    leave-out gains, which are scored on the other test seasons' rows (``loo_shots`` /
+    ``loo_pairs`` count what left), and are None only when fewer than 2 test matches remain."""
     full = gsax.next_season(gsax.rate(_next_frame(), small=None), by=gsax.KEEPER_SEASON)
     assert full.loo_missing == 0 and full.gain_loo is not None
+    assert (full.loo_shots, full.loo_pairs) == (0, 0)
     one = _next_frame(b19_unpaired=False)
     ns = gsax.next_season(gsax.rate(one, small=None), by=gsax.KEEPER_SEASON)
     assert ns.untestable is None and ns.gain is not None
-    assert ns.loo_missing == 1 and ns.gain_loo is None and ns.gain_none_loo is None
+    assert ns.loo_missing == 1 and (ns.loo_shots, ns.loo_pairs) == (16, 1)  # g04 B19
+    assert ns.gain_loo is not None and ns.gain_none_loo is not None
+    assert ns.gain_loo.groups == full.gain_loo.groups - 2  # B19's 2 matches left out
     two = _next_frame(b19_unpaired=False, a20_unpaired_goals=False)
     ns = gsax.next_season(gsax.rate(two, small=None), by=gsax.KEEPER_SEASON)
-    assert ns.loo_missing == 2 and ns.gain_loo is None
+    a20 = ns.test_shots - ns.loo_shots
+    assert ns.loo_missing == 2 and ns.loo_shots > 16 and a20 > 0
+    assert ns.gain_loo is not None and ns.gain_loo.groups < ns.test_matches
 
 
 # ---- R9: the Spearman-Brown fields are SplitHalf ---------------------------------------------
@@ -215,10 +222,12 @@ def test_tier_sb_are_split_half() -> None:
 # ---- R12: the StatsBomb raw default --------------------------------------------------------
 
 
-def test_statsbomb_raw_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_statsbomb_raw_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """R12: ``gsax_cards.STATSBOMB_RAW`` is ``statsbomb.DEFAULT_CACHE`` (this repo's cache, never
     the sibling path) and is ``main``'s ``--statsbomb-raw`` default; the Makefile sets
-    ``STATSBOMB_RAW ?=`` and exports it."""
+    ``STATSBOMB_RAW ?=`` and exports it. Amended in run6-ms6 (architect A9): ``main`` refuses a
+    StatsBomb run before any fit when the cache has no ``<commit>/tree.json``, so the default
+    reaches ``run`` from a working directory whose default cache holds one."""
     from football_core.io import statsbomb
 
     assert gsax_cards.STATSBOMB_RAW == statsbomb.DEFAULT_CACHE
@@ -229,8 +238,16 @@ def test_statsbomb_raw_default(monkeypatch: pytest.MonkeyPatch) -> None:
         raise ValueError("stop")
 
     monkeypatch.setattr(gsax_cards, "run", fake)
+    monkeypatch.chdir(tmp_path)
+    assert gsax_cards.main(["--provider", "statsbomb", "--no-cache"]) == 1
+    assert seen == []  # no tree.json in the default cache: refused before run
+    tree = tmp_path / statsbomb.DEFAULT_CACHE / statsbomb.OPEN_DATA_COMMIT / "tree.json"
+    tree.parent.mkdir(parents=True)
+    tree.write_text("{}", encoding="utf-8")
     assert gsax_cards.main(["--provider", "statsbomb", "--no-cache"]) == 1
     assert seen == [statsbomb.DEFAULT_CACHE]
+    assert gsax_cards.main(["--provider", "whoscored", "--no-cache"]) == 1  # no tree needed
+    assert len(seen) == 2
     make = (Path(__file__).parents[1] / "Makefile").read_text(encoding="utf-8").splitlines()
     assert any(line.startswith("STATSBOMB_RAW ?=") for line in make)
     assert any(line.split("#")[0].strip() == "export STATSBOMB_RAW" for line in make)
@@ -245,7 +262,10 @@ def test_run_from_reads_checkout_and_chart_path(
     """R13: ``run_from`` reads the lineups from ``<raw>/<OPEN_DATA_COMMIT>`` and never calls
     ``statsbomb.sync``. R14: the chart goes to ``CHART_PATH`` read when called; the result is a
     ``GsaxRun``, a ``GsaxFit`` with the cards, SVG and chart path; the card still names
-    ``CHART_FILE`` (R20)."""
+    ``CHART_FILE`` (R20) and carries the SHA-256 of the chart's bytes (run6-ms6 architect A2:
+    the committed card checks the git-ignored chart)."""
+    import hashlib
+
     import matplotlib.image as mpimg
     from football_core.io import statsbomb
 
@@ -279,6 +299,9 @@ def test_run_from_reads_checkout_and_chart_path(
     assert (
         f"`{gsax_cards.CHART_FILE}`" in run.cards["gsax"] and "elsewhere" not in run.cards["gsax"]
     )
+    digest = hashlib.sha256(chart.read_bytes()).hexdigest()
+    assert f"its SHA-256 is `{digest}`" in run.cards["gsax"]
+    assert (tmp_path / "docs" / "gsax.md").read_text(encoding="utf-8") == run.cards["gsax"]
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")

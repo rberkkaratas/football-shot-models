@@ -200,3 +200,35 @@ def test_run_prints_cache_line(
         else:
             assert last == want and r.cache is fake
     assert seen == ["croot", None]
+
+
+# ---- run6-ms6 (football 6): the hold-out / test band table on the GBM cards -----------------
+
+
+@pytest.mark.parametrize("p", ["statsbomb", "whoscored"])
+def test_held_band_table_on_gbm_card(
+    xgot_fits: dict[str, Any], monkeypatch: pytest.MonkeyPatch, p: str
+) -> None:
+    """The GBM xGOT card (both providers) prints the band table of its hold-out / test
+    predictions on the on-target hold-out / test rows (the clean split, PM after MS5), with the
+    same rule and minimum (read when called); the LR card does not. Each row's shots, goals and
+    Σ xGOT − goals are ``xgot.band_table(gbm.holdout_p, inp.on_held)``."""
+    from football_shot_models import xgot, xgot_cards
+
+    f = xgot_fits["fits"][p]
+    gbm, lr = f.evaluations[4], f.evaluations[3]
+    head = f"### Calibration by placement band, {f.setup.split}"
+    monkeypatch.setattr(xgot, "MIN_BAND_SHOTS", 0)
+    written = xgot_cards.render(f)
+    assert head not in written[lr.spec.name]
+    lines = written[gbm.spec.name].splitlines()
+    start = lines.index(head)
+    body = lines[start:]
+    table = xgot.band_table(gbm.holdout_p, f.inp.on_held)
+    assert table["shots"].sum() == f.inp.on_held.height > 0  # precondition
+    for r in table.iter_rows(named=True):
+        cells = _cells(body, r["band"])
+        gap = f"{r['gap']:+.1f}" if r["shots"] else "n/a"
+        within = "yes" if xgot.within(r["gap"], r["sd"]) else "no"
+        assert cells[1:3] == [f"{r['shots']:,}", f"{r['goals']:,}"], r["band"]
+        assert cells[5] == gap and cells[-1] == within, r["band"]

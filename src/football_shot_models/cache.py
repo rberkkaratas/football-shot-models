@@ -337,7 +337,7 @@ class PredictionCache:
         """
         path = self._path(name)
         # unresolved on purpose: a data/ symlinked out of the repo must fail closed
-        snapshot._check_ignored(Path(os.path.abspath(path)))
+        snapshot.check_ignored(Path(os.path.abspath(path)))
         self.dir.mkdir(parents=True, exist_ok=True)
         # a unique tmp name: two runs writing one key never share or truncate a tmp file
         fd, tmp = tempfile.mkstemp(dir=self.dir, prefix=f"{name}.", suffix=".npz.tmp")

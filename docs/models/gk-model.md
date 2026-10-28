@@ -11,12 +11,12 @@ Shrinks each keeper-season's GSAx towards the league according to how many shots
 
 ## Model
 
-Each on-target open-play shot's goal is Bernoulli with logit = logit q + u, q the rated xGOT (so the league level is fixed per season and there is no intercept), u ~ N(0, τ²) per group. τ̂ maximises the Laplace approximation of the marginal likelihood (bounded search on log τ in [0.001, 3]); u is the posterior mode at τ̂, by Newton steps. The Laplace τ̂ is biased low when the true τ is small (a simulation probe in the run folder), so the shrinkage is on the strong side. No PyMC or Stan: the closed-form Laplace fit is exact enough for one random effect and takes well under a second.
+Each on-target open-play shot's goal is Bernoulli with logit = logit q + u, q the rated xGOT (so the league level is fixed per season and there is no intercept), u ~ N(0, τ²) per group. τ̂ maximises the Laplace approximation of the marginal likelihood (bounded search on log τ in [0.001, 3]); u is the posterior mode at τ̂, by Newton steps. The Laplace τ̂ is biased low when the true τ is small, so the shrinkage is on the strong side. No PyMC or Stan: one random effect needs only the closed-form Laplace fit.
 
 | Grouping | τ̂ (logit) | At a bound | One SD in goals per 100 shots |
 |---|---|---|---|
-| keeper-season | 0.1225 | no | 2.57 |
-| keeper career | 0.1536 | no | 3.22 |
+| keeper-season | 0.1267 | no | 2.66 |
+| keeper career | 0.1567 | no | 3.29 |
 
 ## Next-season test
 
@@ -24,14 +24,11 @@ Pairs: the same keeper in the same competition in consecutive seasons (by start 
 
 | Model | Pairs | Left out | Test shots / matches | Log loss none | Log loss raw | Log loss shrunk | Gain over raw | Gain over none | Gain over raw (leave-out δ) | Gain over none (leave-out δ) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| Keeper-season effect | 227 | 14 | 5,866 / 938 | 0.4134 | 0.4474 | 0.4124 | +0.03501 [+0.02677, +0.04361] | +0.00099 [+0.00015, +0.00183] | n/a | n/a |
-| … without team-selected competition-seasons | 22 | 2 | 1,302 / 188 | 0.4350 | 0.4463 | 0.4344 | +0.01188 [-0.00089, +0.02526] | +0.00059 [-0.00049, +0.00171] | +0.01227 [-0.00064, +0.02587] | +0.00054 [-0.00054, +0.00167] |
-| Career effect (the literal formula) | 238 | 3 | 6,049 / 953 | 0.4146 | 0.4345 | 0.4133 | +0.02123 [+0.01471, +0.02861] | +0.00129 [+0.00031, +0.00225] | n/a | n/a |
+| Keeper-season effect | 227 | 14 | 5,866 / 938 | 0.4123 | 0.4476 | 0.4113 | +0.03630 [+0.02779, +0.04520] | +0.00105 [+0.00014, +0.00193] | +0.03712 [+0.02843, +0.04619] | +0.00119 [+0.00025, +0.00209] |
+| … without team-selected competition-seasons | 22 | 2 | 1,302 / 188 | 0.4347 | 0.4458 | 0.4341 | +0.01177 [-0.00097, +0.02546] | +0.00060 [-0.00041, +0.00164] | +0.01217 [-0.00070, +0.02596] | +0.00055 [-0.00045, +0.00161] |
+| Career effect (the literal formula) | 238 | 3 | 6,049 / 953 | 0.4136 | 0.4348 | 0.4123 | +0.02252 [+0.01581, +0.03011] | +0.00129 [+0.00031, +0.00224] | +0.02359 [+0.01671, +0.03135] | +0.00127 [+0.00025, +0.00226] |
 
-Leave-out columns of *Keeper-season effect*: n/a, because 1 test season(s) have no shot faced by an unpaired keeper, or no finite δ without the paired ones.
-Leave-out columns of *Career effect (the literal formula)*: n/a, because 1 test season(s) have no shot faced by an unpaired keeper, or no finite δ without the paired ones.
-
-Shrunken estimates predict next season better than raw GSAx, because raw GSAx overfits small samples, and add +0.00099 log loss over xGOT alone.
+Shrunken estimates predict next season better than raw GSAx, because raw GSAx overfits small samples, and improve log loss by 0.00105 over xGOT alone. Without team-selected competition-seasons (22 pairs) the gain over raw is +0.01177 [-0.00097, +0.02546], its interval not above 0, and over xGOT alone +0.00060 [-0.00041, +0.00164], its interval not above 0.
 
 Raw GSAx is the unpooled estimate on small samples, so beating it says raw overfits; keeper differences are read from the gain over none.
 
@@ -41,7 +38,7 @@ Disclosures: (1) the test offsets use the test season's δ, which the paired kee
 
 | Target | Measured | Result |
 |---|---|---|
-| Shrunken estimates predict the next season better than raw GSAx (log-loss gain, 95% match-bootstrap interval above 0) | +0.03501 [+0.02677, +0.04361] on 5,866 shots, 227 pairs | met |
+| Shrunken estimates predict the next season better than raw GSAx (log-loss gain, 95% match-bootstrap interval above 0; judged on the keeper-season grouping, the career grouping (1 | keeper) beside it) | keeper-season +0.03630 [+0.02779, +0.04520] on 5,866 shots, 227 pairs; career +0.02252 [+0.01581, +0.03011] | met |
 
 ## Data licensing
 Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Never committed or redistributed; this card holds aggregates only.

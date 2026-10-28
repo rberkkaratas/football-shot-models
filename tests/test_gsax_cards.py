@@ -190,7 +190,8 @@ def test_stability_sentence(gsax_fits: dict[str, Any]) -> None:
     none = (None, None, None)
     good, weak = (0.6, 0.3, 0.8), (0.4, -0.05, 0.7)
     s = lambda *a: cards.stability_sentence(_tier(gsax_fits, *a)).lower()  # noqa: E731
-    repeat = ("keeper-season records are repeatable beyond chance at 100 shots; this measures "
+    # run6-ms6 (architect nit): the tiers pool each keeper's shots across seasons
+    repeat = ("keeper records are repeatable beyond chance at 100 shots; this measures "
               "the keeper and the defence in front of him, not the keeper alone")  # fmt: skip
     noise = "not distinguishable from noise at 100 shots"
     assert "no keeper reaches 500 shots (empty tier)" in s(500, 0, none, none)
@@ -222,8 +223,9 @@ def test_next_season_sentence(gsax_fits: dict[str, Any]) -> None:
     alone = "and predict next season no better than xGOT alone (the league average)".lower()
     not_better = "shrunken estimates do not predict next season better than raw GSAx".lower()
     text = say(untestable=None, gain=gain(0.01), gain_none=gain(0.001))
-    assert beats in text and "and add" in text and "log loss over xgot alone" in text
-    assert alone not in text
+    # run6-ms6 (football 3): a gain is an improvement, never "add ... log loss"
+    assert beats in text and "and improve log loss by 0.02000 over xgot alone" in text
+    assert alone not in text and "add" not in text
     text = say(untestable=None, gain=gain(0.01), gain_none=gain(0.0))
     assert beats in text and alone in text
     for low in (0.0, -0.01):
@@ -414,3 +416,116 @@ def test_distribution_with_and_without_penalties(
         sums[name] = per.sort(gs.KEEPER_SEASON)["d"]
     # precondition for the mutant "both rows read one variant": the kept keepers faced penalties
     assert not sums["with penalties"].equals(sums["without penalties"])
+
+
+def test_next_season_sentence_without_team_selected(gsax_fits: dict[str, Any]) -> None:
+    """Run6-ms6 (architect A4, football 3; the small-margin rule): with the result without
+    team-selected competition-seasons, the sentence adds its pairs, both gains and whether each
+    interval is above 0, each from its own branch (low exactly 0 is not above); untestable gives
+    its reason; the gk-model card and the README block carry it."""
+    gsax, cards = _gsax(), _cards()
+    g = gsax_fits["fits"]["statsbomb"]
+    gain = lambda low: metrics.GainCI(0.02, low, 0.04, metrics.N_BOOT, 40)  # noqa: E731
+    ns = dataclasses.replace(g.next_season, untestable=None, gain=gain(0.01),
+                             gain_none=gain(0.001))  # fmt: skip
+    base = cards.next_season_sentence(ns)
+    no_team = dataclasses.replace(ns, pairs=22, gain=gain(0.002), gain_none=gain(-0.0005))
+    text = cards.next_season_sentence(ns, no_team)
+    assert text.startswith(base + " ")
+    assert (f"Without {gsax.TEAM_SELECTED} competition-seasons (22 pairs) the gain over raw is "
+            f"{gsax.gain_text(no_team.gain)}, its interval above 0, and over xGOT alone "
+            f"{gsax.gain_text(no_team.gain_none)}, its interval not above 0.") in text  # fmt: skip
+    zero = cards.next_season_sentence(ns, dataclasses.replace(no_team, gain=gain(0.0)))
+    assert "the gain over raw is +0.02000 [+0.00000, +0.04000], its interval not above 0" in zero
+    why = cards.next_season_sentence(ns, dataclasses.replace(no_team, untestable="no pair (0)"))
+    assert (
+        why == f"{base} Without {gsax.TEAM_SELECTED} competition-seasons: untestable (no pair (0))."
+    )
+    ws = gsax_fits["fits"]["whoscored"]
+    g2 = dataclasses.replace(ws, next_season=ns, next_no_team=no_team)
+    assert text in cards.render(g2, names=None)["ws-gk-model"]
+    assert text in cards.summary_block([g2])
+
+
+def test_gsax_with_penalties_column(sb: dict[str, Any]) -> None:
+    """Run6-ms6 (QA 3; criterion "reported with and without penalties", StatsBomb half): the
+    table's ``gsax_with`` is the "with penalties" keeper table's GSAx of the same keeper-season,
+    recomputed as Σ (q − goal) over its open-play and penalty rows, and the card's last cell
+    prints it. Precondition: a table keeper faced a penalty, so the two columns differ."""
+    gsax, cards = _gsax(), _cards()
+    g, table = sb["g"], sb["table"]
+    rows = g.rated.with_columns(d=pl.col("q") - pl.col("is_goal").cast(pl.Float64))
+    want = rows.group_by(gsax.KEEPER_SEASON).agg(pl.col("d").sum().alias("want"))
+    got = table.join(want, on=gsax.KEEPER_SEASON, how="left")
+    assert np.allclose(got["gsax_with"].to_numpy(), got["want"].to_numpy(), rtol=0, atol=1e-9)
+    assert not np.allclose(got["gsax_with"].to_numpy(), got["gsax"].to_numpy())  # precondition
+    keepers = gsax.keeper_table(gsax.variant(g.rated, gsax.WITH))
+    joined = table.join(keepers.select(*gsax.KEEPER_SEASON, k="gsax"), on=gsax.KEEPER_SEASON,
+                        how="left", maintain_order="left")  # fmt: skip
+    assert joined["k"].equals(table["gsax_with"], check_names=False)
+    card = cards.render(g, names=sb["names"])["gsax"]
+    names = dict(zip(sb["names"]["player_id"], sb["names"]["player_name"], strict=True))
+    for r in table.iter_rows(named=True):
+        line = next(x for x in card.splitlines() if f"| {names[r['gk_id']]} |" in x)
+        assert line.endswith(f"| {r['gsax_with']:+.1f} |"), line
+
+
+def test_keeper_rows_minimum_inclusive(sb: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run6-ms6 (QA 8): ``keeper_rows`` keeps a keeper-season with exactly ``TABLE_MIN_SHOTS``
+    shots (``>=``, not ``>``)."""
+    gsax = _gsax()
+    g = sb["g"]
+    shots = g.keepers[gsax.WITHOUT]["shots"]
+    edge = int(shots.max())
+    monkeypatch.setattr(gsax, "TABLE_MIN_SHOTS", edge)
+    table = gsax.keeper_rows(g)
+    assert table.height == int((shots == edge).sum()) >= 1
+    assert (table["shots"] == edge).all()
+
+
+def test_cards_text_from_constants(
+    gsax_fits: dict[str, Any], sb: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run6-ms6 (architect A8, nit): the stability intervals print ``metrics.LEVEL`` (read when
+    called); the gk-model card types no timing and cites no run folder; it prints check row
+    ``NEXT_SEASON_CHECK``."""
+    gsax, cards = _gsax(), _cards()
+    g = gsax_fits["fits"]["whoscored"]
+    monkeypatch.setattr(metrics, "LEVEL", 0.8)
+    out = cards.render(g, names=None)
+    assert (
+        "First T shots: r [80% CI]" in out["ws-gsax"]
+        and "80% intervals by Fisher z" in (out["ws-gsax"])
+    )
+    assert "95% CI" not in out["ws-gsax"]
+    model = out["ws-gk-model"]
+    assert "run folder" not in model and "second" not in model
+    five = g.checks[gsax.NEXT_SEASON_CHECK - 1]
+    assert f"| {five.target} | {five.measured} | {five.result} |" in model
+    assert "next season" in five.target
+
+
+def test_team_lines_raw_and_share(sb: dict[str, Any]) -> None:
+    """Run6-ms6 (football 4): the team-selected limitation prints raw (before δ) beside rated
+    per side and the selected side's share of the team-selected shots, computed from
+    ``team_selected_split``; it names both channels (no finisher term; δ absorbs the selected
+    keeper's record) instead of a credit for weaker finishers."""
+    gsax, cards = _gsax(), _cards()
+    g = sb["g"]
+    season = sb["table"].select(gsax.SEASON_KEY).row(0)
+    hit = (pl.col("competition_id") == season[0]) & (pl.col("season_id") == season[1])
+    fam = pl.when(hit).then(pl.lit(gsax.TEAM_SELECTED)).otherwise(pl.col("family"))
+    keepers = {k: v.with_columns(family=fam.cast(v.schema["family"])) for k, v in g.keepers.items()}
+    g2 = dataclasses.replace(g, keepers=keepers)
+    card = cards.render(g2, names=sb["names"])["gsax"]
+    split = gsax.team_selected_split(g2.keepers[gsax.WITHOUT])
+    assert split.height
+    from football_shot_models.cards import signed
+
+    for r in split.iter_rows(named=True):
+        assert (f"{r['side']}: {r['keeper_seasons']:,} keeper-seasons, {r['shots']:,} shots, GSAx "
+                f"raw {signed(r['gsax_raw'])}, rated {signed(r['gsax'])}") in card  # fmt: skip
+    sel = split.filter(pl.col("side") == "selected side")["shots"].sum()
+    share = sel / split["shots"].sum()
+    assert f"face {share:.0%} of the team-selected rated shots" in card
+    assert "weaker finishers" not in card and "absorbs part of their own record" in card

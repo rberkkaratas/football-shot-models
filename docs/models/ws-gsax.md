@@ -108,12 +108,12 @@ Keeper-level effect: rated from the match out-of-fold xGOT instead, the 126 keep
 
 | Target | Measured | Result |
 |---|---|---|
-| Every rated row's xGOT from fits that never saw its season (season_out raises otherwise) | holdout_fit 5,291, swapped_fit 27,173 | met |
+| Every rated row's xGOT from fits that never saw its season (season_out raises otherwise); the rating reads those rows, not the match out-of-fold xGOT | holdout_fit 5,291, swapped_fit 27,173; 27,173 of 32,464 differ from the match out-of-fold xGOT | met |
 | Keeper totals sum to the league sum of xGOT − goals (raw and rated), both variants, within 1e-09; table shots = rated rows | max abs. difference < 1e-12 | met |
 | Rated against the season's league sum: abs(Σ (q − goal)) <= 1e-09 per competition-season and kind | max < 1e-12; 0 small competition-season(s) at δ = 0 | met |
 | Analytic SD and 90% match-bootstrap CI per keeper-season | SD finite; CI null on the 82 one-match keeper-seasons | met |
-| Shrunken estimates predict the next season better than raw GSAx (log-loss gain, 95% match-bootstrap interval above 0) | +0.01047 [+0.00513, +0.01630] on 3,234 shots, 148 pairs | met |
-| Split-half reliability at 100 / 250 / 500 shots faced, empty tiers reported | 100: 146 keepers; 250: 0 keepers (empty); 500: 0 keepers (empty) | met |
+| Shrunken estimates predict the next season better than raw GSAx (log-loss gain, 95% match-bootstrap interval above 0; judged on the keeper-season grouping, the career grouping (1 | keeper) beside it) | keeper-season +0.01047 [+0.00513, +0.01630] on 3,234 shots, 148 pairs; career +0.01050 [+0.00514, +0.01633] | met |
+| Split-half reliability at 100 / 250 / 500 shots faced, empty tiers reported (a reporting check: met when every tier is reported) | 100: 146 keepers; 250: 0 keepers (empty); 500: 0 keepers (empty) | met |
 
 ## Uncertainty
 

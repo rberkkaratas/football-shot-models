@@ -93,7 +93,8 @@ its 0.1 yd goal-mouth cell (`io.statsbomb.snap_goal_y`, outcome-blind), so every
 the coarse 1 yd grid (football-core's per-match rule, `goalmouth.match_grids`) leave the
 StatsBomb xGOT fit and the goalkeeper models (PM ruling E1 (a), 2026-10-28): a pooled fit nets
 two recording grids, which a placement model cannot tell from placement. They keep feeding the
-xG input fit; the reconciliation counts them under the reason *coarse recording grid* and
+xG input fit, in `xgot.fit` and in the goalkeepers' season-out refits alike (they leave after
+the xG input is cross-fitted); the reconciliation counts them under the reason *coarse recording grid* and
 measures the gap against C3 less these ruled-out rows, and the cards list them by
 competition-season. A ball whose centre is more than 3.55 m (`features.INNER_Y`) from the goal
 centre touches the post, so on-target shots out there are mostly saves; the flag for a point

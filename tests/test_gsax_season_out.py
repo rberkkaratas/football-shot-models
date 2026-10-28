@@ -12,11 +12,13 @@ trains on 2026/27 only.
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import polars as pl
 import pytest
+import xgot_cases as xg
 
 from football_shot_models import data
 
@@ -143,3 +145,96 @@ def test_season_out_unknown_provider(
     f = gsax_fits["xgot"]["statsbomb"]
     with pytest.raises(ValueError, match="opta"):
         _xgot().season_out(dataclasses.replace(f, provider="opta"))
+
+
+def _by_shot(frame: pl.DataFrame, p: np.ndarray) -> dict[str, float]:
+    return dict(zip(frame["shot_id"].to_list(), p.tolist(), strict=True))
+
+
+def _refit_values(
+    calls: list[dict[str, Any]], name: str, *, dev: bool, held: bool
+) -> dict[str, float]:
+    """shot_id -> the spied evaluation's out-of-fold (``dev``) and dev-fit (``held``) xGOT."""
+    call = next(c for c in calls if c["spec"].name == name)
+    ev, out = call["_result"], {}
+    if dev:
+        out |= _by_shot(call["dev"], ev.oof)
+    if held:
+        out |= _by_shot(call["held"], ev.holdout_p)
+    return out
+
+
+def test_season_out_values_are_the_refits(gsax_fits: dict[str, Any]) -> None:
+    """Run6-ms6 (QA 1, the leakage boundary): every rated row's ``xgot`` is the season-out
+    refit's own prediction, read from the spied evaluations. StatsBomb: the ``-season-out``
+    headline's out-of-fold values on dev and its dev fit on the hold-out, the ``-season-out``
+    penalty xGOT likewise for kicks. WhoScored: the ``-swap`` fits' hold-out values (the train
+    seasons) on ``swapped_fit`` rows. Precondition: each differs from the match out-of-fold
+    xGOT of ``f.predictions`` on some row, so rating from ``f.predictions`` fails here."""
+    for p, suffix, dev, held in (("statsbomb", "-season-out", True, True),
+                                 ("whoscored", "-swap", False, True)):  # fmt: skip
+        f, g = gsax_fits["xgot"][p], gsax_fits["fits"][p]
+        calls = gsax_fits["calls"][p]
+        want = {
+            **_refit_values(calls, f.head.spec.name + suffix, dev=dev, held=held),
+            **_refit_values(calls, f.penalty.spec.name + suffix, dev=dev, held=held),
+        }
+        rows = g.predictions
+        if p == "whoscored":
+            rows = rows.filter(pl.col("source").cast(pl.String) == "swapped_fit")
+        assert rows.height and set(rows["shot_id"].to_list()) <= set(want), p
+        got = dict(zip(rows["shot_id"].to_list(), rows["xgot"].to_list(), strict=True))
+        assert all(got[k] == pytest.approx(want[k], abs=1e-12) for k in got), p
+        oof = dict(zip(f.predictions["shot_id"].to_list(), f.predictions["xgot"].to_list(),
+                       strict=True))  # fmt: skip
+        assert any(abs(got[k] - oof[k]) > 1e-6 for k in got), p  # precondition
+
+
+def test_season_out_xg_input_keeps_coarse(
+    xgot_fits: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R1 in the season-out chain (run6-ms6 architect A1, QA 5): with one StatsBomb dev match on
+    the coarse grid, the ``-season-out`` xG input is fitted on frames that hold it (as
+    ``xgot.fit``'s), while the season-out xGOT and penalty xGOT never see it and no rated row
+    comes from it."""
+    import inspect
+
+    from football_shot_models import evaluation
+
+    xgot = _xgot()
+    base = xgot_fits["fits"]["statsbomb"]
+    dev_matches = base.inp.on_dev["match_id"].unique().sort().to_list()
+    f, mid = None, None
+    monkeypatch.setattr(
+        xgot, "PROVIDERS", xg.patched_providers(xgot, xgot_fits["manifests"], monkeypatch)
+    )
+    monkeypatch.chdir(tmp_path)
+    for cand in dev_matches:
+        monkeypatch.setattr(xgot, "coarse_matches", lambda _c3, m=cand: pl.Series([m]))
+        try:
+            f = xgot.fit("statsbomb", cache=None)
+        except ValueError:  # a fold left without a test row: try the next match
+            continue
+        mid = cand
+        break
+    assert f is not None and mid is not None
+    hit = pl.col("match_id") == mid
+    assert f.frames[0].filter(hit).height and not f.inp.dev.filter(hit).height  # precondition
+    assert f.coarse.to_list() == [mid]
+    seen: list[dict[str, Any]] = []
+    real = xgot.evaluate
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(dict(inspect.signature(real).bind(*args, **kwargs).arguments))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(xgot, "evaluate", spy)
+    monkeypatch.setattr(evaluation, "N_SPLITS", 2)
+    out = xgot.season_out(f)
+    by_name = {c["spec"].name: c for c in seen}
+    xg_in = by_name[f.xg_input.spec.name + "-season-out"]
+    assert xg_in["dev"].filter(hit).height == f.frames[0].filter(hit).height > 0
+    for name in (f.head.spec.name, f.penalty.spec.name):
+        call = by_name[name + "-season-out"]
+        assert not call["dev"].filter(hit).height and not call["held"].filter(hit).height, name
+    assert not out.filter(hit).height

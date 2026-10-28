@@ -16,6 +16,7 @@ competition (A18, B19): none paired. Season ids do not sort in season order.
 from __future__ import annotations
 
 import dataclasses
+import math
 from typing import Any
 
 import gsax_cases as gc
@@ -101,7 +102,8 @@ def _loss(y: np.ndarray, p: np.ndarray) -> float:
 
 def _expected(rated: pl.DataFrame) -> dict[str, Any]:
     """The next-season test written out: rolling fits per test start year, raw shifts, the three
-    predictors, and the leave-out δ per test comp-season."""
+    predictors, and the leave-out δ per test comp-season (0 in a ``small`` one, PM E2 (b); a
+    test season with no unpaired row or a non-finite δ leaves the leave-out gains)."""
     gsax = _gsax()
     start = {s: gc._start(s) for s in gc.SEASONS}
     models: dict[int, Any] = {}
@@ -127,8 +129,14 @@ def _expected(rated: pl.DataFrame) -> dict[str, Any]:
         others = _rows(rated, None, t1).filter(
             ~pl.col("gk_id").is_in([g for g, s in tested if s == t1])
         )
-        d_loo = gsax.league_shift(others["xgot"].to_numpy(),
-                                  others["is_goal"].to_numpy().astype(float))  # fmt: skip
+        if bool(_rows(rated, None, t1)["small"].any()):
+            d_loo = 0.0
+        elif others.height:
+            d_loo = gsax.league_shift(others["xgot"].to_numpy(),
+                                      others["is_goal"].to_numpy().astype(float))  # fmt: skip
+        else:
+            d_loo = math.nan
+        d_loo = d_loo if math.isfinite(d_loo) else math.nan
         o, o_loo = gc.logit(test["q"].to_numpy()), gc.logit(test["xgot"].to_numpy()) + d_loo
         y.append(test["is_goal"].to_numpy().astype(float))
         m.append(test["match_id"].to_numpy())
@@ -138,13 +146,15 @@ def _expected(rated: pl.DataFrame) -> dict[str, Any]:
             p["shrunk" + suffix].append(expit(base + u_s))
     Y, M = np.concatenate(y), np.concatenate(m)
     P = {k: np.concatenate(v) for k, v in p.items()}
+    ok = np.isfinite(P["none_loo"])
     return {
-        "y": Y, "m": M, "p": P,
+        "y": Y, "m": M, "p": P, "loo_shots": int((~ok).sum()),
         "log_loss": tuple(_loss(Y, P[k]) for k in ("none", "raw", "shrunk")),
         "gain": metrics.bootstrap_gain(Y, P["raw"], P["shrunk"], M),
         "gain_none": metrics.bootstrap_gain(Y, P["none"], P["shrunk"], M),
-        "gain_loo": metrics.bootstrap_gain(Y, P["raw_loo"], P["shrunk_loo"], M),
-        "gain_none_loo": metrics.bootstrap_gain(Y, P["none_loo"], P["shrunk_loo"], M),
+        "gain_loo": metrics.bootstrap_gain(Y[ok], P["raw_loo"][ok], P["shrunk_loo"][ok], M[ok]),
+        "gain_none_loo": metrics.bootstrap_gain(Y[ok], P["none_loo"][ok], P["shrunk_loo"][ok],
+                                                M[ok]),
     }  # fmt: skip
 
 
@@ -159,11 +169,13 @@ def _same(a: Any, b: metrics.GainCI) -> None:
 
 def test_season_start() -> None:
     """``"2015/2016"`` -> 2015, ``"2018"`` -> 2018; anything else raises with the value, a
-    trailing newline included."""
+    trailing newline, a second year that is not the first + 1 and non-ASCII digits included
+    (run6-ms6 QA 11)."""
     gsax = _gsax()
     assert gsax.season_start("2015/2016") == 2015
     assert gsax.season_start("2018") == 2018
-    for bad in ("2015/2016\n", "2018\n", "15/16", "2015/16", "2015-2016", " 2018", "", "2018/"):
+    for bad in ("2015/2016\n", "2018\n", "15/16", "2015/16", "2015-2016", " 2018", "", "2018/",
+                "2016/2015", "2015/2017", "２０１８", "2015/２０１６"):  # fmt: skip
         with pytest.raises(ValueError) as e:
             gsax.season_start(bad)
         assert repr(bad) in str(e.value) or bad.strip() in str(e.value), bad
@@ -201,18 +213,49 @@ def test_next_season_log_losses() -> None:
 def test_leave_out_offsets() -> None:
     """``gain_loo`` / ``gain_none_loo`` use δ_loo, the shift of each test season's rows not faced
     by tested keepers (sb:g07's A20 rows count: his pair was left out), applied to logit xgot in
-    place of δ. With no unpaired row in a test season (B19 without sb:g06), both are None."""
+    place of δ. A test season with no unpaired row (B19 without sb:g06) leaves the leave-out
+    gains (run6-ms6 football 5): they are scored on the other test seasons' rows, and its test
+    shots and pairs are counted."""
     gsax = _gsax()
     rated = gsax.rate(_pairs_frame(), small=None)
     ns = gsax.next_season(rated, by=gsax.KEEPER_SEASON)
     want = _expected(rated)
     _same(ns.gain_loo, want["gain_loo"])
     _same(ns.gain_none_loo, want["gain_none_loo"])
+    assert (ns.loo_missing, ns.loo_shots, ns.loo_pairs) == (0, 0, 0)
     assert abs(want["gain_loo"].gain - want["gain"].gain) > 1e-6  # precondition: δ_loo matters
     alone = gsax.rate(_pairs_frame(b19_unpaired=False), small=None)
     ns2 = gsax.next_season(alone, by=gsax.KEEPER_SEASON)
     assert ns2.gain is not None and ns2.untestable is None
-    assert ns2.gain_loo is None and ns2.gain_none_loo is None
+    want2 = _expected(alone)
+    b19 = _rows(alone, "sb:g04", "B19").height
+    assert want2["loo_shots"] == b19 > 0  # precondition: B19 is the only season left out
+    assert (ns2.loo_missing, ns2.loo_shots, ns2.loo_pairs) == (1, b19, 1)
+    _same(ns2.gain_loo, want2["gain_loo"])
+    _same(ns2.gain_none_loo, want2["gain_none_loo"])
+    assert ns2.gain_loo is not None and ns2.gain_loo.groups < ns2.test_matches
+
+
+def test_leave_out_small_season() -> None:
+    """PM E2 (b) in the leave-out columns (run6-ms6 architect A6): a test season flagged
+    ``small`` is rated at δ = 0 there too, never at a δ fitted on its unpaired keepers' rows
+    (B19: sb:g04 paired, sb:g06 unpaired, 2 keepers and 32 shots); without sb:g06 it is still
+    scored (no season left out)."""
+    gsax = _gsax()
+    rated = gsax.rate(_pairs_frame(), small=gsax.SMALL_LEAGUE)
+    b19 = _rows(rated, None, "B19")
+    assert b19["small"].all() and not _rows(rated, None, "A19")["small"].any()  # precondition
+    g06 = b19.filter(pl.col("gk_id") == "sb:g06")
+    d06 = gsax.league_shift(g06["xgot"].to_numpy(), g06["is_goal"].to_numpy().astype(float))
+    assert abs(d06) > 0.05  # precondition: the unpaired keeper's own δ is not 0
+    ns = gsax.next_season(rated, by=gsax.KEEPER_SEASON)
+    want = _expected(rated)
+    _same(ns.gain_loo, want["gain_loo"])
+    _same(ns.gain_none_loo, want["gain_none_loo"])
+    alone = gsax.next_season(
+        gsax.rate(_pairs_frame(b19_unpaired=False), small=gsax.SMALL_LEAGUE), by=gsax.KEEPER_SEASON
+    )
+    assert (alone.loo_missing, alone.loo_shots) == (0, 0) and alone.gain_loo is not None
 
 
 def test_untestable_counts() -> None:

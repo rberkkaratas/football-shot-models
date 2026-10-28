@@ -147,6 +147,7 @@ def xgot_fits(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
 
 
 GSAX_SPLITS = {"statsbomb": 2, "whoscored": 3}
+GSAX_SPIED = ("rate", "ci_counts", "fit_keeper_model", "next_season", "reliability")
 
 
 @pytest.fixture(scope="session")
@@ -163,7 +164,10 @@ def gsax_fits(
     Run from an empty working directory with stdout and stderr captured and every file under
     the tmp roots recorded before and after (``test_fit_is_pure``), and with a pass-through spy
     on the ``evaluate`` name ``xgot`` reads (``xgot.refit``), recording each call's bound
-    arguments per provider (``test_gsax_season_out``).
+    arguments and its result (key ``"_result"``) per provider (``test_gsax_season_out``), and
+    pass-through spies on the ``gsax`` functions ``fit`` calls (``GSAX_SPIED``), recording each
+    outermost call's name and bound arguments per provider in ``"gsax_calls"``
+    (``test_gsax_fit``).
     """
     from football_shot_models import evaluation, gsax, xgot
 
@@ -186,6 +190,7 @@ def gsax_fits(
     before = (tree(root), tree(cwd))
     out, err = io.StringIO(), io.StringIO()
     calls: dict[str, list[dict[str, Any]]] = {}
+    gsax_calls: dict[str, list[tuple[str, dict[str, Any]]]] = {}
     result: dict[str, Any] = {}
     current: list[str] = []
     with pytest.MonkeyPatch.context() as mp:
@@ -193,10 +198,31 @@ def gsax_fits(
 
         def spy(*args: Any, **kwargs: Any) -> Any:
             bound = inspect.signature(real).bind(*args, **kwargs)
-            calls.setdefault(current[-1], []).append(dict(bound.arguments))
-            return real(*args, **kwargs)
+            out = real(*args, **kwargs)
+            calls.setdefault(current[-1], []).append({**bound.arguments, "_result": out})
+            return out
 
         mp.setattr(xgot, "evaluate", spy)
+
+        depth: list[int] = []  # only the calls ``fit`` makes, not those made inside them
+
+        def gsax_spy(name: str) -> Any:
+            fn = getattr(gsax, name)
+
+            def wrapped(*args: Any, **kwargs: Any) -> Any:
+                if not depth:
+                    bound = inspect.signature(fn).bind(*args, **kwargs)
+                    gsax_calls.setdefault(current[-1], []).append((name, dict(bound.arguments)))
+                depth.append(1)
+                try:
+                    return fn(*args, **kwargs)
+                finally:
+                    depth.pop()
+
+            return wrapped
+
+        for name in GSAX_SPIED:
+            mp.setattr(gsax, name, gsax_spy(name))
         mp.chdir(cwd)
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             for p in ("statsbomb", "whoscored"):
@@ -207,6 +233,7 @@ def gsax_fits(
         "fits": result,
         "xgot": fits,
         "calls": calls,
+        "gsax_calls": gsax_calls,
         "stdout": out.getvalue(),
         "stderr": err.getvalue(),
         "before": before,
