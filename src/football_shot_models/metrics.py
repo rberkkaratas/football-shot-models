@@ -34,13 +34,20 @@ binomial draws of one conversion probability with a Beta prior (Jeffreys, Beta(1
 default). The posterior is Beta(prior + goals, prior + misses); its mean is the model's
 probability and its 2.5 % and 97.5 % quantiles give the interval. Unlike the normal
 approximation it stays inside [0, 1] and is defined for 0 or ``n`` goals.
+
+**Split-half reliability.** :func:`split_half` asks how much of a per-player (or per-keeper)
+rate repeats: each key's rows are alternated into two halves and the halves' rates are
+correlated across keys. The unit alternated is a parameter, because it changes the estimator:
+whole matches (a match never spans halves) or single rows in time order (PM X5 for keepers:
+alternate shots within a keeper, so the halves differ by at most one shot).
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Final, Literal, get_args
 
 import numpy as np
@@ -54,6 +61,7 @@ BoolArray = npt.NDArray[np.bool_]
 Outcomes = npt.NDArray[np.bool_ | np.int64 | np.float64]  # goal or not: bool, or 0 / 1
 Op = Literal["<=", ">="]
 Metric = Literal["log_loss", "brier", "auc", "xg_error"]  # Scores values that are never None
+SplitUnit = Literal["match", "row"]
 
 METRICS: Final[tuple[Metric, ...]] = get_args(Metric)
 
@@ -839,3 +847,100 @@ def beta_interval(goals: int, n: int, *, prior: tuple[float, float] = JEFFREYS) 
     a, b = a0 + goals, b0 + n - goals
     low, high = stats.beta.ppf([(1 - LEVEL) / 2, (1 + LEVEL) / 2], a, b)
     return Rate(int(n), int(goals), goals / n, a / (a + b), float(low), float(high))
+
+
+# ---- split-half reliability -----------------------------------------------------------------
+
+_Z95: Final[float] = float(stats.norm.ppf((1 + LEVEL) / 2))
+# the order a key's units are alternated in; "row" is PM X5's shot order within a keeper
+SPLIT_ORDER: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
+    {
+        "match": ("match_date", "match_id"),
+        "row": ("match_date", "period", "seconds_in_period", "shot_id"),
+    }
+)
+
+
+@dataclass(frozen=True)
+class SplitHalf:
+    """A split-half correlation: keys used, Pearson r and its 95 % Fisher-z interval."""
+
+    keys: int
+    r: float | None
+    low: float | None
+    high: float | None
+
+
+def split_half(
+    frame: pl.DataFrame, *, by: str, value: str, min_rows: int, unit: SplitUnit
+) -> SplitHalf:
+    """Split-half reliability of the per-row mean of ``value`` by ``by`` (a player, a keeper).
+
+    Per key, its units are ordered by ``SPLIT_ORDER[unit]`` and alternated into two halves:
+    ``unit="match"`` alternates the key's distinct matches (by ``match_date`` then
+    ``match_id``), so a match never spans halves; ``unit="row"`` alternates the key's rows (by
+    ``match_date``, ``period``, ``seconds_in_period``, ``shot_id``), so the halves differ by at
+    most one row. Each half's ``Σ value / rows`` is correlated across the keys with at least
+    ``min_rows`` rows in total and rows in both halves.
+
+    Returns
+    -------
+    SplitHalf
+        ``r`` and its interval are None under 4 keys or when r is undefined (a constant
+        half); r = ±1 gives ``low = high = r``.
+
+    Raises
+    ------
+    ValueError
+        An unknown ``unit``; a missing column; a null in ``by``, ``value`` or an order column.
+
+    Examples
+    --------
+    >>> from datetime import date
+    >>> f = pl.DataFrame({"p": ["a", "a", "b", "b", "c", "c", "d", "d"],
+    ...                   "match_id": ["m1", "m2"] * 4, "v": [1.0, 0.8, 0.2, 0.1, 0.5, 0.6,
+    ...                                                      0.9, 0.7],
+    ...                   "match_date": [date(2025, 1, 1), date(2025, 1, 8)] * 4})
+    >>> s = split_half(f, by="p", value="v", min_rows=2, unit="match")
+    >>> s.keys, round(s.r, 3)
+    (4, 0.928)
+    >>> rows = f.with_columns(match_id=pl.lit("m1"), match_date=pl.lit(date(2025, 1, 1)),
+    ...                       period=pl.lit(1), seconds_in_period=pl.Series([10.0, 20.0] * 4),
+    ...                       shot_id=pl.Series([f"s{i}" for i in range(8)]))
+    >>> round(split_half(rows, by="p", value="v", min_rows=2, unit="row").r, 3)
+    0.928
+    """
+    if unit not in SPLIT_ORDER:
+        raise ValueError(f"split_half: unit {unit!r} is not one of {sorted(SPLIT_ORDER)}")
+    order_cols = SPLIT_ORDER[unit]
+    cols = (by, value, *order_cols)
+    if missing := [c for c in cols if c not in frame.columns]:
+        raise ValueError(f"split_half: missing column(s) {missing}")
+    for c in cols:
+        if n := frame[c].null_count():
+            raise ValueError(f"split_half: {c} has {n} null value(s)")
+    half = (pl.int_range(pl.len()).over(by) % 2).alias("_half")
+    if unit == "match":
+        keys = [by, *order_cols]
+        order = frame.select(keys).unique().sort(keys).with_columns(half)
+        rows = frame.join(order, on=keys)
+    else:
+        rows = frame.sort([by, *order_cols], maintain_order=True).with_columns(half)
+    halves = rows.group_by(by, "_half").agg(rows=pl.len(), rate=pl.col(value).sum() / pl.len())
+    wide = (
+        halves.pivot("_half", index=by, values=["rows", "rate"])
+        .filter(pl.sum_horizontal(pl.col("^rows_.*$").fill_null(0)) >= min_rows)
+        .drop_nulls()
+    )
+    n = wide.height if {"rate_0", "rate_1"} <= set(wide.columns) else 0
+    if n < 4:
+        return SplitHalf(n, None, None, None)
+    a, b = wide["rate_0"].to_numpy(), wide["rate_1"].to_numpy()
+    with np.errstate(invalid="ignore", divide="ignore"):
+        r = float(np.corrcoef(a, b)[0, 1]) if np.ptp(a) > 0 and np.ptp(b) > 0 else math.nan
+    if math.isnan(r):
+        return SplitHalf(n, None, None, None)
+    if abs(r) > 1.0 - 1e-12:  # corrcoef can land a hair inside ±1
+        return SplitHalf(n, math.copysign(1.0, r), math.copysign(1.0, r), math.copysign(1.0, r))
+    z, se = math.atanh(r), 1.0 / math.sqrt(n - 3)
+    return SplitHalf(n, r, math.tanh(z - _Z95 * se), math.tanh(z + _Z95 * se))

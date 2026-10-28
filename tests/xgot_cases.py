@@ -46,14 +46,17 @@ SPLIT = pl.Enum(["dev", "holdout"])
 LR_FEATURES = (
     "xg_logit",
     *("mouth_y_abs", "mouth_y_abs_rcs1", "mouth_y_abs_rcs2", "mouth_y_abs_rcs3"),
+    "mouth_y_past",
     *("mouth_z", "mouth_z_rcs1", "mouth_z_rcs2", "mouth_z_rcs3"),
     "angle_x_mouth_y",
     "angle_x_mouth_z",
     "mouth_far",
 )
-GBM_FEATURES = ("xg_logit", "mouth_y_abs", "mouth_z", "far_side", "angle_rad")
+GBM_FEATURES = (
+    "xg_logit", "mouth_y_in", "mouth_y_past", "mouth_out", "mouth_z", "far_side", "angle_rad",
+)  # fmt: skip
 PENALTY_FEATURES = ("mouth_y_abs", "mouth_z", "mouth_yz")
-GBM_SIGNS = {"xg_logit": 1, "mouth_y_abs": 1}
+GBM_SIGNS = {"xg_logit": 1, "mouth_y_in": 1}  # run5-ms5: monotone only up to INNER_Y
 KEEPER = (
     "gk_x", "gk_y", "gk_in_cone", "gk_absent", "gk_to_goal_m", "gk_to_shot_m", "gk_off_line_m",
     "open_goal",
@@ -62,6 +65,7 @@ PLACEMENT_NAMES = (
     *("mouth_y_abs", "mouth_y_abs_rcs1", "mouth_y_abs_rcs2", "mouth_y_abs_rcs3"),
     *("mouth_z", "mouth_z_rcs1", "mouth_z_rcs2", "mouth_z_rcs3"),
     *("far_side", "mouth_far", "angle_x_mouth_y", "angle_x_mouth_z", "mouth_yz"),
+    *("mouth_y_in", "mouth_y_past", "mouth_out"),
 )
 
 
@@ -366,8 +370,10 @@ def xgot_tables(provider: str) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame
             if u < 0.1:
                 add(shot(f"{i:02d}", i % 2 == 0, **kw), "blocked", None, player=player, **flags)
             elif u < 0.6:
-                gy, gz = float(rng.uniform(-3.6, 3.6)), float(rng.uniform(0.05, 2.35))
+                gy, gz = float(rng.uniform(-3.8, 3.8)), float(rng.uniform(0.05, 2.35))
                 p = expit(0.8 * xg_logit + 0.4 + 1.1 * (abs(gy) - 1.8) + 0.5 * (gz - 1.2))
+                if abs(gy) > features.INNER_Y:  # the ball touches the post: mostly saved
+                    p = 0.25
                 goal = bool(rng.uniform() < p)
                 add(shot(f"{i:02d}", i % 2 == 0, goal=goal, **kw), "goal" if goal else "saved",
                     (gy, gz), player=player, **flags)  # fmt: skip

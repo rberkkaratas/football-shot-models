@@ -126,6 +126,24 @@ def test_reconcile_counts_scored_rows() -> None:
         xgot.reconcile(c3, exclusions, unresolved, stranger)
 
 
+@pytest.mark.parametrize("excluded", ["sb:s05", "sb:s10"])
+def test_reconcile_refuses_a_scored_excluded_shot(excluded: str) -> None:
+    """A C3 on-target shot whose reason is outside ``POPULATION_REASONS`` (a direct corner, a
+    no-frame save) that ``pred`` scores is an error naming the count, never reconciled
+    (run5-ms5 Q8): a population bug must not move the gap towards 0."""
+    from football_shot_models import xgot
+
+    c3, exclusions, unresolved, pred = _frames("statsbomb")
+    row = c3.filter(pl.col("shot_id") == excluded)
+    assert row["on_target"].item()  # precondition: on target in C3, so the old check passed
+    scored = pl.concat([pred, pl.DataFrame({
+        "shot_id": [excluded], "kind": pl.Series(["open_play"], dtype=xg.KIND),
+        "on_target": [True], "is_goal": row["is_goal"].to_list(),
+    })])  # fmt: skip
+    with pytest.raises(ValueError, match=r"\b1\b.*population"):
+        xgot.reconcile(c3, exclusions, unresolved, scored)
+
+
 @pytest.mark.parametrize(
     ("c3_shots", "c3_goals", "shots", "goals", "met"),
     [

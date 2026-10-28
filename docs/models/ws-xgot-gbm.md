@@ -1,10 +1,10 @@
 # Model card: Monotone GBM + Platt
 
 ## Overview
-- **Name / version:** `ws-xgot-gbm` v1
+- **Name / version:** `ws-xgot-gbm` v2
 - **Task:** binary classification: P(goal | on-target shot) for the on-target shots of the non-penalty xG population (a goal or a keeper save; own goals are never on target)
 - **Status:** experimental
-- P2.4: monotone gradient boosting on the xG input, placement, side and angle, tuned and Platt-calibrated inside each fit by grouped CV. This is the headline model: its CV log-loss gain over LR xG + placement is +0.0075 [+0.0057, +0.0094], a 95% interval that lies above 0; on the test it is +0.0102 [+0.0064, +0.0140], an interval that lies above 0.
+- P2.4: monotone gradient boosting on the xG input, placement, side and angle, tuned and Platt-calibrated inside each fit by grouped CV. This is the headline model: its CV log-loss gain over LR xG + placement is +0.0075 [+0.0056, +0.0094], a 95% interval that lies above 0; on the test it is +0.0100 [+0.0061, +0.0138], an interval that lies above 0.
 
 ## Intended use
 xGOT (post-shot xG) for on-target shots: P(goal) of a shot that reached the goal frame, from where it crossed the line and its pre-shot xG. Keeper-neutral (no keeper position), so goals saved against it credit the keeper's positioning too. For research and as the input of the MS6 goalkeeper models; not a rating of finishers, and not for other providers' data without re-fitting.
@@ -34,7 +34,9 @@ xG input: Monotone GBM + Platt, cross-fitted; provider headline xG: Monotone GBM
 | Feature | Definition | Source field(s) |
 |---|---|---|
 | `xg_logit` | Logit of the shot's cross-fitted xG (the xG input, out of sample for the row) | xG model |
-| `mouth_y_abs` | Distance from the goal centre across the goal, m, clipped to the frame + 0.15 m and rounded to 0.1 m | `goal_y`, `goal_z` via `pitch.to_goal_frame`; on target only |
+| `mouth_y_in` | `min(mouth_y_abs, 3.55)`: the distance from the goal centre up to where a ball starts to touch the post, m | `mouth_y_abs` |
+| `mouth_y_past` | `mouth_y_abs − mouth_y_in`: how far past that point the ball crossed, m | `mouth_y_abs` |
+| `mouth_out` | 1 when the point was recorded beyond the frame + 0.15 m (before clipping), else 0 | `goal_y`, `goal_z` via `pitch.to_goal_frame`; on target only |
 | `mouth_z` | Height above the ground, m, clipped to the frame + 0.15 m and rounded to 0.1 m | `goal_y`, `goal_z` via `pitch.to_goal_frame`; on target only |
 | `far_side` | +1 far post, −1 near post (the ball's side against the shot's), 0 for a shot within 0.5 m of the centre line or a ball at the centre | `y`, `goal_y`, `goal_z` via `pitch.to_goal_frame`; on target only |
 | `angle_rad` | Opening angle between the posts seen from the shot location, radians | `angle_rad` (`pitch.opening_angle`) |
@@ -42,9 +44,9 @@ xG input: Monotone GBM + Platt, cross-fitted; provider headline xG: Monotone GBM
 Monotone constraints of the fitted model (every other column is free):
 
 - xg_logit: non-decreasing — a higher xG at the same placement never lowers xGOT
-- mouth_y_abs: non-decreasing — further from the centre at the same height and on the same side (`far_side` fixed) never helps the keeper
+- mouth_y_in: non-decreasing — further from the centre, up to 3.55 m, at the same height and on the same side (`far_side` fixed) never helps the keeper
 
-Each constraint holds along one column with every other column held fixed: `mouth_y_abs` moves the ball towards a post at the same height, on the same side (near or far).
+Each constraint holds along one column with every other column held fixed: `mouth_y_in` moves the ball towards a post at the same height, on the same side (near or far). Beyond 3.55 m from the centre a ball's centre is within its radius of the post, so a shot there hits the post or is saved: `mouth_y_past` and `mouth_out` are free.
 
 ## Model
 `HistGradientBoostingClassifier(learning_rate=0.05, l2_regularization=1, min_samples_leaf=100, early_stopping=False, random_state=0)`, `monotonic_cst` placed by column name, no class weights. scikit-learn 1.9.1.
@@ -90,7 +92,7 @@ Gain = log loss of the reference minus this model, pooled out of fold over all d
 
 | Comparison | CV gain [95% CI] | Hold-out gain [95% CI] |
 |---|---|---|
-| over LR xG + placement | +0.0075 [+0.0057, +0.0094] | +0.0102 [+0.0064, +0.0140] |
+| over LR xG + placement | +0.0075 [+0.0056, +0.0094] | +0.0100 [+0.0061, +0.0138] |
 
 ### Milestone checks (MS5)
 
@@ -104,11 +106,11 @@ Bounds from the PM brief (MS5); AUC >= 0.80 reads "about 0.80 or better" strictl
 | ECE < 0.02, test | 0.0178 (noise floor 0.0127) | met |
 | Calibration slope in [0.9, 1.1], CV fold mean | 1.0013 | met |
 | Calibration slope in [0.9, 1.1], test | 1.0333 | met |
-| GBM headline iff its CV gain over LR xG + placement has a 95% interval above 0 | CV +0.0075 [+0.0057, +0.0094]; headline Monotone GBM + Platt | met |
+| GBM headline iff its CV gain over LR xG + placement has a 95% interval above 0 | CV +0.0075 [+0.0056, +0.0094]; headline Monotone GBM + Platt | met |
 | On-target shots scored reconcile with C3 within 1% (two-sided) | 32,480 of 32,490 (-0.031%); unscored 0 | met |
 | On-target goals scored reconcile with C3 within 1% (two-sided) | 10,384 of 10,391 (-0.067%) | met |
 | xG input Monotone GBM + Platt: cross-fitted on the same folds, keeper-neutral, not an ablation (the run raises otherwise) | guards ran | met |
-| No keeper-position feature in the headline xGOT (the xGOT guard raises otherwise) | xg_logit, mouth_y_abs, mouth_z, far_side, angle_rad | met |
+| No keeper-position feature in the headline xGOT (the xGOT guard raises otherwise) | xg_logit, mouth_y_in, mouth_y_past, mouth_out, mouth_z, far_side, angle_rad | met |
 
 ### Reliability
 
@@ -149,6 +151,20 @@ ECE (10 equal-count bins): the shot-weighted mean of |mean prediction − goal r
 |---|---|---|---|---|
 | 0.0121 | 0.0176 | 0.0047 | 0.0178 | 0.0127 |
 
+### Calibration by placement band
+
+Dev out-of-fold xGOT by the ball's distance from the goal centre (`mouth_y_abs`, m, after rounding); a ball beyond 3.55 m touches the post. The reliability table bins by prediction, so it cannot show a placement the model misprices.
+
+| abs(y) band (m) | Shots | Goals | Goal rate | Mean xGOT | Σ xGOT − goals |
+|---|---|---|---|---|---|
+| [0, 1) | 7,552 | 1,277 | 0.1691 | 0.1697 | +4.8 |
+| [1, 2) | 7,814 | 1,936 | 0.2478 | 0.2475 | -2.1 |
+| [2, 3) | 7,591 | 3,044 | 0.4010 | 0.4002 | -6.0 |
+| [3, 3.3) | 2,544 | 1,332 | 0.5236 | 0.5064 | -43.7 |
+| [3.3, 3.55) | 787 | 329 | 0.4180 | 0.4721 | +42.5 |
+| >= 3.55 | 29 | 5 | 0.1724 | 0.3478 | +5.1 |
+| outside the frame + 0.15 m | 0 | 0 | n/a | n/a | n/a |
+
 ### Reconciliation with C3
 
 Every C3 on-target shot is in one row of the Filters table; the scored rows are the open-play and penalty xGOT predictions.
@@ -179,16 +195,18 @@ Shooting goals added (SGA) is xGOT − xG per shot, next to goals − xG; both s
 |---|---|---|---|---|---|---|---|---|
 | Base rate (on target) | 0.6118 | 0.2104 | 0.5000 | n/a | 0.6219 | 0.2152 | 0.5000 | n/a |
 | LR xG only | 0.5293 | 0.1762 | 0.7464 | 1.0004 | 0.5369 | 0.1794 | 0.7484 | 1.0076 |
-| LR xG + placement, no near / far | 0.4593 | 0.1494 | 0.8268 | 0.9995 | 0.4629 | 0.1510 | 0.8293 | 1.0156 |
-| LR xG + placement | 0.4469 | 0.1443 | 0.8367 | 0.9992 | 0.4500 | 0.1455 | 0.8386 | 1.0155 |
+| LR xG + placement, no near / far | 0.4592 | 0.1493 | 0.8270 | 0.9988 | 0.4627 | 0.1509 | 0.8296 | 1.0161 |
+| LR xG + placement | 0.4469 | 0.1442 | 0.8368 | 0.9987 | 0.4498 | 0.1454 | 0.8388 | 1.0164 |
 | Monotone GBM + Platt | 0.4394 | 0.1418 | 0.8425 | 1.0013 | 0.4398 | 0.1419 | 0.8472 | 1.0333 |
 
 ## Limitations & known biases
-- 0 of 31,471 on-target shots (test included) are recorded beyond the frame + 0.15 m and are clipped to its edge; 1,471 are struck within 0.5 m of the centre line, so they have no near or far post.
+- 0 of 31,471 on-target shots (test included) are recorded beyond the frame + 0.15 m and are clipped to its edge and flagged by `mouth_out`, since where they would have crossed the line is not known; 1,471 are struck within 0.5 m of the centre line, so they have no near or far post.
 - `provider_psxg` is null on 31,471 of 31,471 on-target shots, so there is no provider xGOT benchmark.
+- On the test, Σ xGOT is 1,534.6 against 1,614 goals (-4.92%; calibration intercept 0.1081). A level gap moves every keeper's goals saved against this xGOT the same way, so a season's keepers read better or worse as a group.
 
 ## Data licensing
 Data: a private WhoScored / Opta archive, never committed or redistributed; this card holds counts and metrics only.
 
 ## Changelog
 - v1 (MS5, P2.2–P2.5): first version.
+- v2 (MS5 assessment): the GBM is monotone in `mouth_y_in` only, with `mouth_y_past` and `mouth_out` free; the LR reads `mouth_y_past`; calibration by placement band; the scored-once split's level gap; penalty calibration judged bound by bound.

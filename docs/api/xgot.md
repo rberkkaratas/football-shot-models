@@ -20,10 +20,16 @@ MS5: xGOT (post-shot xG) of on-target shots for both providers (P2.2–P2.5).
   the one ECE rule behind checks, cards and README.
 - **Shooting goals added (P2.5).** `predictions` holds one row per shot of the population with
   the xG input and the out-of-sample xGOT (built in memory, never written). `sga` gives
-  xGOT − xG and goals − xG per shot; `split_half(by=, value=)` gives the split-half correlation
-  by alternating matches, a descriptive measure, not a skill claim. MS6 reuses both with
-  `by="gk_id"`.
+  xGOT − xG and goals − xG per shot; `metrics.split_half(by=, value=, unit="match")` gives the
+  split-half correlation by alternating matches, a descriptive measure, not a skill claim.
+  `predictions` carries `period` and `seconds_in_period`, so MS6 P3.3 calls
+  `metrics.split_half(by="gk_id", value=..., unit="row")`, which alternates shots within a keeper
+  in time order (PM X5).
+- **Placement past the post.** The GBM is monotone in `mouth_y_in` (|y| up to
+  `features.INNER_Y`); `mouth_y_past` and `mouth_out` are free, and `band_lines` prints the
+  calibration by |y| band on the open-play cards.
 - **CLI.** `python -m football_shot_models.xgot --provider statsbomb|whoscored|both` (`make
-  xgot`) writes the six cards and prints the README block.
+  xgot`) writes the six cards and prints the README block, which is pasted between the README
+  markers by hand.
 
 ::: football_shot_models.xgot

@@ -51,8 +51,17 @@ cross-fitted xG input :data:`XG_INPUT`, refuses the raw columns and every keeper
 feature (:data:`KEEPER_POSITION`: xGOT is keeper-neutral, so the keeper's positioning stays in
 the goals-saved measure), and sends every other name through :func:`check_xg_features`.
 Placement is read through ``pitch.to_goal_frame``, clipped to the frame plus the goal-mouth
-tolerance and rounded to :data:`PLACEMENT_STEP`, so the providers' recording grids do not
-separate goals from saves.
+tolerance (a point recorded beyond it is flagged by ``mouth_out``, :func:`clipped`) and rounded
+to :data:`PLACEMENT_STEP`. Rounding puts a goal and a save that fall in one 0.1 m cell on the
+same values, but it does not remove a provider's recording grid: StatsBomb goals sit on its
+0.1 yd (0.0914 m) lattice while its projected saves are continuous, so a 0.1 m cell that holds
+two lattice values gets about twice the goal mass of its neighbours (a beat of about 1.07 m;
+the census is on the methodology page). Opta records goals and saves on one grid.
+
+A ball whose centre is beyond :data:`INNER_Y` from the goal centre touches the post, so an
+on-target shot out there is mostly a save: ``mouth_y_in`` (the distance up to ``INNER_Y``) is
+the part of the width a model may hold monotone, and ``mouth_y_past`` / ``mouth_out`` are left
+free.
 """
 
 from __future__ import annotations
@@ -446,6 +455,8 @@ _PER_METRE: Final[float] = round(1 / PLACEMENT_STEP)  # k / 10, not k * 0.1: 3.7
 EDGE_Y: Final[float] = pitch.GOAL_WIDTH / 2 + goalmouth.GOAL_TOLERANCE  # 3.81
 EDGE_Z: Final[float] = pitch.GOAL_HEIGHT + goalmouth.GOAL_TOLERANCE  # 2.59
 CENTRE_DEAD_ZONE: Final[float] = 0.5  # metres: a shot this close to the centre line has no side
+BALL_RADIUS: Final[float] = 0.11  # metres, a size-5 ball
+INNER_Y: Final[float] = round(pitch.GOAL_WIDTH / 2 - BALL_RADIUS, 2)  # 3.55: beyond, it hits a post
 # rounded 5 / 27.5 / 50 / 72.5 / 95 % quantiles of on-target |y| and z, both providers
 MOUTH_Y_KNOTS: Final[tuple[float, ...]] = (0.15, 0.9, 1.7, 2.5, 3.25)
 MOUTH_Z_KNOTS: Final[tuple[float, ...]] = (0.1, 0.3, 0.8, 1.25, 2.0)
@@ -458,14 +469,45 @@ def _step(v: FloatArray, low: float, high: float) -> FloatArray:
     return out
 
 
+def clipped(gy: npt.ArrayLike, gz: npt.ArrayLike) -> npt.NDArray[np.bool_]:
+    """Whether a goal-frame point lies beyond the frame plus the tolerance (and so is clipped).
+
+    The one rule behind ``mouth_out`` and the cards' clipped count.
+
+    Examples
+    --------
+    >>> clipped([0.0, 3.81, 3.82, 0.0], [1.0, 2.59, 1.0, 2.6]).tolist()
+    [False, False, True, True]
+    """
+    y, z = np.asarray(gy, dtype=np.float64), np.asarray(gz, dtype=np.float64)
+    out: npt.NDArray[np.bool_] = (np.abs(y) > EDGE_Y) | (z < 0.0) | (z > EDGE_Z)
+    return out
+
+
+def dead_zone(y: npt.ArrayLike) -> npt.NDArray[np.bool_]:
+    """Whether a shot from pitch-width ``y`` is within :data:`CENTRE_DEAD_ZONE` of the centre line.
+
+    Such a shot has no near or far post (``far_side`` is 0).
+
+    Examples
+    --------
+    >>> dead_zone([34.0, 34.49, 33.5, 20.0]).tolist()
+    [True, True, False, False]
+    """
+    out: npt.NDArray[np.bool_] = (
+        np.abs(pitch.GOAL_CENTRE_Y - np.asarray(y, dtype=np.float64)) < CENTRE_DEAD_ZONE
+    )
+    return out
+
+
 def placement(shots: pl.DataFrame) -> pl.DataFrame:
     """The placement of on-target shots in the goal frame, one row per shot.
 
     ``goal_y`` / ``goal_z`` go through ``pitch.to_goal_frame`` (``y`` positive towards the
     shooter's right post), are clipped to the frame plus ``goalmouth.GOAL_TOLERANCE``
     (:data:`EDGE_Y`, :data:`EDGE_Z`) and rounded to :data:`PLACEMENT_STEP` with ``np.round``
-    (half to even): a goal on one provider grid and a projected save in the same 0.1 m cell
-    get the same values. A non-finite value is an error, never clipped.
+    (half to even): a goal and a projected save in the same 0.1 m cell get the same values. A
+    non-finite value is an error, never clipped.
 
     Parameters
     ----------
@@ -477,7 +519,10 @@ def placement(shots: pl.DataFrame) -> pl.DataFrame:
     -------
     polars.DataFrame
         Float64 ``mouth_y`` (signed), ``mouth_y_abs`` and ``mouth_z`` with their spline terms
-        ``*_rcs1..3`` (:data:`MOUTH_Y_KNOTS`, :data:`MOUTH_Z_KNOTS`) and ``mouth_yz``; with
+        ``*_rcs1..3`` (:data:`MOUTH_Y_KNOTS`, :data:`MOUTH_Z_KNOTS`) and ``mouth_yz``;
+        ``mouth_y_in = min(mouth_y_abs, INNER_Y)``, ``mouth_y_past = mouth_y_abs −
+        mouth_y_in`` and ``mouth_out`` (1.0 when the point was recorded beyond the frame plus
+        the tolerance, :func:`clipped`, else 0.0); with
         ``y``: ``far_side`` (+1 far post, -1 near post, 0 when the shot is within
         :data:`CENTRE_DEAD_ZONE` of the centre line or the ball is rounded to the centre) and
         ``mouth_far = far_side * mouth_y_abs``; with ``angle_rad``: ``angle_x_mouth_y`` and
@@ -497,6 +542,8 @@ def placement(shots: pl.DataFrame) -> pl.DataFrame:
     >>> p = placement(shots)
     >>> p["mouth_y"].to_list(), p["mouth_z"].to_list(), p["far_side"].to_list()
     ([3.7, 0.0, 0.2], [0.0, 2.6, 1.0], [-1.0, 0.0, 0.0])
+    >>> p["mouth_y_in"].to_list(), p["mouth_out"].to_list()
+    ([3.55, 0.0, 0.2], [0.0, 1.0, 0.0])
     """
     if missing := sorted(_MOUTH - set(shots.columns)):
         raise ValueError(f"placement: the shots lack {missing}")
@@ -511,11 +558,21 @@ def placement(shots: pl.DataFrame) -> pl.DataFrame:
             raise ValueError(f"placement: {c} has {bad} null, NaN or infinite value(s)")
     v = {c: shots[c].cast(pl.Float64).to_numpy() for c in read}
     gy, gz = pitch.to_goal_frame(v["goal_y"], v["goal_z"])
+    out_ = clipped(gy, gz).astype(np.float64)
     gy, gz = _step(gy, -EDGE_Y, EDGE_Y), _step(gz, 0.0, EDGE_Z)
-    cols = {"mouth_y": gy, "mouth_y_abs": np.abs(gy), "mouth_z": gz, "mouth_yz": np.abs(gy) * gz}
+    inner = np.minimum(np.abs(gy), INNER_Y)
+    cols = {
+        "mouth_y": gy,
+        "mouth_y_abs": np.abs(gy),
+        "mouth_z": gz,
+        "mouth_yz": np.abs(gy) * gz,
+        "mouth_y_in": inner,
+        "mouth_y_past": np.abs(gy) - inner,
+        "mouth_out": out_,
+    }
     if "y" in v:
         off_centre = pitch.GOAL_CENTRE_Y - v["y"]
-        side = np.where(np.abs(off_centre) < CENTRE_DEAD_ZONE, 0.0, np.sign(off_centre))
+        side = np.where(dead_zone(v["y"]), 0.0, np.sign(off_centre))
         cols["far_side"] = -side * np.sign(gy) + 0.0  # + 0.0: no -0.0
         cols["mouth_far"] = cols["far_side"] * np.abs(gy) + 0.0
     if "angle_rad" in v:
@@ -553,6 +610,9 @@ PLACEMENT: Final[Mapping[str, DerivedFeature]] = MappingProxyType(
             _placed("angle_x_mouth_y", ("angle_rad",)),
             _placed("angle_x_mouth_z", ("angle_rad",)),
             _placed("mouth_yz"),
+            _placed("mouth_y_in"),
+            _placed("mouth_y_past"),
+            _placed("mouth_out"),
         )
     }
 )

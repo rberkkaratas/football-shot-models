@@ -150,3 +150,35 @@ def test_far_side_dead_zone(y: float, far: float) -> None:
     out = xg.placement(xg.mouth_frame([32.0], [1.0], [y]), ["far_side", "mouth_far"])
     assert out["far_side"] == [far]
     assert out["mouth_far"] == [pytest.approx(2.0 * far)]
+
+
+def test_placement_post_columns() -> None:
+    """run5-ms5: ``mouth_y_in`` is ``mouth_y_abs`` capped at ``INNER_Y`` (3.55: a ball centre
+    beyond it touches the post), ``mouth_y_past`` the rest, and ``mouth_out`` flags a point
+    recorded beyond the frame + tolerance before it is clipped (``features.clipped``, the one
+    rule the cards count too); a point on the edge is not flagged (near miss)."""
+    assert features.INNER_Y == 3.55
+    # frame y: 3.4, 3.7, 3.81 (edge, in), 3.9 (beyond), 30 (a projected save); z 1.0 / 2.7
+    frame = xg.mouth_frame(
+        [34.0 - 3.4, 34.0 - 3.7, 34.0 - 3.81, 34.0 + 3.9, 4.0, 34.0],
+        [1.0, 1.0, 1.0, 1.0, 1.0, 2.7],
+        [20.0] * 6,
+    )
+    out = xg.placement(frame, ["mouth_y_abs", "mouth_y_in", "mouth_y_past", "mouth_out"])
+    assert out["mouth_y_abs"] == pytest.approx([3.4, 3.7, 3.8, 3.8, 3.8, 0.0])
+    assert out["mouth_y_in"] == pytest.approx([3.4, 3.55, 3.55, 3.55, 3.55, 0.0])
+    assert out["mouth_y_past"] == pytest.approx([0.0, 0.15, 0.25, 0.25, 0.25, 0.0])
+    assert out["mouth_out"] == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    gy = [3.4, 3.7, 3.81, -3.9, 30.0, 0.0]
+    gz = [1.0, 1.0, 1.0, 1.0, 1.0, 2.7]
+    assert features.clipped(gy, gz).tolist() == [False, False, False, True, True, True]
+
+
+def test_dead_zone_rule() -> None:
+    """``features.dead_zone`` is the one centre-line rule: strictly within ``CENTRE_DEAD_ZONE``
+    of y = 34 has no side (``far_side`` 0); exactly 0.5 m off has one."""
+    y = [34.0, 34.4, 33.5, 34.5, 20.0]
+    assert features.dead_zone(y).tolist() == [True, True, False, False, False]
+    frame = xg.mouth_frame([31.0] * 5, [1.0] * 5, y)
+    far = xg.placement(frame, ["far_side"])["far_side"]
+    assert [v == 0.0 for v in far] == features.dead_zone(y).tolist()

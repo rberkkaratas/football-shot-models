@@ -64,21 +64,21 @@ WhoScored test season, 16,164 shots, goal rate 0.0999; not comparable with the S
 
 ### Results (MS5, xGOT of on-target shots, both providers)
 
-Written by `make xgot` and checked byte for byte by `make reproduce`. Headline model per provider in bold; CV is grouped by match on on-target shots, the hold-out is Premier League 2015/16 (StatsBomb) and the test season 2026-27 (WhoScored). ECE: CV fold mean, hold-out / test point value (its noise floor is on the cards).
+Printed by `make xgot` (paste it between the markers) and checked byte for byte by `make reproduce`. Headline model per provider in bold; CV is grouped by match on on-target shots, the hold-out is Premier League 2015/16 (StatsBomb) and the test season 2026-27 (WhoScored). ECE: CV fold mean, hold-out / test point value (its noise floor is on the cards).
 
 <!-- xgot:summary:start -->
 | Provider | Model | CV AUC | CV ECE | CV cal. slope | Hold-out / test AUC | Hold-out / test ECE | Hold-out / test cal. slope |
 |---|---|---|---|---|---|---|---|
 | StatsBomb open data | Base rate (on target) | 0.5000 | 0.0154 | n/a | 0.5000 | 0.0231 | n/a |
 | StatsBomb open data | LR xG only | 0.7612 | 0.0198 | 1.0012 | 0.7512 | 0.0300 | 0.9712 |
-| StatsBomb open data | LR xG + placement, no near / far | 0.8467 | 0.0243 | 1.0002 | 0.8568 | 0.0351 | 1.0678 |
-| StatsBomb open data | LR xG + placement | 0.8535 | 0.0232 | 1.0000 | 0.8614 | 0.0187 | 1.0500 |
-| StatsBomb open data | **Monotone GBM + Platt** | 0.8619 | 0.0151 | 1.0109 | 0.8691 | 0.0142 | 1.0254 |
+| StatsBomb open data | LR xG + placement, no near / far | 0.8530 | 0.0216 | 1.0005 | 0.8609 | 0.0303 | 1.0500 |
+| StatsBomb open data | LR xG + placement | 0.8608 | 0.0197 | 1.0004 | 0.8656 | 0.0174 | 1.0214 |
+| StatsBomb open data | **Monotone GBM + Platt** | 0.8671 | 0.0152 | 1.0115 | 0.8710 | 0.0107 | 1.0083 |
 | StatsBomb open data | Penalty xGOT (placement only) | 0.6384 | 0.0892 | 0.9860 | 0.5663 | 0.1279 | 0.9168 |
 | private WhoScored / Opta event archive | Base rate (on target) | 0.5000 | 0.0146 | n/a | 0.5000 | 0.0165 | n/a |
 | private WhoScored / Opta event archive | LR xG only | 0.7464 | 0.0217 | 1.0004 | 0.7484 | 0.0234 | 1.0076 |
-| private WhoScored / Opta event archive | LR xG + placement, no near / far | 0.8268 | 0.0192 | 0.9995 | 0.8293 | 0.0235 | 1.0156 |
-| private WhoScored / Opta event archive | LR xG + placement | 0.8367 | 0.0144 | 0.9992 | 0.8386 | 0.0149 | 1.0155 |
+| private WhoScored / Opta event archive | LR xG + placement, no near / far | 0.8270 | 0.0195 | 0.9988 | 0.8296 | 0.0234 | 1.0161 |
+| private WhoScored / Opta event archive | LR xG + placement | 0.8368 | 0.0143 | 0.9987 | 0.8388 | 0.0146 | 1.0164 |
 | private WhoScored / Opta event archive | **Monotone GBM + Platt** | 0.8425 | 0.0121 | 1.0013 | 0.8472 | 0.0178 | 1.0333 |
 | private WhoScored / Opta event archive | Penalty xGOT (placement only) | 0.5999 | 0.0975 | 0.9784 | 0.5279 | 0.0962 | 0.0399 |
 
@@ -86,7 +86,7 @@ StatsBomb open data: headline Monotone GBM + Platt; xG input Monotone GBM + Plat
 
 StatsBomb open data, penalty xGOT (placement only, in-game kicks): CV AUC 0.6384, CV cal. slope 0.9860; shoot-out kicks scored apart: 321 kicks, 242 goals, Σ xGOT 259.0, log loss 0.5591.
 
-StatsBomb open data, shooting goals added (descriptive), split-half r at >= 40 shots, 633 players: SGA per shot +0.083 [+0.005, +0.160], goals − xG per shot +0.076 [-0.002, +0.153].
+StatsBomb open data, shooting goals added (descriptive), split-half r at >= 40 shots, 633 players: SGA per shot +0.084 [+0.006, +0.161], goals − xG per shot +0.076 [-0.002, +0.153].
 
 private WhoScored / Opta event archive: headline Monotone GBM + Platt; xG input Monotone GBM + Platt (provider headline xG Monotone GBM + Platt); 11 of 11 MS5 checks met; 32,480 of 32,490 C3 on-target shots scored (-0.031%), goals -0.067%.
 

@@ -359,13 +359,14 @@ def check_partition(folds: Folds, n: int) -> None:
     """Refuse folds whose test sets are not a partition of the ``n`` dev rows.
 
     Forward-chaining or overlapping folds would leave NaN out-of-fold predictions, or score a
-    row twice, without any other error.
+    row twice, without any other error; a fold that trains on its own test rows would make
+    its "out-of-fold" predictions in-sample.
 
     Raises
     ------
     ValueError
-        An index outside ``0..n-1`` (train or test), a row in no test fold or in more than
-        one (counts in the message).
+        An index outside ``0..n-1`` (train or test); a fold whose train and test share a row;
+        a row in no test fold or in more than one (counts in the message).
 
     Examples
     --------
@@ -381,6 +382,8 @@ def check_partition(folds: Folds, n: int) -> None:
         for idx in (train, test):
             if idx.size and (int(idx.min()) < 0 or int(idx.max()) >= n):
                 raise ValueError(f"fold {i}: an index is outside 0..{n - 1}")
+        if shared := np.intersect1d(train, test).size:
+            raise ValueError(f"fold {i}: {shared} row(s) are in both its train and test sets")
         np.add.at(counts, test, 1)
     none, many = int((counts == 0).sum()), int((counts > 1).sum())
     if none or many:

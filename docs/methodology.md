@@ -48,7 +48,8 @@ xG, and own goals and direct corners carry no xG.
 ## Phase 2: xGOT / PSxG (post-shot)
 xGOT is P(goal) of a shot that reached the goal frame, given where it crossed the line and its
 pre-shot xG (`football_shot_models.xgot`, MS5). Results are in the [xGOT cards](models/xgot-gbm.md)
-and the README block written by `make xgot`; none is typed here.
+and the README block printed by `make xgot` (pasted between the README markers; `make reproduce`
+checks it byte for byte); none is typed here.
 
 **Population (P2.2).** On target means a goal or a keeper save (C3 `on_target`; own goals are
 never on target). Two populations, never mixed:
@@ -70,9 +71,30 @@ xGOT and the goalkeeper models must not credit them.
 **Placement.** The goal mouth is read only through `pitch.to_goal_frame` (metres from the goal
 centre, y positive = the shooter's right) and only by the placement features of the xGOT guard
 (`features.check_xgot_features`). Each point is clipped to the frame + 0.15 m, then rounded to
-0.1 m (half to even) for both providers: StatsBomb goals keep the provider's coordinate grid
-while projected saves are off it, so unrounded |y| would separate goals from saves by the grid
-alone. Near / far post is the ball's side against the shot's side; a shot within 0.5 m of the
+0.1 m (half to even) for both providers, so a goal and a save in one 0.1 m cell get the same
+values. Rounding does not remove StatsBomb's recording grid, though: its goals sit on the 0.1 yd
+(0.0914 m) lattice while its projected saves are continuous, so a 0.1 m cell that holds two
+lattice values gets about twice the goal mass of its neighbours (a beat of about 1.07 m). The
+run5-ms5 census of the 1.2 snapshot (on-target, non-penalty |y| cells; counts only) shows it:
+
+| Cell (m) | StatsBomb goal rate | Neighbours |
+|---|---|---|
+| 0.0 | 0.228 | 0.150 |
+| 1.1 | 0.288 | 0.141 / 0.199 |
+| 2.2 | 0.445 | 0.286 / 0.303 |
+| 3.2 | 0.754 | 0.608 / 0.588 |
+
+The correlation of lattice values per cell with the cell's goal rate is 0.457 on StatsBomb and
+0.046 on WhoScored, where Opta records goals and saves on one grid. The smooth LR cannot follow
+these spikes; the GBM partly can, so part of the StatsBomb GBM's gain over the LR may be the
+grid. Snapping the projected points to the match's recording grid in the loader is the open fix
+(it needs a snapshot rebuild). A ball whose centre is more than 3.55 m (`features.INNER_Y`) from
+the goal centre touches the post, so on-target shots out there are mostly saves: the GBM is
+monotone in |y| only up to that point (`mouth_y_in`), and the width past it (`mouth_y_past`)
+and the flag for a point recorded outside the frame + 0.15 m (`mouth_out`) are free. A
+StatsBomb save stopped just in front of the shot projects far outside the frame; it is clipped
+and flagged, never read as a ball in the corner. The cards print calibration by |y| band, which
+the reliability table (binned by prediction) cannot show. Near / far post is the ball's side against the shot's side; a shot within 0.5 m of the
 centre line has no near or far post (`far_side = 0`). StatsBomb saves stopped short of the line
 are projected to the goal line from the shot location (see football-core's conventions); their
 height is the stop height, and a deflected save is projected from the shot, not the deflection.
@@ -80,7 +102,9 @@ The cards count both cases.
 
 **Keeper-neutral (PM E3, X1).** xGOT reads placement, shot context and xG only, never keeper
 position (`gk_x`, `gk_y`, the freeze-frame keeper features or `open_goal`), so goals saved
-against it credit the keeper's positioning too, and both providers' xGOT measure the same thing.
+against it credit the keeper's positioning too, and both providers' xGOT leave the same thing to
+the keeper. They do not read quite the same placement: a StatsBomb save's height is where the
+keeper stopped the ball, not where it would have crossed the line (next paragraph).
 The StatsBomb xG input is therefore the headline xG refitted without the keeper-position
 features; WhoScored's headline reads none and is used as it is.
 
@@ -89,9 +113,10 @@ fold k reads the xG of the fit that never saw fold k, and a hold-out row the xG 
 all of dev. The folds are the xG folds restricted to on-target rows, so every shot keeps its
 fold.
 
-**Models (P2.3, P2.4).** LR on logit xG, placement splines, angle × placement and the near /
-far term; a monotone GBM on xG, |y|, height, side and angle (non-decreasing in xG and in |y|
-at a fixed side), headline only when its CV gain over the LR has a match-bootstrap interval
+**Models (P2.3, P2.4).** LR on logit xG, placement splines, the width past the post's inner
+edge, angle × placement and the near / far term; a monotone GBM on xG, |y| (up to and past the
+inner edge), the outside-the-frame flag, height, side and angle (non-decreasing in xG and in |y|
+up to 3.55 m at a fixed side), headline only when its CV gain over the LR has a match-bootstrap interval
 above 0; a placement-only penalty xGOT, reported apart with no target.
 
 **Checks.** AUC ≥ 0.80, ECE < 0.02 and calibration slope in [0.9, 1.1], on CV and on the hold-out
@@ -102,8 +127,9 @@ predictions (PM X3).
 
 **Shooting goals added (P2.5).** SGA = xGOT − xG per shot, next to goals − xG; both subtract the
 same xG (the xGOT input). Blocked and off-target shots count as 0 xGOT. Reported only as
-split-half correlations (each player's matches alternated by date) at 20 / 40 / 80 shots: a
-descriptive measure, not a finishing-skill claim.
+split-half correlations (each player's matches alternated by date, `metrics.split_half(unit=
+"match")`) at 20 / 40 / 80 shots: a descriptive measure, not a finishing-skill claim. The MS6
+keeper split-half alternates shots within a keeper in time order (`unit="row"`, PM X5).
 
 ## Phase 3: Goalkeeper shot-stopping
 **Goals prevented = Σ PSxG faced − goals conceded** (penalties reported separately).

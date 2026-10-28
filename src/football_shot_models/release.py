@@ -26,7 +26,7 @@ from typing import Final
 from football_core import schema
 from football_core.io import whoscored
 
-from football_shot_models import ablation, cards, evaluation, features, gbm, legacy, models
+from football_shot_models import ablation, cards, evaluation, features, legacy, models
 from football_shot_models.cards import fmt, gain_cell, pct, side
 from football_shot_models.evaluation import Comparison, Evaluation, ModelSpec
 from football_shot_models.metrics import N_BOOT, SEED, Check, GainCI, GroupRow, Scores
@@ -234,12 +234,8 @@ def _excludes(ci: tuple[float, float] | None, value: float) -> bool:
     return ci is not None and not ci[0] <= value <= ci[1]
 
 
-def _is_gbm(ev: Evaluation) -> bool:
-    return isinstance(ev.spec, ModelSpec) and ev.spec.coefficients is gbm.gbm_settings
-
-
 def _model(ev: Evaluation, c: cards.CardContext) -> list[str]:
-    if not _is_gbm(ev):
+    if not models.is_gbm(ev):
         return [
             "Unpenalised logistic regression (`ablation.make_lr`: standardised inputs, "
             f"Newton-Cholesky), no class weights. scikit-learn {c.sklearn_version}. "

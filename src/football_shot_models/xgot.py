@@ -17,14 +17,17 @@ itself.
 
 **Models (P2.3, P2.4).** Every model goes through ``evaluation.evaluate`` with the xGOT guard
 (``features.check_xgot_features``) and registry (``features.XGOT_DERIVED``). The LR reads the
-xG input, placement splines and angle × placement terms (near / far post included); the GBM is
-monotone in the xG input and in the distance from the goal centre at a fixed side, and is the
-headline only if its CV gain over the LR has a match-bootstrap interval above 0. The penalty
+xG input, placement splines, the width past the inner post edge and angle × placement terms
+(near / far post included); the GBM is monotone in the xG input and in the distance from the
+goal centre up to ``features.INNER_Y`` at a fixed side (beyond it a ball hits the post, so the
+width past it and the outside-the-frame flag are free), and is the headline only if its CV gain
+over the LR has a match-bootstrap interval above 0. The penalty
 xGOT reads placement only, with its own folds; shoot-out kicks are scored by its dev fit.
 
 **Shooting goals added (P2.5)** is xGOT − xG per shot (:func:`sga`), with blocked and
 off-target shots at 0 xGOT. It is reported as split-half correlations next to goals − xG
-(:func:`split_half`): a descriptive measure, not a claim about finishing skill.
+(``metrics.split_half`` by alternating matches): a descriptive measure, not a claim about
+finishing skill.
 
 Nothing here writes a row: :func:`predictions` stays in memory (for MS6), and the WhoScored
 cards, README block and output hold counts and metrics only. Run ``python -m
@@ -42,6 +45,7 @@ import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final
@@ -51,7 +55,6 @@ import numpy.typing as npt
 import polars as pl
 from football_core import goalmouth, pitch
 from football_core.io import snapshot
-from scipy import stats
 
 from football_shot_models import (
     ablation,
@@ -69,7 +72,7 @@ from football_shot_models import (
 from football_shot_models.cache import PredictionCache
 from football_shot_models.cards import CardContext, CardText, ProviderText, fmt, gain_cell
 from football_shot_models.evaluation import Comparison, Evaluation, ModelSpec, evaluate, labels
-from football_shot_models.metrics import Check, Scores
+from football_shot_models.metrics import Check, Scores, SplitHalf
 
 FloatArray = npt.NDArray[np.float64]
 BoolArray = npt.NDArray[np.bool_]
@@ -90,10 +93,10 @@ FLOOR_REPS: Final[int] = 200
 KINDS: Final = ("open_play", "penalty", "shootout")
 KIND: Final = pl.Enum(KINDS)
 SPLIT: Final = pl.Enum(("dev", "holdout"))
-README_START: Final[str] = "<!-- xgot:summary:start -->"
-README_END: Final[str] = "<!-- xgot:summary:end -->"
 _IDS: Final = ("shot_id", "match_id", "player_id", "competition_id", "season_id")
-_Z95: Final[float] = float(stats.norm.ppf((1 + metrics.LEVEL) / 2))
+# lower edges of the cards' |y| calibration bands, metres; the last band starts at the post's
+# inner edge, and points recorded outside the frame get a row of their own
+Y_BANDS: Final[tuple[float, ...]] = (0.0, 1.0, 2.0, 3.0, 3.3, features.INNER_Y)
 
 
 # ---- P2.2 population and reconciliation ----------------------------------------------------
@@ -170,7 +173,8 @@ def reconcile(
     ValueError
         A missing column; a null or duplicate ``shot_id``; no C3 on-target shot; an exclusion
         reason outside ``RECONCILE_REASONS``; an on-target prediction row that is not a C3
-        on-target shot (counted).
+        on-target shot of a ``POPULATION_REASONS`` reason (counted: an excluded shot scored is a
+        population bug, never reconciled).
 
     Examples
     --------
@@ -206,9 +210,12 @@ def reconcile(
         other = sorted(set(tagged["reason"]) - set(RECONCILE_REASONS))
         raise ValueError(f"reconcile: exclusion reason(s) {other} are not in RECONCILE_REASONS")
     scored = pred.filter(pl.col("on_target")).select("shot_id", "is_goal")
-    if stray := scored.join(on, on="shot_id", how="anti").height:
-        raise ValueError(f"reconcile: {stray} on-target prediction row(s) are not C3 on-target")
     wanted = tagged.filter(pl.col("reason").is_in(POPULATION_REASONS))
+    if stray := scored.join(wanted, on="shot_id", how="anti").height:
+        raise ValueError(
+            f"reconcile: {stray} on-target prediction row(s) are not C3 on-target shots of the "
+            f"xGOT population {POPULATION_REASONS}"
+        )
     return Reconciliation(
         c3_shots=on.height,
         c3_goals=int(on["is_goal"].sum()),
@@ -339,6 +346,21 @@ def _candidates(
     return (*base, *steps_), evaluate(gbm_spec, dev, held, folds, freeze_frames=ff, cache=pc)
 
 
+def _sb_candidates(
+    xg: data.XgData, dev: pl.DataFrame, held: pl.DataFrame, folds: Folds,
+    pc: PredictionCache | None,
+) -> tuple[tuple[Evaluation, ...], Evaluation]:  # fmt: skip
+    # module globals read when called, so a patch of models.GBM is seen
+    return _candidates(ablation.STEPS, models.GBM, xg, dev, held, folds, pc)
+
+
+def _ws_candidates(
+    xg: data.XgData, dev: pl.DataFrame, held: pl.DataFrame, folds: Folds,
+    pc: PredictionCache | None,
+) -> tuple[tuple[Evaluation, ...], Evaluation]:  # fmt: skip
+    return _candidates(v1.STEPS, v1.GBM, xg, dev, held, folds, pc)
+
+
 def _ws_population(xg: data.XgData) -> tuple[pl.DataFrame, pl.Series]:
     shots, _ = v1.population(xg)
     return shots, xg.shots.join(shots, on="shot_id", how="anti")["shot_id"]
@@ -436,7 +458,7 @@ PROVIDERS: Final[Mapping[str, Provider]] = MappingProxyType({
         f"{_FOLDS} **Test** is the hold-out competition-season named under Data, scored once by "
         f"that fit. {XGOT_CROSS_FIT}",
         "hold-out", data.pair_holdout, lambda xg: (xg.shots, pl.Series("shot_id", [], pl.String)),
-        functools.partial(_candidates, ablation.STEPS, models.GBM),
+        _sb_candidates,
         "StatsBomb records a save where the keeper stopped the ball: its `goal_z` is that height, "
         "not the height at the goal line, and a save stopped short of the line has its `goal_y` "
         "projected along the line from the shot location ({deflected:,} of the on-target saves "
@@ -448,7 +470,7 @@ PROVIDERS: Final[Mapping[str, Provider]] = MappingProxyType({
         f"{_FOLDS} Train is the {', '.join(v1.TRAIN_SEASONS)} seasons; **Test** is the "
         f"{', '.join(v1.TEST_SEASONS)} season, scored once by that fit and never used to choose. "
         f"{XGOT_CROSS_FIT}",
-        "test", _ws_holdout, _ws_population, functools.partial(_candidates, v1.STEPS, v1.GBM),
+        "test", _ws_holdout, _ws_population, _ws_candidates,
     ),
 })  # fmt: skip
 
@@ -498,24 +520,28 @@ def xg_input_eval(
 LR_FEATURES: Final[tuple[str, ...]] = (
     features.XG_INPUT,
     *("mouth_y_abs", *(f"mouth_y_abs_rcs{j}" for j in (1, 2, 3))),
+    "mouth_y_past",  # not mouth_out: constant on WhoScored, so an unpenalised LR cannot fit it
     *("mouth_z", *(f"mouth_z_rcs{j}" for j in (1, 2, 3))),
     "angle_x_mouth_y",
     "angle_x_mouth_z",
     "mouth_far",
 )
 GBM_FEATURES: Final[tuple[str, ...]] = (
-    features.XG_INPUT, "mouth_y_abs", "mouth_z", "far_side", "angle_rad"
+    features.XG_INPUT, "mouth_y_in", "mouth_y_past", "mouth_out", "mouth_z", "far_side",
+    "angle_rad",
 )  # fmt: skip
-GBM_SIGNS: Final[Mapping[str, int]] = MappingProxyType({features.XG_INPUT: 1, "mouth_y_abs": 1})
+GBM_SIGNS: Final[Mapping[str, int]] = MappingProxyType({features.XG_INPUT: 1, "mouth_y_in": 1})
 PENALTY_FEATURES: Final[tuple[str, ...]] = ("mouth_y_abs", "mouth_z", "mouth_yz")
 XGOT_MONOTONE_REASONS: Final[Mapping[str, str]] = MappingProxyType({
     features.XG_INPUT: "a higher xG at the same placement never lowers xGOT",
-    "mouth_y_abs": "further from the centre at the same height and on the same side "
-    "(`far_side` fixed) never helps the keeper",
+    "mouth_y_in": f"further from the centre, up to {features.INNER_Y:g} m, at the same height "
+    "and on the same side (`far_side` fixed) never helps the keeper",
 })  # fmt: skip
 XGOT_MONOTONE_NOTE: Final[str] = (
-    "Each constraint holds along one column with every other column held fixed: `mouth_y_abs` "
-    "moves the ball towards a post at the same height, on the same side (near or far)."
+    "Each constraint holds along one column with every other column held fixed: `mouth_y_in` "
+    "moves the ball towards a post at the same height, on the same side (near or far). Beyond "
+    f"{features.INNER_Y:g} m from the centre a ball's centre is within its radius of the post, "
+    "so a shot there hits the post or is saved: `mouth_y_past` and `mouth_out` are free."
 )
 
 
@@ -568,6 +594,9 @@ class Kicks:
         The penalty xGOT on the in-game kicks, with its own match folds.
     shootout_p : numpy.ndarray
         The shoot-out kicks scored by a fit on all in-game dev kicks.
+    shootout_held : polars.Series
+        Boolean, per shoot-out kick: the hold-out's mask (``data.holdout_mask``), the one rule
+        that splits every frame.
     """
 
     dev: pl.DataFrame
@@ -575,12 +604,16 @@ class Kicks:
     shootouts: pl.DataFrame
     ev: Evaluation
     shootout_p: FloatArray
+    shootout_held: pl.Series
 
 
 def penalty_kicks(
     spec: ModelSpec, penalties: pl.DataFrame, holdout: data.Holdout, cache: PredictionCache | None
 ) -> Kicks:
     """Fit the penalty xGOT on the in-game dev kicks and score the hold-out and shoot-outs.
+
+    A shoot-out kick's split is the hold-out's mask on the kick itself, never inferred from
+    the other rows of its competition-season.
 
     Raises
     ------
@@ -597,7 +630,7 @@ def penalty_kicks(
     dev_k, held_k = game.filter(~held), game.filter(held)
     ev = evaluate(spec, dev_k, held_k, evaluation.cv_folds(dev_k), cache=cache)
     p = evaluation.fit_predict(spec, dev_k, shoot) if shoot.height else np.empty(0)
-    return Kicks(dev_k, held_k, shoot, ev, p)
+    return Kicks(dev_k, held_k, shoot, ev, p, data.holdout_mask(shoot, holdout, "shoot-out kicks"))
 
 
 # ---- metrics and checks --------------------------------------------------------------------
@@ -710,11 +743,11 @@ def checks(
                f"{fmt(s.mean)} (max {fmt(s.max)}, pooled {fmt(s.pooled)})", s.mean < ECE_MAX),
         _check(f"ECE < {ECE_MAX:g}, {split}", f"{fmt(s.held)} (noise floor {fmt(s.floor)})",
                s.held < ECE_MAX),
-        models._slope(f"{band}, CV fold mean", head.cv.cal_slope),
-        models._slope(f"{band}, {split}", head.holdout.cal_slope),
+        models.slope_check(f"{band}, CV fold mean", head.cv.cal_slope),
+        models.slope_check(f"{band}, {split}", head.holdout.cal_slope),
         _check(f"GBM headline iff its CV gain {gbm_gain.label} has a 95% interval above 0",
                f"CV {gain_cell(gbm_gain.cv)}; headline {head.spec.title}",
-               models._is_gbm(head) == (gbm_gain.cv.low > 0)),
+               models.is_gbm(head) == (gbm_gain.cv.low > 0)),
         _check(f"On-target shots scored reconcile with C3 {tol}",
                f"{recon.shots:,} of {recon.c3_shots:,} ({recon.shots_gap:+.3%}); unscored "
                f"{recon.unscored:,}", abs(recon.shots_gap) <= RECONCILE_TOL),
@@ -748,16 +781,16 @@ def predictions(
 
     Built in memory and never written (Rule 1). Every probability is out of sample for its
     row: out of fold on dev, the dev fit on the hold-out, the in-game dev fit on shoot-outs.
-    Shoot-out kicks take the split of their competition-season (both hold-outs are whole
-    competition-seasons).
+    Shoot-out kicks take the split of the hold-out's mask on them (``Kicks.shootout_held``).
 
     Returns
     -------
     polars.DataFrame
         ``shot_id``, ``match_id``, ``player_id``, ``competition_id``, ``season_id``,
-        ``match_date`` (from ``matches``), ``gk_id``, ``kind`` (``KIND``), ``split`` (``dev`` /
-        ``holdout``), ``is_goal``, ``on_target``, ``outcome``, ``open_goal``, ``xg`` (null for
-        kicks) and ``xgot`` (null off target).
+        ``match_date`` (from ``matches``), ``period``, ``seconds_in_period`` (the shot order
+        within a match, for ``metrics.split_half(unit="row")``), ``gk_id``, ``kind``
+        (``KIND``), ``split`` (``dev`` / ``holdout``), ``is_goal``, ``on_target``, ``outcome``,
+        ``open_goal``, ``xg`` (null for kicks) and ``xgot`` (null off target).
 
     Raises
     ------
@@ -772,11 +805,8 @@ def predictions(
     >>> pred["kind"].dtype.categories.to_list()  # doctest: +SKIP
     ['open_play', 'penalty', 'shootout']
     """
-    cols, pair = (*_IDS, "gk_id", "is_goal", "on_target", "outcome", "open_goal"), list(_IDS[3:])
-    held_pairs = pl.concat([inp.held.select(pair), kicks.held.select(pair)]).unique()
-    shoot_held = kicks.shootouts.select(pair).join(
-        held_pairs.with_columns(_h=pl.lit(True)), on=pair, how="left", maintain_order="left"
-    )["_h"].fill_null(False)  # fmt: skip
+    tail = ("is_goal", "on_target", "outcome", "open_goal")
+    cols = (*_IDS, "period", "seconds_in_period", "gk_id", *tail)
     parts: list[tuple[pl.DataFrame, str, bool | pl.Series, pl.Series | None, pl.Series]] = [
         (inp.dev, "open_play", False, inp.dev["xg"], _with_xgot(inp.dev, head.oof, "dev shots")),
         (inp.held, "open_play", True, inp.held["xg"],
@@ -784,7 +814,7 @@ def predictions(
         (kicks.dev, "penalty", False, None, _with_xgot(kicks.dev, kicks.ev.oof, "dev kicks")),
         (kicks.held, "penalty", True, None,
          _with_xgot(kicks.held, kicks.ev.holdout_p, "hold-out kicks")),
-        (kicks.shootouts, "shootout", shoot_held, None,
+        (kicks.shootouts, "shootout", kicks.shootout_held, None,
          _with_xgot(kicks.shootouts, kicks.shootout_p, "shoot-out kicks")),
     ]  # fmt: skip
     frames = [
@@ -803,7 +833,8 @@ def predictions(
         pl.concat(frames)
         .join(matches.select("match_id", "match_date"), on="match_id", how="left",
               validate="m:1", maintain_order="left")
-        .select(*_IDS, "match_date", "gk_id", "kind", "split", *cols[6:], "xg", "xgot")
+        .select(*_IDS, "match_date", "period", "seconds_in_period", "gk_id", "kind", "split",
+                *tail, "xg", "xgot")
     )  # fmt: skip
     if missing := pred["match_date"].null_count():
         raise ValueError(f"predictions: {missing} row(s) have no match in the matches table")
@@ -839,83 +870,6 @@ def sga(pred: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-@dataclass(frozen=True)
-class SplitHalf:
-    """A split-half correlation: keys used, Pearson r and its 95 % Fisher-z interval."""
-
-    keys: int
-    r: float | None
-    low: float | None
-    high: float | None
-
-
-def split_half(frame: pl.DataFrame, *, by: str, value: str, min_rows: int) -> SplitHalf:
-    """Split-half reliability of the per-row mean of ``value`` by ``by`` (a player, a keeper).
-
-    Per key, its distinct matches are ordered by ``match_date`` then ``match_id`` and
-    alternated into two halves, so a match never spans halves. Each half's ``Σ value / rows``
-    is correlated across the keys with at least ``min_rows`` rows in total and rows in both
-    halves.
-
-    Returns
-    -------
-    SplitHalf
-        ``r`` and its interval are None under 4 keys or when r is undefined (a constant
-        half); r = ±1 gives ``low = high = r``.
-
-    Raises
-    ------
-    ValueError
-        A missing column; a null in ``by``, ``value``, ``match_date`` or ``match_id``.
-
-    Examples
-    --------
-    >>> from datetime import date
-    >>> f = pl.DataFrame({"p": ["a", "a", "b", "b", "c", "c", "d", "d"],
-    ...                   "match_id": ["m1", "m2"] * 4, "v": [1.0, 0.8, 0.2, 0.1, 0.5, 0.6,
-    ...                                                      0.9, 0.7],
-    ...                   "match_date": [date(2025, 1, 1), date(2025, 1, 8)] * 4})
-    >>> s = split_half(f, by="p", value="v", min_rows=2)
-    >>> s.keys, round(s.r, 3)
-    (4, 0.928)
-    """
-    cols = (by, value, "match_date", "match_id")
-    if missing := [c for c in cols if c not in frame.columns]:
-        raise ValueError(f"split_half: missing column(s) {missing}")
-    for c in cols:
-        if n := frame[c].null_count():
-            raise ValueError(f"split_half: {c} has {n} null value(s)")
-    keys = [by, "match_date", "match_id"]
-    order = (
-        frame.select(keys)
-        .unique()
-        .sort(keys)
-        .with_columns(_half=pl.int_range(pl.len()).over(by) % 2)
-    )
-    halves = (
-        frame.join(order, on=keys)
-        .group_by(by, "_half")
-        .agg(rows=pl.len(), rate=pl.col(value).sum() / pl.len())
-    )
-    wide = (
-        halves.pivot("_half", index=by, values=["rows", "rate"])
-        .filter(pl.sum_horizontal(pl.col("^rows_.*$").fill_null(0)) >= min_rows)
-        .drop_nulls()
-    )
-    n = wide.height if {"rate_0", "rate_1"} <= set(wide.columns) else 0
-    if n < 4:
-        return SplitHalf(n, None, None, None)
-    a, b = wide["rate_0"].to_numpy(), wide["rate_1"].to_numpy()
-    with np.errstate(invalid="ignore", divide="ignore"):
-        r = float(np.corrcoef(a, b)[0, 1]) if np.ptp(a) > 0 and np.ptp(b) > 0 else math.nan
-    if math.isnan(r):
-        return SplitHalf(n, None, None, None)
-    if abs(r) > 1.0 - 1e-12:  # corrcoef can land a hair inside ±1
-        return SplitHalf(n, math.copysign(1.0, r), math.copysign(1.0, r), math.copysign(1.0, r))
-    z, se = math.atanh(r), 1.0 / math.sqrt(n - 3)
-    return SplitHalf(n, r, math.tanh(z - _Z95 * se), math.tanh(z + _Z95 * se))
-
-
 # ---- cards ---------------------------------------------------------------------------------
 
 _PLACED: Final[str] = (
@@ -945,6 +899,12 @@ FEATURE_ROWS: Final[Mapping[str, str]] = MappingProxyType({
     "angle_x_mouth_z": "| `angle_x_mouth_z` | `angle_rad` × `mouth_z` | `angle_rad`, "
     + _SRC + " |",
     "mouth_yz": "| `mouth_yz` | `mouth_y_abs` × `mouth_z` | " + _SRC + " |",
+    "mouth_y_in": f"| `mouth_y_in` | `min(mouth_y_abs, {features.INNER_Y:g})`: the distance from "
+    "the goal centre up to where a ball starts to touch the post, m | `mouth_y_abs` |",
+    "mouth_y_past": "| `mouth_y_past` | `mouth_y_abs − mouth_y_in`: how far past that point "
+    "the ball crossed, m | `mouth_y_abs` |",
+    "mouth_out": f"| `mouth_out` | 1 when the point was recorded beyond the frame + "
+    f"{goalmouth.GOAL_TOLERANCE:g} m (before clipping), else 0 | {_SRC} |",
     "angle_rad": ablation.FEATURE_ROWS["angle_rad"],
 })  # fmt: skip
 INTENDED_USE: Final[str] = (
@@ -972,7 +932,12 @@ TARGET: Final[str] = (
     "(clearances off the line included), woodwork and misses are not on target (C3 "
     "`on_target`), so they are not in the population."
 )
-CHANGELOG: Final[tuple[str, ...]] = ("v1 (MS5, P2.2–P2.5): first version.",)
+CHANGELOG: Final[tuple[str, ...]] = (
+    "v1 (MS5, P2.2–P2.5): first version.",
+    "v2 (MS5 assessment): the GBM is monotone in `mouth_y_in` only, with `mouth_y_past` and "
+    "`mouth_out` free; the LR reads `mouth_y_past`; calibration by placement band; the "
+    "scored-once split's level gap; penalty calibration judged bound by bound.",
+)
 
 
 def _lr_model(ev: Evaluation, c: CardContext) -> list[str]:
@@ -999,19 +964,24 @@ def _feature_table(names: Sequence[str]) -> tuple[str, ...]:
     )
 
 
-def _limits(p: Provider, on: pl.DataFrame) -> tuple[str, ...]:
-    """Limitations computed from the on-target rows ``on`` (dev and the scored-once split)."""
+def _limits(p: Provider, on: pl.DataFrame, *, flagged: bool = True) -> tuple[str, ...]:
+    """Limitations computed from the on-target rows ``on`` (dev and the scored-once split);
+    ``flagged`` when the card's models read ``mouth_out``."""
     gy, gz = pitch.to_goal_frame(on["goal_y"].to_numpy(), on["goal_z"].to_numpy())
-    clipped = int(((np.abs(gy) > features.EDGE_Y) | (gz < 0) | (gz > features.EDGE_Z)).sum())
-    dead = int(
-        (on["y"] - pitch.GOAL_CENTRE_Y).abs().lt(features.CENTRE_DEAD_ZONE).sum()
-    )  # fmt: skip
+    clipped = int(features.clipped(gy, gz).sum())
+    dead = int(features.dead_zone(on["y"].to_numpy()).sum())
     deflected = on.filter(pl.col("deflected").fill_null(False) & ~pl.col("is_goal")).height
     psxg = on["provider_psxg"].null_count()
     lines = [
         f"{clipped:,} of {on.height:,} on-target shots ({p.split} included) are recorded "
-        f"beyond the frame + {goalmouth.GOAL_TOLERANCE:g} m and are clipped to its edge; "
-        f"{dead:,} are struck within {features.CENTRE_DEAD_ZONE:g} m of the centre line, so they "
+        f"beyond the frame + {goalmouth.GOAL_TOLERANCE:g} m and are clipped to its edge"
+        + (
+            " and flagged by `mouth_out`, since where they would have crossed the line is not "
+            "known; "
+            if flagged
+            else "; "
+        )
+        + f"{dead:,} are struck within {features.CENTRE_DEAD_ZONE:g} m of the centre line, so they "
         "have no near or far post.",
         f"`provider_psxg` is null on {psxg:,} of {on.height:,} on-target shots, so there is no "
         "provider xGOT benchmark.",
@@ -1019,6 +989,59 @@ def _limits(p: Provider, on: pl.DataFrame) -> tuple[str, ...]:
     if p.mouth_note is not None:
         lines.append(p.mouth_note.format(deflected=deflected))
     return tuple(lines)
+
+
+def band_lines(ev: Evaluation, dev: pl.DataFrame) -> list[str]:
+    """Calibration by placement band: dev out-of-fold xGOT against goals per |y| band.
+
+    The reliability table bins by prediction, so it cannot show a placement the model
+    misprices; this table bins by ``mouth_y_abs`` (rounded, ``Y_BANDS``) with the points
+    recorded outside the frame (``mouth_out``) in a row of their own.
+
+    Examples
+    --------
+    >>> band_lines(head, inp.on_dev)[0]  # doctest: +SKIP
+    '### Calibration by placement band'
+    """
+    place = features.placement(dev.select("goal_y", "goal_z", "on_target"))
+    ay, out = place["mouth_y_abs"].to_numpy(), place["mouth_out"].to_numpy() > 0
+    y, p = labels(dev), ev.oof
+    masks = [
+        (f"[{lo:g}, {hi:g})" if math.isfinite(hi) else f">= {lo:g}", (ay >= lo) & (ay < hi) & ~out)
+        for lo, hi in pairwise((*Y_BANDS, math.inf))
+    ]
+    masks.append((f"outside the frame + {goalmouth.GOAL_TOLERANCE:g} m", out))
+    rows = []
+    for label, m in masks:
+        n, goals = int(m.sum()), int(y[m].sum())
+        rate, mean = (goals / n, float(p[m].mean())) if n else (None, None)
+        gap = f"{float(p[m].sum()) - goals:+.1f}" if n else "n/a"
+        rows.append(f"| {label} | {n:,} | {goals:,} | {fmt(rate)} | {fmt(mean)} | {gap} |")
+    return [
+        "### Calibration by placement band",
+        "",
+        "Dev out-of-fold xGOT by the ball's distance from the goal centre (`mouth_y_abs`, m, "
+        f"after rounding); a ball beyond {features.INNER_Y:g} m touches the post. The "
+        "reliability table bins by prediction, so it cannot show a placement the model "
+        "misprices.",
+        "",
+        "| abs(y) band (m) | Shots | Goals | Goal rate | Mean xGOT | Σ xGOT − goals |",
+        "|---|---|---|---|---|---|",
+        *rows,
+        "",
+    ]
+
+
+def _level(ev: Evaluation, split: str) -> str:
+    """The scored-once split's level gap, a limitation the ECE does not show."""
+    h = ev.holdout
+    gap = f"{h.xg_signed_error:+.2%}" if h.goals else "n/a"
+    return (
+        f"On the {split}, Σ xGOT is {h.xg:,.1f} against {h.goals:,} goals "
+        f"({gap}; calibration intercept {fmt(h.cal_intercept)}). A level gap "
+        "moves every keeper's goals saved against this xGOT the same way, so a season's "
+        "keepers read better or worse as a group."
+    )
 
 
 def _text(
@@ -1117,13 +1140,14 @@ def _recon_lines(recon: Reconciliation) -> list[str]:
 class XgotRun:
     """Everything :func:`run` evaluated for one provider.
 
+    ``xg_input`` is the xG input's evaluation (``xg_headline`` the provider's headline xG);
     ``evaluations`` is (base rate, xG only, LR without near / far, LR, GBM); ``split_half``
     holds (min shots, blocked shots left in, SGA, goals − xG) rows; ``cards`` maps card name to
     the Markdown written.
     """
 
     provider: str
-    xg: Evaluation
+    xg_input: Evaluation
     xg_headline: Evaluation
     evaluations: tuple[Evaluation, ...]
     head: Evaluation
@@ -1172,7 +1196,7 @@ def summary_block(runs: Sequence[XgotRun]) -> str:
         so = r.shootouts
         sga40 = next(row for row in r.split_half if row[0] == MIN_SHOTS[1] and row[1])
         notes += [
-            f"{source}: headline {r.head.spec.title}; xG input {r.xg.spec.title} (provider "
+            f"{source}: headline {r.head.spec.title}; xG input {r.xg_input.spec.title} (provider "
             f"headline xG {r.xg_headline.spec.title}); {met} of {len(r.checks)} MS5 checks met; "
             f"{r.recon.shots:,} of {r.recon.c3_shots:,} C3 on-target shots scored "
             f"({r.recon.shots_gap:+.3%}), goals {r.recon.goals_gap:+.3%}.",
@@ -1189,6 +1213,30 @@ def summary_block(runs: Sequence[XgotRun]) -> str:
             "",
         ]  # fmt: skip
     return "\n".join([*lines, "", *notes[:-1]]) + "\n"
+
+
+def _penalty_calibration(pen: Evaluation, s: EceStats, split: str) -> str:
+    """The penalty card's calibration line: each open-play bound judged on its own."""
+    lo, hi = models.SLOPE_RANGE
+
+    def within(v: float | None) -> str:
+        return "not estimable" if v is None else "inside" if lo <= v <= hi else "outside"
+
+    slopes = (pen.cv.cal_slope, pen.holdout.cal_slope)
+    inside = all(v is not None and lo <= v <= hi for v in slopes) and s.mean < ECE_MAX
+    line = (
+        f"Against the open-play bounds, each on its own: CV calibration slope "
+        f"{fmt(slopes[0])} ({within(slopes[0])} [{lo:g}, {hi:g}]), {split} slope "
+        f"{fmt(slopes[1])} ({within(slopes[1])}), CV ECE {fmt(s.mean)} (fold mean; "
+        f"{'below' if s.mean < ECE_MAX else 'not below'} {ECE_MAX:g})."
+    )
+    if inside:
+        return line
+    return (
+        f"{line} Its probabilities are not calibrated to the open-play standard; as a ranking "
+        f"of placements its AUC is {fmt(pen.cv.auc)} on CV and {fmt(pen.holdout.auc)} on the "
+        f"{split} (0.5 is no ranking)."
+    )
 
 
 def run(provider: str, *, docs_dir: StrPath, cache: StrPath | None) -> XgotRun:
@@ -1260,8 +1308,9 @@ def run(provider: str, *, docs_dir: StrPath, cache: StrPath | None) -> XgotRun:
     run_checks = checks(head, gbm_gain, recon, xg_ev, on_dev, on_held, p.split)
     per_shot = sga(pred)
     halves = tuple(
-        (m, blocked, split_half(f, by="player_id", value="sga", min_rows=m),
-         split_half(f, by="player_id", value="gax", min_rows=m))
+        (m, blocked,
+         metrics.split_half(f, by="player_id", value="sga", min_rows=m, unit="match"),
+         metrics.split_half(f, by="player_id", value="gax", min_rows=m, unit="match"))
         for m in MIN_SHOTS
         for blocked in (True, False)
         for f in (per_shot if blocked else per_shot.filter(pl.col("outcome") != "blocked"),)
@@ -1273,13 +1322,15 @@ def run(provider: str, *, docs_dir: StrPath, cache: StrPath | None) -> XgotRun:
             f"{xg_head.spec.title}.", "")  # fmt: skip
     texts = (
         _text("P2.3: logistic regression of the goal on the logit of the cross-fitted xG, "
-              "placement splines, angle × placement and the near / far post.",
-              (*lead, *_feature_table(LR_FEATURES)), _lr_model, limits),
+              "placement splines, the width past the post's inner edge, angle × placement and "
+              "the near / far post.",
+              (*lead, *_feature_table(LR_FEATURES)), _lr_model,
+              (*limits, _level(evs[3], p.split))),
         _text("P2.4: monotone gradient boosting on the xG input, placement, side and angle, "
               "tuned and Platt-calibrated inside each fit by grouped CV.",
               (*lead, *models.gbm_features(evs[4], FEATURE_ROWS, XGOT_MONOTONE_REASONS,
                                            XGOT_MONOTONE_NOTE)),
-              models._gbm_model, limits),
+              models.gbm_model, (*limits, _level(evs[4], p.split))),
     )  # fmt: skip
     ctx = xgot_context(xg, on_dev, on_held, recon, holdout=ho)
     written = {
@@ -1288,21 +1339,12 @@ def run(provider: str, *, docs_dir: StrPath, cache: StrPath | None) -> XgotRun:
             validation=p.validation, thresholds=(), comparisons=(gain,),
             verdict=models.verdict(ev, head, gbm_gain, split=p.split),
             checks=run_checks if ev is head else (),
-            extra=[*ece_lines(ev, y_dev, y_held, split=p.split),
+            extra=[*ece_lines(ev, y_dev, y_held, split=p.split), *band_lines(ev, on_dev),
                    *((*_recon_lines(recon), *_halves(halves)) if ev is head else ())],
         )
         for ev, text, gain in ((evs[3], texts[0], far_gain), (evs[4], texts[1], gbm_gain))
     }  # fmt: skip
-    lo, hi = models.SLOPE_RANGE
-    s, slope = ece_stats(pen, k_dev, k_held), pen.cv.cal_slope
-    inside = slope is not None and lo <= slope <= hi and s.mean < ECE_MAX
-    calib = (
-        f"CV calibration slope {fmt(slope)} and ECE {fmt(s.mean)} (fold means), {p.split} slope "
-        f"{fmt(pen.holdout.cal_slope)}: {'inside' if inside else 'outside'} the open-play bounds "
-        f"(slope in [{lo:g}, {hi:g}], ECE < {ECE_MAX:g})"
-        + ("." if inside else ", so read it as a ranking of placements, not as calibrated "
-           "probabilities.")
-    )  # fmt: skip
+    calib = _penalty_calibration(pen, ece_stats(pen, k_dev, k_held), p.split)
     shoot = [
         "### Shoot-out kicks (reported apart)", "",
         f"{k_shoot.size:,} on-target shoot-out kicks ({int(k_shoot.sum()):,} goals), scored by "
@@ -1314,12 +1356,13 @@ def run(provider: str, *, docs_dir: StrPath, cache: StrPath | None) -> XgotRun:
         "P2.4: penalty xGOT, a logistic regression on placement only; it reads no xG, since "
         "every in-game penalty has the same pre-shot xG.",
         _feature_table(PENALTY_FEATURES), _lr_model,
-        (calib, *_limits(p, pl.concat([kicks.dev, kicks.held]))), task=PENALTY_TASK,
+        (calib, *_limits(p, pl.concat([kicks.dev, kicks.held]), flagged=False)),
+        task=PENALTY_TASK,
     ), intended_use=PENALTY_USE)  # fmt: skip
     written[pen.spec.name] = cards.render_card(
         pen, pen_text, evaluations=(pen_base, pen), benchmark=None, dev=kicks.dev,
         context=xgot_context(xg, kicks.dev, kicks.held, recon, holdout=ho), provider=p.text,
-        validation=f"{PENALTY_FOLDS.format(split=p.split)} {XGOT_CROSS_FIT}", thresholds=(),
+        validation=PENALTY_FOLDS.format(split=p.split), thresholds=(),
         verdict="Placement-only, reported apart from the open-play xGOT.",
         extra=[*ece_lines(pen, k_dev, k_held, split=p.split), *shoot],
     )  # fmt: skip

@@ -81,8 +81,17 @@ GBM: Final = ModelSpec(
 )
 
 
-def _is_gbm(ev: Evaluation) -> bool:
-    # a GBM spec is one whose card rows come from gbm_settings (any sign map, any grid)
+def is_gbm(ev: Evaluation) -> bool:
+    """Whether ``ev`` is a GBM: its spec's card rows come from ``gbm.gbm_settings``.
+
+    Any sign map and any grid count; the one rule behind the GBM card branches (v1, xGOT) and
+    the GBM headline check rows.
+
+    Examples
+    --------
+    >>> is_gbm(head)  # doctest: +SKIP
+    True
+    """
     return isinstance(ev.spec, ModelSpec) and ev.spec.coefficients is gbm.gbm_settings
 
 
@@ -146,7 +155,7 @@ def verdict(ev: Evaluation, head: Evaluation, gain: Comparison, *, split: str = 
     """
     lr = gain.label.removeprefix("over ")
     cv = gain_cell(gain.cv)
-    if ev is head and _is_gbm(head):
+    if ev is head and is_gbm(head):
         return (
             f"This is the headline model: its CV log-loss gain over {lr} is {cv}, a 95% "
             f"interval that lies above 0; on the {split} it is {gain_cell(gain.holdout)}, an "
@@ -157,7 +166,7 @@ def verdict(ev: Evaluation, head: Evaluation, gain: Comparison, *, split: str = 
             f"This is the headline model: the GBM's CV gain over it is {cv}, an interval that "
             "does not lie above 0, so the GBM does not ship as headline."
         )
-    if _is_gbm(ev) and not _is_gbm(head):
+    if is_gbm(ev) and not is_gbm(head):
         return (
             f"Not the headline model: its CV gain over {lr} is {cv}, an interval that does not "
             f"lie above 0, so {lr} stays headline."
@@ -202,7 +211,14 @@ def _check(target: str, measured: str, ok: bool) -> Check:
     return Check(target, measured, "met" if ok else "missed")
 
 
-def _slope(target: str, slope: float | None) -> Check:
+def slope_check(target: str, slope: float | None) -> Check:
+    """The check row "calibration slope in ``SLOPE_RANGE``" (both ends in); ``n/a`` without one.
+
+    Examples
+    --------
+    >>> slope_check("slope", 0.9).result, slope_check("slope", None).result
+    ('met', 'n/a')
+    """
     if slope is None:
         return Check(target, "not estimable", "n/a")
     return _check(target, fmt(slope), SLOPE_RANGE[0] <= slope <= SLOPE_RANGE[1])
@@ -271,8 +287,8 @@ def milestone_checks(
             f"{gap:+.4f}",
             gap <= SB_GAP,
         ),
-        _slope(f"{band}, CV fold mean", head.cv.cal_slope),
-        _slope(f"{band}, hold-out", head.holdout.cal_slope),
+        slope_check(f"{band}, CV fold mean", head.cv.cal_slope),
+        slope_check(f"{band}, hold-out", head.holdout.cal_slope),
     ]
     for frame, p, where, name in (
         (dev, head.oof, "pooled out of fold", "dev"),
@@ -284,7 +300,7 @@ def milestone_checks(
                 checks.append(Check(target, f"n/a ({n:,} {people}'s shots in {name})", "n/a"))
             else:
                 y = labels(frame)[mask].astype(np.float64)
-                checks.append(_slope(target, calibration(y, p[mask])[1]))
+                checks.append(slope_check(target, calibration(y, p[mask])[1]))
     pooled = f"(pooled {pct(head.cv.xg_error)})"
     mean, worst = fold_xg_error(head.folds)
     for stat, value, bound in (("mean", mean, FOLD_XG_MEAN), ("max", worst, FOLD_XG_MAX)):
@@ -383,7 +399,15 @@ def gbm_features(
     )
 
 
-def _gbm_model(ev: Evaluation, c: CardContext) -> list[str]:
+def gbm_model(ev: Evaluation, c: CardContext) -> list[str]:
+    """The Model section of a GBM card: settings, tuned grid values and the Platt step.
+
+    Examples
+    --------
+    >>> gbm_model(gbm_ev, ctx)[0].startswith("`HistGradientBoostingClassifier(")
+    ... # doctest: +SKIP
+    True
+    """
     g, s = gbm_grid(ev), _settings(ev)
     h = gbm.make_hgb(g["leaf_grid"][0], g["step"], [], g["min_samples_leaf"])  # fixed settings
     a, b = s["platt_intercept"], s["platt_slope"]
@@ -426,7 +450,7 @@ CARD: Final[CardText] = CardText(
     "Platt-calibrated inside each fit by grouped CV.",
     intended_use=ablation.INTENDED_USE,
     features=(),  # from the fitted sign map: gbm_features
-    model=_gbm_model,
+    model=gbm_model,
     limitations=(*ablation.FRAME_LIMITS, *ablation.CONTEXT_LIMITS, *ablation.POOLED_LIMITS),
     # gbm_text appends ablation.holdout_women (computed); the GBM has no drop-one rows
     changelog=(

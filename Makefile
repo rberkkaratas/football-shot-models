@@ -74,6 +74,7 @@ xgot:
 	uv run python -m football_shot_models.xgot --provider both
 
 ## Regenerate the model cards from the real snapshot and compare them with the committed ones.
+## First `fc goalmouth --check`: >= 99 % of each provider's goals in the frame, Opta direction confirmed.
 ## pytest -m slow runs test_models_run and test_v1_run before test_xgot_run, which warm the cache.
 ## Without the snapshot this fails: a skipped comparison must not look like a reproduction.
 ## Reads the prediction cache (data/cache) when data and code match; reproduce-cold does not.
@@ -87,6 +88,7 @@ reproduce:
 	@test -f data/legacy/xg_model.json || { \
 		echo "reproduce: no legacy v0 at data/legacy/xg_model.json; run make legacy-v0 first" >&2; \
 		exit 1; }
+	uv run fc goalmouth --check manifests/statsbomb-open-v1.json manifests/whoscored-v1.json >/dev/null
 	uv run pytest -m slow
 
 ## The public part only: the StatsBomb cards, without the private WhoScored snapshot and v0
@@ -94,6 +96,7 @@ reproduce-public:
 	@test -d data/snapshots/statsbomb-open-v1 || { \
 		echo "reproduce-public: no snapshot at data/snapshots/statsbomb-open-v1; run make snapshot \
 		first" >&2; exit 1; }
+	uv run fc goalmouth --check manifests/statsbomb-open-v1.json >/dev/null
 	uv run pytest -m "slow and not whoscored"
 
 ## The reproduction of record: every fit runs, the prediction cache is neither read nor written

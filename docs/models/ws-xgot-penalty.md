@@ -1,7 +1,7 @@
 # Model card: Penalty xGOT (placement only)
 
 ## Overview
-- **Name / version:** `ws-xgot-penalty` v1
+- **Name / version:** `ws-xgot-penalty` v2
 - **Task:** P(goal | on-target penalty) from placement only; fitted on in-game kicks, shoot-out kicks scored apart
 - **Status:** experimental
 - P2.4: penalty xGOT, a logistic regression on placement only; it reads no xG, since every in-game penalty has the same pre-shot xG. Placement-only, reported apart from the open-play xGOT.
@@ -48,7 +48,7 @@ Coefficients of the fit on all of dev (natural units: log-odds per unit of the f
 | mouth_yz | -0.3314 | -0.2584 |
 
 ## Validation design
-Grouped 5-fold cross-validation by `match_id` on the in-game dev kicks (their own folds); the test kicks are scored once by the fit on all of them, and the shoot-out kicks of every season by that fit too. The penalty xGOT reads no xG input. The open-play xGOT reads the xG input cross-fitted on these folds: an on-target shot in test fold k reads the xG of the fit that never saw fold k, and a hold-out (test) shot the xG of the fit on all of dev (train), so no xGOT row sees an xG fitted on itself. The xGOT training rows of fold k read xG from fits that did see fold k: the standard cross-fitting dependence, accepted.
+Grouped 5-fold cross-validation by `match_id` on the in-game dev kicks (their own folds); the test kicks are scored once by the fit on all of them, and the shoot-out kicks of every season by that fit too. The penalty xGOT reads no xG input.
 
 ## Metrics
 | Metric | Train | Validation | Test |
@@ -115,7 +115,7 @@ ECE (10 equal-count bins): the shot-weighted mean of |mean prediction − goal r
 | Penalty xGOT (placement only) | 0.4444 | 0.1377 | 0.5999 | 0.9784 | 0.3847 | 0.1121 | 0.5279 | 0.0399 |
 
 ## Limitations & known biases
-- CV calibration slope 0.9784 and ECE 0.0975 (fold means), test slope 0.0399: outside the open-play bounds (slope in [0.9, 1.1], ECE < 0.02), so read it as a ranking of placements, not as calibrated probabilities.
+- Against the open-play bounds, each on its own: CV calibration slope 0.9784 (inside [0.9, 1.1]), test slope 0.0399 (outside), CV ECE 0.0975 (fold mean; not below 0.02). Its probabilities are not calibrated to the open-play standard; as a ranking of placements its AUC is 0.5999 on CV and 0.5279 on the test (0.5 is no ranking).
 - 0 of 993 on-target shots (test included) are recorded beyond the frame + 0.15 m and are clipped to its edge; 993 are struck within 0.5 m of the centre line, so they have no near or far post.
 - `provider_psxg` is null on 993 of 993 on-target shots, so there is no provider xGOT benchmark.
 
@@ -124,3 +124,4 @@ Data: a private WhoScored / Opta archive, never committed or redistributed; this
 
 ## Changelog
 - v1 (MS5, P2.2–P2.5): first version.
+- v2 (MS5 assessment): the GBM is monotone in `mouth_y_in` only, with `mouth_y_past` and `mouth_out` free; the LR reads `mouth_y_past`; calibration by placement band; the scored-once split's level gap; penalty calibration judged bound by bound.

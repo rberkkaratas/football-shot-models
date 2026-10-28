@@ -21,7 +21,7 @@ import pytest
 import xgot_cases as xg
 from football_core import schema
 
-from football_shot_models import ablation, evaluation
+from football_shot_models import ablation, data, evaluation, metrics
 
 # ---- predictions ---------------------------------------------------------------------------
 
@@ -63,6 +63,9 @@ def _shots(rows: tuple[tuple[Any, ...], ...], with_xg: bool) -> pl.DataFrame:
         "on_target": [r[4] in ("goal", "saved") for r in rows],
         "outcome": pl.Series([r[4] for r in rows], dtype=schema.OUTCOME),
         "open_goal": pl.Series([r[5] for r in rows], dtype=pl.Boolean()),
+        "period": pl.Series([1 + i % 2 for i in range(len(rows))], dtype=pl.Int8()),
+        "seconds_in_period": pl.Series([60.0 * i for i in range(len(rows))],
+                                       dtype=pl.Float64()),
     })  # fmt: skip
     if with_xg:
         xgv = pl.Series("xg", [r[6] for r in rows], dtype=pl.Float64())
@@ -81,8 +84,8 @@ def _matches() -> pl.DataFrame:
     })  # fmt: skip
 
 
-def _predict(dev_rows: tuple[tuple[Any, ...], ...] = _DEV, matches: pl.DataFrame | None = None
-             ) -> pl.DataFrame:  # fmt: skip
+def _predict(dev_rows: tuple[tuple[Any, ...], ...] = _DEV, matches: pl.DataFrame | None = None,
+             shootout_held: tuple[bool, bool] = (False, False)) -> pl.DataFrame:  # fmt: skip
     from football_shot_models import xgot
 
     dev, held = _shots(dev_rows, True), _shots(_HELD, True)
@@ -97,8 +100,10 @@ def _predict(dev_rows: tuple[tuple[Any, ...], ...] = _DEV, matches: pl.DataFrame
     kd, kh, so = _shots(_KICKS_DEV, False), _shots(_KICKS_HELD, False), _shots(_SHOOTOUTS, False)
     kev = mc.fake_eval(pen, oof=np.array([XGOT[s] for s in kd["shot_id"]]),
                        holdout_p=np.array([XGOT[s] for s in kh["shot_id"]]))  # fmt: skip
+    held_so = pl.Series(list(shootout_held), dtype=pl.Boolean())
     kicks = xgot.Kicks(dev=kd, held=kh, shootouts=so, ev=kev,
-                       shootout_p=np.array([XGOT[s] for s in so["shot_id"]]))  # fmt: skip
+                       shootout_p=np.array([XGOT[s] for s in so["shot_id"]]),
+                       shootout_held=held_so)  # fmt: skip
     out: pl.DataFrame = xgot.predictions(
         inp, head, kicks, _matches() if matches is None else matches
     )
@@ -115,7 +120,8 @@ def test_predictions_columns() -> None:
     want = {
         "shot_id": pl.String(), "match_id": pl.String(), "player_id": pl.String(),
         "competition_id": pl.String(), "season_id": pl.String(), "match_date": pl.Date(),
-        "gk_id": pl.String(), "is_goal": pl.Boolean(), "on_target": pl.Boolean(),
+        "period": pl.Int8(), "seconds_in_period": pl.Float64(), "gk_id": pl.String(),
+        "is_goal": pl.Boolean(), "on_target": pl.Boolean(),
         "outcome": schema.OUTCOME, "open_goal": pl.Boolean(), "xg": pl.Float64(),
         "xgot": pl.Float64(),
     }  # fmt: skip
@@ -185,6 +191,46 @@ def test_sga_off_target_and_blocked() -> None:
         assert out[sid]["gax"] == pytest.approx(-INPUT_XG[sid], abs=1e-12), sid
 
 
+def test_shootout_split_is_the_kicks_mask() -> None:
+    """A shoot-out row's split is ``Kicks.shootout_held`` (the hold-out's mask on the kick),
+    not the split of other rows of its match or competition-season: here both kicks are in a
+    dev match, and the one the mask holds out is ``holdout`` (gate ratify 10, B5)."""
+    rows = {r["shot_id"]: r["split"] for r in _predict(shootout_held=(True, False)).iter_rows(
+        named=True)}  # fmt: skip
+    assert DATES["sb:m2"] and {r[1] for r in _DEV} >= {"sb:m2"}  # precondition: a dev match
+    assert (rows["sb:so1"], rows["sb:so2"]) == ("holdout", "dev")
+
+
+def test_penalty_kicks_shootout_mask(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``penalty_kicks`` splits shoot-out kicks by ``data.holdout_mask`` on the kicks, so a
+    shoot-out in a hold-out competition-season with no other row of that pair is held out, and
+    a shoot-out in a dev pair is not."""
+    from football_shot_models import xgot
+
+    n = 12  # in-game kicks, all in the dev pair, 6 matches
+    game = pl.DataFrame({
+        "shot_id": [f"sb:g{i:02d}" for i in range(n)],
+        "match_id": [f"sb:m{i // 2:02d}" for i in range(n)],
+        "competition_id": ["sb:11"] * n, "season_id": ["sb:4"] * n,
+        "on_target": [True] * n, "reason": ["penalty"] * n,
+        "is_goal": [i % 3 != 0 for i in range(n)],
+    })  # fmt: skip
+    shoot = pl.DataFrame({
+        "shot_id": ["sb:so1", "sb:so2"], "match_id": ["sb:m90", "sb:m00"],
+        "competition_id": ["sb:2", "sb:11"], "season_id": ["sb:27", "sb:4"],
+        "on_target": [True, True], "reason": ["shootout"] * 2, "is_goal": [True, False],
+    })  # fmt: skip
+    monkeypatch.setattr(xgot, "evaluate", lambda *a, **k: "ev")
+    monkeypatch.setattr(evaluation, "fit_predict", lambda spec, train, rows: np.full(
+        rows.height, 0.7))  # fmt: skip
+    spec = evaluation.ModelSpec("xgot-penalty", "Penalty xGOT", (), evaluation.BaseRate)
+    holdout = data.Holdout(data.is_holdout(), "Premier League 2015/2016")
+    kicks = xgot.penalty_kicks(spec, pl.concat([game, shoot]), holdout, None)
+    assert kicks.held.height == 0  # precondition: no in-game kick of the hold-out pair
+    assert kicks.shootouts["shot_id"].to_list() == ["sb:so1", "sb:so2"]
+    assert kicks.shootout_held.to_list() == [True, False]
+
+
 # ---- split half ----------------------------------------------------------------------------
 
 
@@ -225,14 +271,12 @@ def test_split_half_r() -> None:
     """Halves alternate a key's matches by date (then match id), so a match never spans halves;
     a key below ``min_rows`` or with an empty half is left out; r is Pearson's r of the halves'
     rates and its 95 % interval is Fisher's z."""
-    from football_shot_models import xgot
-
     spec = {
         **FOUR,
         "sb:pe": [("sb:e1", _d(4, 1), [1]), ("sb:e2", _d(4, 8), [0])],  # 2 rows < min_rows
         "sb:pf": [("sb:f1", _d(4, 1), [1, 0, 1, 0, 1])],  # one match: an empty half
     }
-    out = xgot.split_half(_half_frame(spec), by="player_id", value="v", min_rows=4)
+    out = metrics.split_half(_half_frame(spec), by="player_id", value="v", unit="match", min_rows=4)
     r = float(np.corrcoef(ODD, EVEN)[0, 1])
     assert out.keys == 4
     assert out.r == pytest.approx(r, abs=1e-12)
@@ -241,10 +285,10 @@ def test_split_half_r() -> None:
     assert out.high == pytest.approx(math.tanh(z + 1.96 * se), abs=1e-3)
     c = _half_frame(FOUR).filter(pl.col("player_id") == "sb:pc")
     # the tie-break is by match id, so renaming the matches moves the row with value 0 to rank 1
-    flipped = xgot.split_half(
+    flipped = metrics.split_half(
         pl.concat([_half_frame(FOUR).filter(pl.col("player_id") != "sb:pc"),
                    c.with_columns(match_id=pl.col("match_id").replace({"sb:c1": "sb:c9"}))]),
-        by="player_id", value="v", min_rows=4,
+        by="player_id", value="v", unit="match", min_rows=4,
     )  # fmt: skip
     odd_c, even_c = 1 / 5, 2 / 2  # c2 (0) and c3 first and third; c9 (1, 1) second
     want = float(np.corrcoef([3 / 5, 1 / 4, odd_c, 2 / 3], [0.0, 1 / 2, even_c, 4 / 5])[0, 1])
@@ -255,22 +299,24 @@ def test_split_half_r() -> None:
 def test_split_half_boundaries() -> None:
     """Under 4 keys, or with a constant half (r is NaN), r and the interval are None; r = ±1
     gives an interval [r, r]."""
-    from football_shot_models import xgot
-
     three = {k: v for k, v in FOUR.items() if k != "sb:pd"}
-    out = xgot.split_half(_half_frame(three), by="player_id", value="v", min_rows=1)
+    out = metrics.split_half(
+        _half_frame(three), by="player_id", value="v", unit="match", min_rows=1
+    )
     assert (out.keys, out.r, out.low, out.high) == (3, None, None, None)
     flat = {k: [(m, d, [0] * len(vs)) if i % 2 else (m, d, vs) for i, (m, d, vs) in
                 enumerate(sorted(ms, key=lambda x: (x[1], x[0])))]
             for k, ms in FOUR.items()}  # fmt: skip
-    out = xgot.split_half(_half_frame(flat), by="player_id", value="v", min_rows=1)
+    out = metrics.split_half(_half_frame(flat), by="player_id", value="v", unit="match", min_rows=1)
     assert (out.keys, out.r, out.low, out.high) == (4, None, None, None)
     for sign, evens in ((1.0, [0, 1, 0, 1]), (-1.0, [1, 0, 1, 0])):
         spec = {
             f"sb:q{i}": [(f"sb:q{i}a", _d(5, 1), [o]), (f"sb:q{i}b", _d(5, 8), [e])]
             for i, (o, e) in enumerate(zip([0, 1, 0, 1], evens, strict=True))
         }
-        out = xgot.split_half(_half_frame(spec), by="player_id", value="v", min_rows=2)
+        out = metrics.split_half(
+            _half_frame(spec), by="player_id", value="v", unit="match", min_rows=2
+        )
         assert (out.keys, out.r, out.low, out.high) == (4, sign, sign, sign)
 
 
@@ -279,8 +325,6 @@ def test_split_half_boundaries() -> None:
 )
 def test_split_half_errors(case: str) -> None:
     """A missing column or a null in ``by`` or ``value`` is an error."""
-    from football_shot_models import xgot
-
     frame = _half_frame(FOUR)
     if case.startswith("no "):
         frame = frame.drop(case.removeprefix("no "))
@@ -290,4 +334,40 @@ def test_split_half_errors(case: str) -> None:
             pl.when(pl.int_range(pl.len()) == 3).then(None).otherwise(pl.col(col)).alias(col)
         )
     with pytest.raises(ValueError):
-        xgot.split_half(frame, by="player_id", value="v", min_rows=1)
+        metrics.split_half(frame, by="player_id", value="v", unit="match", min_rows=1)
+
+
+def test_split_half_row_unit() -> None:
+    """``unit="row"`` alternates a key's rows in shot order (match date, period, seconds in the
+    period, shot id; PM X5), so one match can span halves and a key with one match is kept;
+    ``unit="match"`` on the same frame leaves that key out (an empty half). The order columns
+    are required, and an unknown unit is an error."""
+    vals = {"sb:k1": [1, 0, 1, 1, 0], "sb:k2": [0, 0, 1, 0], "sb:k3": [1, 1, 1, 0, 0, 1],
+            "sb:k4": [0, 1, 0, 0]}  # fmt: skip
+    rows = [(k, i, v) for k, vs in vals.items() for i, v in enumerate(vs)]
+    order = np.random.default_rng(5).permutation(len(rows))
+    rows = [rows[i] for i in order]
+    # shot i of a key: period 1 for i < 2, then period 2, whose seconds are smaller, so sorting
+    # by seconds alone (ignoring period) would give another order
+    frame = pl.DataFrame({
+        "keeper": [r[0] for r in rows],
+        "match_id": ["sb:m1"] * len(rows),
+        "match_date": pl.Series([dt.date(2020, 1, 1)] * len(rows), dtype=pl.Date()),
+        "period": pl.Series([1 if r[1] < 2 else 2 for r in rows], dtype=pl.Int8()),
+        "seconds_in_period": [2000.0 + 100 * r[1] if r[1] < 2 else 100.0 * r[1] for r in rows],
+        "shot_id": [f"sb:{r[0][-2:]}s{r[1]}" for r in rows],
+        "v": [float(r[2]) for r in rows],
+    })  # fmt: skip
+    out = metrics.split_half(frame, by="keeper", value="v", min_rows=4, unit="row")
+    # in shot order the halves are the even and odd shot indices of each key
+    odd = [np.mean(vs[0::2]) for vs in vals.values()]
+    even = [np.mean(vs[1::2]) for vs in vals.values()]
+    assert out.keys == 4
+    assert out.r == pytest.approx(float(np.corrcoef(odd, even)[0, 1]), abs=1e-12)
+    assert metrics.split_half(frame, by="keeper", value="v", min_rows=4, unit="match").keys == 0
+    for col in ("period", "seconds_in_period", "shot_id"):
+        with pytest.raises(ValueError, match=col):
+            metrics.split_half(frame.drop(col), by="keeper", value="v", min_rows=1, unit="row")
+    unknown: Any = "shot"
+    with pytest.raises(ValueError, match="unit"):
+        metrics.split_half(frame, by="keeper", value="v", min_rows=1, unit=unknown)

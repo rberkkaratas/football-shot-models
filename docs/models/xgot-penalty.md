@@ -1,7 +1,7 @@
 # Model card: Penalty xGOT (placement only)
 
 ## Overview
-- **Name / version:** `xgot-penalty` v1
+- **Name / version:** `xgot-penalty` v2
 - **Task:** P(goal | on-target penalty) from placement only; fitted on in-game kicks, shoot-out kicks scored apart
 - **Status:** experimental
 - P2.4: penalty xGOT, a logistic regression on placement only; it reads no xG, since every in-game penalty has the same pre-shot xG. Placement-only, reported apart from the open-play xGOT.
@@ -49,7 +49,7 @@ Coefficients of the fit on all of dev (natural units: log-odds per unit of the f
 | mouth_yz | -0.6110 | -0.3628 |
 
 ## Validation design
-Grouped 5-fold cross-validation by `match_id` on the in-game dev kicks (their own folds); the hold-out kicks are scored once by the fit on all of them, and the shoot-out kicks of every season by that fit too. The penalty xGOT reads no xG input. The open-play xGOT reads the xG input cross-fitted on these folds: an on-target shot in test fold k reads the xG of the fit that never saw fold k, and a hold-out (test) shot the xG of the fit on all of dev (train), so no xGOT row sees an xG fitted on itself. The xGOT training rows of fold k read xG from fits that did see fold k: the standard cross-fitting dependence, accepted.
+Grouped 5-fold cross-validation by `match_id` on the in-game dev kicks (their own folds); the hold-out kicks are scored once by the fit on all of them, and the shoot-out kicks of every season by that fit too. The penalty xGOT reads no xG input.
 
 ## Metrics
 | Metric | Train | Validation | Test |
@@ -119,7 +119,7 @@ ECE (10 equal-count bins): the shot-weighted mean of |mean prediction − goal r
 | Penalty xGOT (placement only) | 0.4860 | 0.1565 | 0.6384 | 0.9860 | 0.3904 | 0.1150 | 0.5663 | 0.9168 |
 
 ## Limitations & known biases
-- CV calibration slope 0.9860 and ECE 0.0892 (fold means), hold-out slope 0.9168: outside the open-play bounds (slope in [0.9, 1.1], ECE < 0.02), so read it as a ranking of placements, not as calibrated probabilities.
+- Against the open-play bounds, each on its own: CV calibration slope 0.9860 (inside [0.9, 1.1]), hold-out slope 0.9168 (inside), CV ECE 0.0892 (fold mean; not below 0.02). Its probabilities are not calibrated to the open-play standard; as a ranking of placements its AUC is 0.6384 on CV and 0.5663 on the hold-out (0.5 is no ranking).
 - 3 of 1,056 on-target shots (hold-out included) are recorded beyond the frame + 0.15 m and are clipped to its edge; 1,053 are struck within 0.5 m of the centre line, so they have no near or far post.
 - `provider_psxg` is null on 1,056 of 1,056 on-target shots, so there is no provider xGOT benchmark.
 - StatsBomb records a save where the keeper stopped the ball: its `goal_z` is that height, not the height at the goal line, and a save stopped short of the line has its `goal_y` projected along the line from the shot location (0 of the on-target saves were deflected, so their projection starts at the shot, not at the deflection).
@@ -129,3 +129,4 @@ Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Ne
 
 ## Changelog
 - v1 (MS5, P2.2–P2.5): first version.
+- v2 (MS5 assessment): the GBM is monotone in `mouth_y_in` only, with `mouth_y_past` and `mouth_out` free; the LR reads `mouth_y_past`; calibration by placement band; the scored-once split's level gap; penalty calibration judged bound by bound.

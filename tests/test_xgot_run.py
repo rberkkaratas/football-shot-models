@@ -80,8 +80,9 @@ def _headers(card: str) -> list[str]:
 @pytest.mark.parametrize("p", PROVIDERS)
 def test_run_writes_cards(runs: dict[str, Any], p: str) -> None:
     """Three cards per provider and nothing else in the docs dir; every card says xGOT in its
-    tables, carries the ECE table, the provider's xGOT validation paragraph (cross-fitting
-    sentence, not the xG one) and the reconciliation rows as its filters; the checks only on the
+    tables, carries the ECE table and the reconciliation rows as its filters, never the xG
+    validation paragraph; the cross-fitting sentence is on every open-play card and not on the
+    penalty card, whose folds are its own (run5-ms5 B1, disputes.md); the checks only on the
     headline card; the xG input line on the LR and GBM cards; no "StatsBomb" in WhoScored cards.
     The xG input is keeper-neutral (X1 (b)); the open-play model sees no kick."""
     from football_shot_models import xgot
@@ -96,7 +97,7 @@ def test_run_writes_cards(runs: dict[str, Any], p: str) -> None:
     ]
     lr, g = r.evaluations[3], r.evaluations[4]
     head_card = f"{prefix}{'gbm' if r.head is g else 'lr'}"
-    xg_line = (f"xG input: {r.xg.spec.title}, cross-fitted; provider headline xG: "
+    xg_line = (f"xG input: {r.xg_input.spec.title}, cross-fitted; provider headline xG: "
                f"{r.xg_headline.spec.title}")  # fmt: skip
     text = xgot.PROVIDERS[p].text
     for name in names:
@@ -105,7 +106,8 @@ def test_run_writes_cards(runs: dict[str, Any], p: str) -> None:
         assert f"ECE ({metrics.ECE_BINS} equal-count bins)" in card, name
         assert "| Bin | Shots | Mean xGOT | Goal rate |" in card, name
         assert [x for x in _headers(card) if re.search(r"(Σ|Mean) xG(?!OT)", x)] == [], name
-        assert xgot.XGOT_CROSS_FIT in card and cards.VALIDATION not in card, name
+        assert (xgot.XGOT_CROSS_FIT in card) == (not name.endswith("penalty")), name
+        assert cards.VALIDATION not in card, name
         assert (CHECKS_TITLE in card) == (name == head_card), name
         assert (xg_line in card) == (not name.endswith("penalty")), name
         for reason in xgot.RECONCILE_REASONS:
@@ -114,13 +116,13 @@ def test_run_writes_cards(runs: dict[str, Any], p: str) -> None:
             assert "StatsBomb" not in card, name
     assert len(r.checks) == 11
     if p == "statsbomb":
-        assert r.xg.spec.name == f"{r.xg_headline.spec.name}-keeper-neutral"
+        assert r.xg_input.spec.name == f"{r.xg_headline.spec.name}-keeper-neutral"
         assert "open_goal" in r.xg_headline.spec.features
     else:
-        assert r.xg.spec is r.xg_headline.spec
-    assert not set(r.xg.spec.features) & features.KEEPER_POSITION
+        assert r.xg_input.spec is r.xg_headline.spec
+    assert not set(r.xg_input.spec.features) & features.KEEPER_POSITION
     for ev in (lr, g):
-        assert ev.spec.xg_input == r.xg.spec.name
+        assert ev.spec.xg_input == r.xg_input.spec.name
     pop = _population(p, runs[p]["xg"])
     kinds = r.predictions.group_by("kind").len().rows()
     kicks = runs[p]["xg"].penalties.filter("on_target")
@@ -188,6 +190,29 @@ def test_checks_rows(case: str) -> None:
 
     assert (xgot.AUC_MIN, xgot.ECE_MAX, xgot.RECONCILE_TOL) == (0.80, 0.02, 0.01)
     assert models.SLOPE_RANGE == (0.9, 1.1)
+
+
+def test_checks_ece_row_reads_the_fold_mean(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PM X3: the CV ECE row is judged on the fold mean, never on the pooled out-of-fold value
+    (≈ 0 by construction for a Platt-calibrated fit). Folds at 0.03 and pooled at 0.005 miss
+    row 3; the hold-out at 0.01 still meets row 4."""
+    from football_shot_models import xgot
+
+    inputs = xg.check_inputs()
+    n_dev, n_held = inputs["dev"].height, inputs["held"].height
+    fold_n = {t.size for t in inputs["head"].fold_test}
+    assert len(fold_n | {n_dev, n_held}) == 3  # precondition: sizes tell the calls apart
+    by_size = {**dict.fromkeys(fold_n, 0.03), n_dev: 0.005, n_held: 0.01}
+
+    def fake(y: Any, p: Any, bins: int = metrics.ECE_BINS) -> float:
+        return by_size[len(y)]
+
+    monkeypatch.setattr(metrics, "ece", fake)
+    s = xgot.ece_stats(inputs["head"], evaluation.labels(inputs["dev"]),
+                       evaluation.labels(inputs["held"]))  # fmt: skip
+    assert (s.mean, s.pooled, s.held) == (0.03, 0.005, 0.01)
+    rows = dict(zip(ROW_NAMES, (c.result for c in xg.call_checks(inputs)), strict=True))
+    assert (rows["cv ece"], rows["holdout ece"]) == ("missed", "met")
 
 
 @pytest.mark.parametrize(
@@ -276,7 +301,8 @@ def test_penalty_shootouts_scored_by_dev_fit(runs: dict[str, Any], p: str) -> No
 
 def test_gbm_monotone_in_placement() -> None:
     """A fit of the ``gbm`` spec (its own sign map, a fixture-sized grid) never lowers xGOT as
-    the ball moves away from the centre at a fixed side (near or far post), height, xG and angle."""
+    the ball moves away from the centre, up to ``features.INNER_Y``, at a fixed side (near or
+    far post), height, xG and angle (run5-ms5: beyond it the width is free)."""
     from football_shot_models import xgot
 
     spec = next(s for s in xgot.xgot_specs("xgot-", "xg-x") if s.name == "xgot-gbm")
@@ -297,7 +323,8 @@ def test_gbm_monotone_in_placement() -> None:
         "on_target": [True] * n,
         "goal_y": 34.0 - gy, "goal_z": gz, "y": y, "angle_rad": angle, "xg_logit": xgl,
     })  # fmt: skip
-    v = np.round(np.arange(0.2, 3.81, 0.2), 1)
+    v = np.round(np.arange(0.2, features.INNER_Y, 0.1), 1)
+    assert v[-1] == 3.5 and v[-1] < features.INNER_Y  # precondition: the constrained range
     for side in (1.0, -1.0):  # from y = 20: ball at frame y > 0 is the near post
         grid = pl.DataFrame({
             "shot_id": [f"sb:g{i:02d}" for i in range(v.size)],
@@ -309,6 +336,178 @@ def test_gbm_monotone_in_placement() -> None:
         })  # fmt: skip
         out = evaluation.fit_predict(tiny, train, grid)
         assert np.all(np.diff(out) >= -1e-12), (side, out)
+
+
+def test_gbm_beyond_post_not_top() -> None:
+    """run5-ms5 (FDS M1, QA Q1): a ball beyond ``features.INNER_Y`` touches the post, so the
+    on-target shots there are mostly saves, and a StatsBomb save stopped just in front of the
+    shot projects far outside the frame. A fit of the ``gbm`` spec on data where that holds
+    scores neither a ball at 3.8 m nor that projected save above a ball at 3.4 m."""
+    from football_core import pitch as fc_pitch
+
+    from football_shot_models import xgot
+
+    projected = float(fc_pitch.project_to_goal_line([90.0], [34.0], [90.5], [36.0])[0])
+    assert projected == 68.0  # precondition: the save lands on the touchline, not near the post
+    assert features.clipped([fc_pitch.GOAL_CENTRE_Y - projected], [1.0]).all()
+    spec = next(s for s in xgot.xgot_specs("xgot-", "xg-x") if s.name == "xgot-gbm")
+    signs = spec.make().get_params()["monotone"]
+    tiny = dataclasses.replace(spec, make=functools.partial(gbm.MonotoneGBM, signs, **mc.SIGNAL))
+    rng = np.random.default_rng(29)
+    n = 1200
+    out_ = rng.uniform(size=n) < 0.15
+    gy = np.where(out_, rng.uniform(4.0, 20.0, n), rng.uniform(0.0, 3.8, n))
+    gy *= np.where(rng.uniform(size=n) < 0.5, -1.0, 1.0)
+    gz, xgl = rng.uniform(0.05, 2.35, n), rng.normal(-1.5, 0.8, n)
+    inner = np.minimum(np.abs(gy), features.INNER_Y)
+    p = expit(0.9 * xgl + 0.9 + 0.9 * (inner - 1.8) + 0.4 * (gz - 1.2))
+    p = np.where(np.abs(gy) > features.INNER_Y, 0.08, p)  # beyond the post: saves
+    train = pl.DataFrame({
+        "shot_id": [f"sb:s{i:04d}" for i in range(n)],
+        "match_id": [f"sb:m{i // 10:03d}" for i in range(n)],
+        "is_goal": rng.uniform(size=n) < p,
+        "on_target": [True] * n,
+        "goal_y": 34.0 - gy, "goal_z": gz, "y": rng.uniform(15.0, 53.0, n),
+        "angle_rad": rng.uniform(0.2, 1.2, n), "xg_logit": xgl,
+    })  # fmt: skip
+    grid = pl.DataFrame({
+        "shot_id": ["sb:g0", "sb:g1", "sb:g2"],
+        "match_id": ["sb:g"] * 3,
+        "is_goal": [False] * 3,
+        "on_target": [True] * 3,
+        "goal_y": [34.0 - 3.4, 34.0 - 3.8, projected], "goal_z": [1.0] * 3, "y": [20.0] * 3,
+        "angle_rad": [0.6] * 3, "xg_logit": [-1.0] * 3,
+    })  # fmt: skip
+    top, post, saved = evaluation.fit_predict(tiny, train, grid)
+    assert post < top and saved < top, (top, post, saved)
+
+
+def test_band_lines_values() -> None:
+    """The calibration-by-placement table: shots, goals, goal rate, mean xGOT and Σ xGOT − goals
+    per ``Y_BANDS`` band of rounded |y|, points outside the frame in their own row; worked out by
+    hand from a frame with two shots per band."""
+    from football_shot_models import xgot
+
+    ay = [0.5, 0.6, 1.5, 1.4, 2.5, 2.6, 3.1, 3.2, 3.4, 3.5, 3.7, 3.8, 5.0, 9.0]
+    sign = [1, -1] * 7
+    goal = [True, False, False, False, True, True, False, True, True, False, False, False,
+            False, True]  # fmt: skip
+    p = np.array([0.2, 0.3, 0.4, 0.1, 0.5, 0.7, 0.6, 0.4, 0.5, 0.5, 0.6, 0.4, 0.3, 0.1])
+    dev = pl.DataFrame({
+        "shot_id": [f"sb:b{i:02d}" for i in range(14)],
+        "goal_y": [34.0 - s * a for s, a in zip(sign, ay, strict=True)],
+        "goal_z": [1.0] * 14, "on_target": [True] * 14, "is_goal": goal,
+    })  # fmt: skip
+    ev = mc.fake_eval(xg.lr_spec(), oof=p)
+    lines = xgot.band_lines(ev, dev)
+    rows = [x for x in lines if x.startswith("| ") and not x.startswith("| abs")]
+    assert xgot.Y_BANDS == (0.0, 1.0, 2.0, 3.0, 3.3, features.INNER_Y)
+    want = [  # band, shots, goals, rate, mean, Σ − goals: pairs of rows i, i + 1
+        ("[0, 1)", 2, 1, 0.5, 0.25, -0.5), ("[1, 2)", 2, 0, 0.0, 0.25, 0.5),
+        ("[2, 3)", 2, 2, 1.0, 0.6, -0.8), ("[3, 3.3)", 2, 1, 0.5, 0.5, 0.0),
+        ("[3.3, 3.55)", 2, 1, 0.5, 0.5, 0.0), (">= 3.55", 2, 0, 0.0, 0.5, 1.0),
+        ("outside the frame + 0.15 m", 2, 1, 0.5, 0.2, -0.6),
+    ]  # fmt: skip
+    assert len(rows) == len(want)
+    for row, (band, n, g, rate, mean, gap) in zip(rows, want, strict=True):
+        cells = [c.strip() for c in row.strip("|").split("|")]
+        assert cells == [band, str(n), str(g), cards.fmt(rate), cards.fmt(mean), f"{gap:+.1f}"]
+
+
+def test_level_and_penalty_calibration_lines(runs: dict[str, Any]) -> None:
+    """The open-play cards state the scored-once split's Σ xGOT against goals (FDS m4); the
+    penalty card judges each open-play bound on its own and prints the ranking AUC beside the
+    advice when one is outside (FDS m1). Unit case: both slopes inside, ECE outside."""
+    from football_shot_models import xgot
+
+    for p in PROVIDERS:
+        r = runs[p]["run"]
+        split = xgot.PROVIDERS[p].split
+        for ev, name in ((r.evaluations[3], CARDS[p][0]), (r.evaluations[4], CARDS[p][1])):
+            h = ev.holdout
+            assert f"On the {split}, Σ xGOT is {h.xg:,.1f} against {h.goals:,} goals" in (
+                r.cards[name]), name  # fmt: skip
+        pen_card = r.cards[CARDS[p][2]]
+        assert f"CV calibration slope {cards.fmt(r.penalty.cv.cal_slope)} (" in pen_card
+    pen = mc.fake_eval(
+        xg.lr_spec(name="xgot-penalty"), cv=mc.scores(auc=0.64, slope=0.986),
+        holdout=mc.scores(auc=0.566, slope=0.9168),
+    )  # fmt: skip
+    s = xgot.EceStats(mean=0.0892, max=0.1, pooled=0.04, held=0.12, floor=0.1)
+    line = xgot._penalty_calibration(pen, s, "hold-out")
+    assert "slope 0.9860 (inside [0.9, 1.1])" in line
+    assert "hold-out slope 0.9168 (inside)" in line
+    assert "CV ECE 0.0892 (fold mean; not below 0.02)" in line
+    assert "AUC is 0.6400 on CV and 0.5660 on the hold-out" in line
+    ok = xgot._penalty_calibration(pen, dataclasses.replace(s, mean=0.0199), "hold-out")
+    assert "AUC" not in ok and "(fold mean; below 0.02)" in ok
+
+
+@pytest.mark.parametrize("p", PROVIDERS)
+def test_run_shootout_split_and_penalty_benchmarks(runs: dict[str, Any], p: str) -> None:
+    """Gate ratify 10: a shoot-out kick in a hold-out competition-season is ``holdout``, one in a
+    dev pair ``dev`` (hold-out matches taken from the fixture's matches table here). Ratify 9:
+    the penalty card's Benchmarks lists the penalty base rate first, then the penalty xGOT."""
+    r, xgd = runs[p]["run"], runs[p]["xg"]
+    m = xgd.matches
+    held_matches = set(
+        m.filter((pl.col("competition_id") == "sb:2") & (pl.col("season_id") == "sb:27"))[
+            "match_id"] if p == "statsbomb" else m.filter(pl.col("season_name") == "2026/2027")[
+            "match_id"]
+    )  # fmt: skip
+    so = r.predictions.filter(pl.col("kind") == "shootout")
+    got = {(row["match_id"] in held_matches, str(row["split"])) for row in so.iter_rows(
+        named=True)}  # fmt: skip
+    assert got == {(True, "holdout"), (False, "dev")}  # precondition: both kinds present
+    card = r.cards[CARDS[p][2]]
+    bench = card.split("## Benchmarks", 1)[1].split("## ", 1)[0]
+    rows = [x for x in bench.splitlines() if x.startswith("| ") and not x.startswith("| Model")]
+    assert rows[0].startswith("| Penalty base rate (on target) |"), rows
+    assert rows[1].startswith(f"| {r.penalty.spec.title} |"), rows
+
+
+@pytest.mark.parametrize("p", PROVIDERS)
+def test_split_half_blocked_left_out(runs: dict[str, Any], p: str) -> None:
+    """The split-half rows with blocked shots "left out" equal ``metrics.split_half`` on the
+    per-shot frame without blocked shots, computed here, and differ from the "in" rows."""
+    from football_shot_models import xgot
+
+    r = runs[p]["run"]
+    per_shot = xgot.sga(r.predictions)
+    assert per_shot.filter(pl.col("outcome") == "blocked").height > 0  # precondition
+    kept = per_shot.filter(pl.col("outcome") != "blocked")
+    rows = {(m, blocked): (a, b) for m, blocked, a, b in r.split_half}
+    for m in xgot.MIN_SHOTS:
+        want = tuple(
+            metrics.split_half(kept, by="player_id", value=v, min_rows=m, unit="match")
+            for v in ("sga", "gax")
+        )
+        for got, exp in zip(rows[(m, False)], want, strict=True):
+            assert got.keys == exp.keys, m
+            assert (got.r, got.low, got.high) == pytest.approx((exp.r, exp.low, exp.high)), m
+    in_, out = rows[(xgot.MIN_SHOTS[0], True)], rows[(xgot.MIN_SHOTS[0], False)]
+    assert in_[0].r is not None and in_[0] != out[0]
+    assert f"| {xgot.MIN_SHOTS[0]} | left out | {out[0].keys:,} |" in r.cards[r.head.spec.name]
+
+
+def test_candidates_read_module_globals(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Build ratify 8 (run5-ms5 B2): the providers' candidates read ``models.GBM`` and
+    ``v1.GBM`` when called, so a patch of the module global is seen."""
+    from football_shot_models import ablation, xgot
+
+    seen: list[tuple[Any, Any]] = []
+
+    def record(steps: Any, g: Any, *args: Any) -> Any:
+        seen.append((steps, g))
+        return (), None
+
+    monkeypatch.setattr(xgot, "_candidates", record)
+    sb, ws = object(), object()
+    monkeypatch.setattr(models, "GBM", sb)
+    monkeypatch.setattr(v1, "GBM", ws)
+    for key in ("statsbomb", "whoscored"):
+        xgot.PROVIDERS[key].candidates(None, None, None, (), None)  # type: ignore[arg-type]
+    assert seen == [(ablation.STEPS, sb), (v1.STEPS, ws)]
 
 
 def test_rule1_ws_outputs(runs: dict[str, Any]) -> None:
@@ -428,7 +627,10 @@ def test_reproduce_whoscored(real: dict[str, Any]) -> None:
         committed = (REPO / "docs" / "models" / f"{name}.md").read_bytes()
         assert (ws["docs"] / f"{name}.md").read_bytes() == committed, name
     block = xgot.summary_block([sb["run"], ws["run"]])
-    assert _readme_block() == block.strip("\n")
+    assert _readme_block() == block.strip("\n"), (
+        "the README MS5 block is stale: `make xgot` prints it; paste it between the "
+        "xgot:summary markers"
+    )
     for text in (block, *(ws["run"].cards[n] for n in CARDS["whoscored"])):
         assert re.search(r"ws:\d", text) is None
     r = ws["run"]

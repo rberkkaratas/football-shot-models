@@ -41,7 +41,7 @@ def test_xg_guard_refuses_placement() -> None:
     """Every placement feature and ``xg_logit`` is refused by the xG guard, even with the xGOT
     registry passed; a placement feature names its post-shot reads."""
     names = xg.placement_names()
-    assert set(names) == set(xg.PLACEMENT_NAMES)  # precondition: the spec's 13 names
+    assert set(names) == set(xg.PLACEMENT_NAMES)  # precondition: the spec's 16 names
     assert features.check_xg_features(["distance_m"], features.XGOT_DERIVED) == ("distance_m",)
     for name in names:
         with pytest.raises(ValueError, match="post-shot") as info:

@@ -108,6 +108,18 @@ def test_folds_must_partition() -> None:
         xgot.xg_input(ev, _dev(), _held(), forward)
 
 
+def test_folds_refuse_training_on_the_test_rows() -> None:
+    """A fold whose train set holds its own test rows is refused (run5-ms5 Q6): its
+    out-of-fold predictions would be in-sample. Test sets alone still partition dev."""
+    leaky = tuple((np.arange(6, dtype=np.intp), t) for t in (np.arange(3), np.arange(3, 6)))
+    clean = xg.folds_from_tests(6, [[0, 1, 2], [3, 4, 5]])
+    evaluation.check_partition(clean, 6)  # near miss: the same test sets, disjoint train
+    with pytest.raises(ValueError, match=r"fold 0: 3 row\(s\) are in both"):
+        evaluation.check_partition(leaky, 6)
+    with pytest.raises(ValueError, match="both its train and test"):
+        evaluation.restrict_folds(leaky, np.ones(6, dtype=bool))
+
+
 def test_xg_input_cross_fitted() -> None:
     """Dev rows read their own fold's out-of-fold xG and keep their fold; hold-out rows read the
     dev fit; ``xg_logit`` is the clipped logit; only on-target rows reach the xGOT frames."""
