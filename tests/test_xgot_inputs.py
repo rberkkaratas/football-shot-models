@@ -212,10 +212,11 @@ def _sharp(dev: pl.DataFrame, held: pl.DataFrame, spec: Any, folds: Any, q: floa
     return xg.make_eval(spec, dev, held, folds, np.where(y, q, 1 - q), np.where(yh, q, 1 - q))
 
 
-def test_keeper_neutral_spec() -> None:
+def test_keeper_neutral_spec(monkeypatch: pytest.MonkeyPatch) -> None:
     """``keeper_neutral`` drops exactly the ``KEEPER_POSITION`` features (a GBM's sign map with
     them), renames and retitles; a spec without one is returned itself. ``xg_input_eval`` refits
-    the keeper-neutral headline and refuses an ablation-only input."""
+    the keeper-neutral headline and refuses an ablation-only input (MS6 §5: the candidates come
+    from ``models.evaluate_candidates``, stubbed here with the provider's step specs)."""
     from football_shot_models import xgot
 
     lr = evaluation.ModelSpec(
@@ -253,8 +254,15 @@ def test_keeper_neutral_spec() -> None:
 
     def provider(head_spec: Any) -> Any:
         head_ev = _sharp(dev, held, head_spec, folds, 0.9)  # beats the LR: the headline
+        steps, gbm_spec = (base,), head_spec
+
+        def stub(st: Any, g: Any, *args: Any, **kwargs: Any) -> Any:
+            assert st is steps and g is gbm_spec  # the provider's own specs reach the function
+            return models.Candidates(baselines=(), steps=(lr_ev,), gbm=head_ev)
+
+        monkeypatch.setattr(models, "evaluate_candidates", stub)
         return dataclasses.replace(xgot.PROVIDERS["statsbomb"],
-                                   candidates=lambda *a: ((lr_ev,), head_ev))  # fmt: skip
+                                   candidate_specs=lambda: (steps, gbm_spec))  # fmt: skip
 
     inp, head = xgot.xg_input_eval(provider(keeper), xg_data, dev, held, folds, None)
     assert head.spec is keeper

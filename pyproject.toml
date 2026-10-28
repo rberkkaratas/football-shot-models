@@ -9,7 +9,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "football-core",
+    "football-core[viz]",
     "scikit-learn>=1.9.1",
 ]
 

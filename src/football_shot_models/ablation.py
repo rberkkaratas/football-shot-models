@@ -460,30 +460,27 @@ def wide_dfk(ev: Evaluation, benchmark: Evaluation, dev: pl.DataFrame) -> str:
 # ---- evaluation and cards -----------------------------------------------------------------
 
 
-def evaluate_steps(
+def evaluate_variants(
     dev: pl.DataFrame,
     held: pl.DataFrame,
     folds: Folds,
-    freeze_frames: pl.DataFrame,
+    freeze_frames: pl.DataFrame | None,
     *,
     cache: PredictionCache | None = None,
-) -> tuple[tuple[Evaluation, ...], tuple[Evaluation, ...]]:
-    """The steps (``STEPS`` order) and their variants (``VARIANTS`` order), on the same folds.
+) -> tuple[Evaluation, ...]:
+    """The step variants (``VARIANTS`` order), on the folds of the steps.
 
-    ``cache`` is passed to every :func:`~football_shot_models.evaluation.evaluate`.
+    The steps themselves are evaluated once, by ``models.evaluate_candidates``. ``cache`` is
+    passed to every :func:`~football_shot_models.evaluation.evaluate`.
 
     Examples
     --------
-    >>> steps, variants = evaluate_steps(dev, held, folds, xg.freeze_frames)  # doctest: +SKIP
-    >>> [ev.spec.name for ev in steps]  # doctest: +SKIP
-    ['xg-lr-splines', 'xg-lr-context', 'xg-lr-frames']
+    >>> variants = evaluate_variants(dev, held, folds, xg.freeze_frames)  # doctest: +SKIP
+    >>> len(variants) == len(VARIANTS)  # doctest: +SKIP
+    True
     """
     ff, pc = freeze_frames, cache
-    steps = tuple(evaluate(s, dev, held, folds, freeze_frames=ff, cache=pc) for s in STEPS)
-    variants = tuple(
-        evaluate(v.spec(), dev, held, folds, freeze_frames=ff, cache=pc) for v in VARIANTS
-    )
-    return steps, variants
+    return tuple(evaluate(v.spec(), dev, held, folds, freeze_frames=ff, cache=pc) for v in VARIANTS)
 
 
 def step_cards(

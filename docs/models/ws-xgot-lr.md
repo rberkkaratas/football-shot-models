@@ -1,7 +1,7 @@
 # Model card: LR xG + placement
 
 ## Overview
-- **Name / version:** `ws-xgot-lr` v2
+- **Name / version:** `ws-xgot-lr` v4
 - **Task:** binary classification: P(goal | on-target shot) for the on-target shots of the non-penalty xG population (a goal or a keeper save; own goals are never on target)
 - **Status:** experimental
 - P2.3: logistic regression of the goal on the logit of the cross-fitted xG, placement splines, the width past the post's inner edge, angle × placement and the near / far post. Not the headline model; that is Monotone GBM + Platt.
@@ -17,6 +17,7 @@ xGOT (post-shot xG) for on-target shots: P(goal) of a shot that reached the goal
 
 | Filter | Shots | Goals |
 |---|---|---|
+| coarse recording grid (whole-yard locations; the match is left out of the xGOT fit, PM MS6 E1) | 0 | 0 |
 | own goal (Opta q28) | 0 | 0 |
 | shoot-out kick (period 5; penalty xGOT, reported apart) | 16 | 13 |
 | penalty (in-game; penalty xGOT) | 993 | 834 |
@@ -138,17 +139,17 @@ ECE (10 equal-count bins): the shot-weighted mean of |mean prediction − goal r
 
 ### Calibration by placement band
 
-Dev out-of-fold xGOT by the ball's distance from the goal centre (`mouth_y_abs`, m, after rounding); a ball beyond 3.55 m touches the post. The reliability table bins by prediction, so it cannot show a placement the model misprices.
+Dev out-of-fold xGOT by the ball's distance from the goal centre (`mouth_y_abs`, m, after rounding); a ball beyond 3.55 m touches the post. The reliability table bins by prediction, so it cannot show a placement the model misprices. SD is √Σ p(1 − p), the spread of the goal count if xGOT is calibrated; *Within 2 SD* is the PM's screening rule (MS6), not a proof of calibration: a calibrated model leaves a band outside it by chance in about 4.6% of cases. The rule is a normal approximation, so a band with fewer than 100 shots is printed but not judged (PM, MS6).
 
-| abs(y) band (m) | Shots | Goals | Goal rate | Mean xGOT | Σ xGOT − goals |
-|---|---|---|---|---|---|
-| [0, 1) | 7,552 | 1,277 | 0.1691 | 0.1700 | +6.5 |
-| [1, 2) | 7,814 | 1,936 | 0.2478 | 0.2457 | -16.5 |
-| [2, 3) | 7,591 | 3,044 | 0.4010 | 0.4044 | +25.7 |
-| [3, 3.3) | 2,544 | 1,332 | 0.5236 | 0.4976 | -66.1 |
-| [3.3, 3.55) | 787 | 329 | 0.4180 | 0.4818 | +50.2 |
-| >= 3.55 | 29 | 5 | 0.1724 | 0.1969 | +0.7 |
-| outside the frame + 0.15 m | 0 | 0 | n/a | n/a | n/a |
+| abs(y) band (m) | Shots | Goals | Goal rate | Mean xGOT | Σ xGOT − goals | SD | Within 2 SD |
+|---|---|---|---|---|---|---|---|
+| [0, 1) | 7,552 | 1,277 | 0.1691 | 0.1700 | +6.5 | 29.1 | yes |
+| [1, 2) | 7,814 | 1,936 | 0.2478 | 0.2457 | -16.5 | 32.5 | yes |
+| [2, 3) | 7,591 | 3,044 | 0.4010 | 0.4044 | +25.7 | 36.1 | yes |
+| [3, 3.3) | 2,544 | 1,332 | 0.5236 | 0.4976 | -66.1 | 21.1 | no |
+| [3.3, 3.55) | 787 | 329 | 0.4180 | 0.4818 | +50.2 | 11.8 | no |
+| >= 3.55 | 29 | 5 | 0.1724 | 0.1969 | +0.7 | 1.8 | not judged (n < 100) |
+| outside the frame + 0.15 m | 0 | 0 | n/a | n/a | n/a | 0.0 | not judged (n < 100) |
 
 ## Benchmarks
 | Model | CV log loss | CV Brier | CV AUC | CV cal. slope | Hold-out log loss | Hold-out Brier | Hold-out AUC | Hold-out cal. slope |
@@ -157,12 +158,13 @@ Dev out-of-fold xGOT by the ball's distance from the goal centre (`mouth_y_abs`,
 | LR xG only | 0.5293 | 0.1762 | 0.7464 | 1.0004 | 0.5369 | 0.1794 | 0.7484 | 1.0076 |
 | LR xG + placement, no near / far | 0.4592 | 0.1493 | 0.8270 | 0.9988 | 0.4627 | 0.1509 | 0.8296 | 1.0161 |
 | LR xG + placement | 0.4469 | 0.1442 | 0.8368 | 0.9987 | 0.4498 | 0.1454 | 0.8388 | 1.0164 |
-| Monotone GBM + Platt | 0.4394 | 0.1418 | 0.8425 | 1.0013 | 0.4398 | 0.1419 | 0.8472 | 1.0333 |
+| Monotone GBM + Platt | 0.4383 | 0.1415 | 0.8435 | 1.0020 | 0.4394 | 0.1416 | 0.8475 | 1.0314 |
 
 ## Limitations & known biases
 - 0 of 31,471 on-target shots (test included) are recorded beyond the frame + 0.15 m and are clipped to its edge and flagged by `mouth_out`, since where they would have crossed the line is not known; 1,471 are struck within 0.5 m of the centre line, so they have no near or far post.
 - `provider_psxg` is null on 31,471 of 31,471 on-target shots, so there is no provider xGOT benchmark.
 - On the test, Σ xGOT is 1,548.5 against 1,614 goals (-4.06%; calibration intercept 0.0876). A level gap moves every keeper's goals saved against this xGOT the same way, so a season's keepers read better or worse as a group.
+- Calibration by placement band: 2 of 7 bands are outside 2 SD on dev out of fold ([3, 3.3): 2,544 shots, 1,332 goals, Σ xGOT − goals −66.1 (SD 21.1); [3.3, 3.55): 787 shots, 329 goals, Σ xGOT − goals +50.2 (SD 11.8)). This model's placement terms misprice them; the headline is Monotone GBM + Platt, which the band rule judges (PM E1).
 
 ## Data licensing
 Data: a private WhoScored / Opta archive, never committed or redistributed; this card holds counts and metrics only.
@@ -170,3 +172,5 @@ Data: a private WhoScored / Opta archive, never committed or redistributed; this
 ## Changelog
 - v1 (MS5, P2.2–P2.5): first version.
 - v2 (MS5 assessment): the GBM is monotone in `mouth_y_in` only, with `mouth_y_past` and `mouth_out` free; the LR reads `mouth_y_past`; calibration by placement band; the scored-once split's level gap; penalty calibration judged bound by bound.
+- v3 (MS6): saves recorded where the keeper stopped the ball and projected to the line are snapped to the 0.1 yd goal-mouth lattice of recorded points (football-core); the GBM's placement features carry no monotone constraint (chosen by the band rule); the band table prints the SD; the band rule is a check.
+- v4 (MS6, GSAx): matches recorded on the coarse (1 yd) grid leave the xGOT fit (PM E1); a band is judged by the band rule only with at least 100 shots.

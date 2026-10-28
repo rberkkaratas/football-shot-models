@@ -69,6 +69,7 @@ EPS: Final[float] = 1e-15
 N_BOOT: Final[int] = 2000
 SEED: Final[int] = 0
 ECE_BINS: Final[int] = 10
+GAIN_LEVEL: Final[float] = 0.95  # the level of bootstrap_gain's percentile interval
 _LOGIT_EPS: Final[float] = float(np.log(EPS) - np.log1p(-EPS))
 
 
@@ -643,7 +644,7 @@ def bootstrap_gain(
     d = np.bincount(inv, weights=diff, minlength=m)
     n = np.bincount(inv, minlength=m).astype(np.float64)
     gains = (w @ d) / (w @ n)
-    low, high = np.quantile(gains, [0.025, 0.975])
+    low, high = np.quantile(gains, [(1 - GAIN_LEVEL) / 2, (1 + GAIN_LEVEL) / 2])
     return GainCI(float(diff.mean()), float(low), float(high), n_boot, m)
 
 
@@ -887,7 +888,8 @@ def split_half(
     -------
     SplitHalf
         ``r`` and its interval are None under 4 keys or when r is undefined (a constant
-        half); r = ±1 gives ``low = high = r``.
+        half); r = ±1 gives ``low = high = r``. A frame with no row, or no key reaching
+        ``min_rows``, gives ``SplitHalf(0, None, None, None)``.
 
     Raises
     ------
@@ -919,6 +921,8 @@ def split_half(
     for c in cols:
         if n := frame[c].null_count():
             raise ValueError(f"split_half: {c} has {n} null value(s)")
+    if frame.height == 0:  # an empty tier: no key, nothing to correlate
+        return SplitHalf(0, None, None, None)
     half = (pl.int_range(pl.len()).over(by) % 2).alias("_half")
     if unit == "match":
         keys = [by, *order_cols]
@@ -944,3 +948,31 @@ def split_half(
         return SplitHalf(n, math.copysign(1.0, r), math.copysign(1.0, r), math.copysign(1.0, r))
     z, se = math.atanh(r), 1.0 / math.sqrt(n - 3)
     return SplitHalf(n, r, math.tanh(z - _Z95 * se), math.tanh(z + _Z95 * se))
+
+
+def spearman_brown(r: float | None) -> float | None:
+    """The Spearman-Brown step-up ``2r / (1 + r)``: the reliability of the whole from two halves.
+
+    Split-half r correlates halves of half the length, so it understates the reliability of
+    all the rows; the step-up gives the reliability of twice the half length.
+
+    Returns
+    -------
+    float or None
+        None for None or ``r <= -1`` (no defined step-up).
+
+    Raises
+    ------
+    ValueError
+        A NaN or a bool.
+
+    Examples
+    --------
+    >>> round(spearman_brown(0.5), 4), spearman_brown(None), spearman_brown(-1.0)
+    (0.6667, None, None)
+    """
+    if r is None:
+        return None
+    if isinstance(r, bool) or math.isnan(r):
+        raise ValueError(f"spearman_brown: r must be a number in (-1, 1], got {r!r}")
+    return None if r <= -1.0 else 2.0 * r / (1.0 + r)

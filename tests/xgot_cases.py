@@ -1,4 +1,5 @@
-"""Hand-built synthetic fixtures for the MS5.xgot tests (spec ``runs/MS5/xgot`` §11).
+"""Hand-built synthetic fixtures for the MS5.xgot tests (spec ``runs/MS5/xgot`` §11) and the MS6
+xgot-ready tests (spec ``runs/MS6/xgot-ready`` §4, §8).
 
 Every id, name and number is invented; nothing is copied from an open-data or archive file.
 Frames are built column by column with the C3 dtypes. Nothing here imports the new module
@@ -17,7 +18,15 @@ not the collection.
   penalty, two have a shoot-out (2 kicks on target, 1 off). Excluded on purpose: an own goal, a
   direct corner on target, and per provider a no-frame save (StatsBomb) or an unresolved-assist
   save (WhoScored).
-- ``check_inputs``: stand-in evaluations for ``xgot.checks`` with chosen scores.
+- ``check_inputs``: stand-in evaluations for ``xgot.checks`` with chosen scores, and a dev frame
+  with goal-mouth points for the MS6 band row.
+- ``patched_providers``: MS6 §4 fixture rewrite. ``Provider.candidates`` is gone, so the fixture
+  patches the module globals that ``Provider.candidate_specs`` reads (``ablation.STEPS``,
+  ``models.GBM``, ``v1.STEPS``, ``v1.GBM``) and ``baselines.BASELINES`` (to ``()``, so the tiny
+  StatsBomb step, which reads ``open_goal``, stays the headline and the keeper-neutral refit runs).
+
+MS6 §2.2: the StatsBomb snapshot's ``goal_y`` values are cell centres of the 0.1 yd goal-mouth
+lattice (as the MS6 loader writes them), so ``xgot.fit``'s lattice guard accepts the snapshot.
 """
 
 from __future__ import annotations
@@ -25,6 +34,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import functools
+import math
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -52,11 +62,10 @@ LR_FEATURES = (
     "angle_x_mouth_z",
     "mouth_far",
 )
-GBM_FEATURES = (
-    "xg_logit", "mouth_y_in", "mouth_y_past", "mouth_out", "mouth_z", "far_side", "angle_rad",
-)  # fmt: skip
+# MS6 xgot-ready §3, candidate (b): placement carries no monotone constraint
+GBM_FEATURES = ("xg_logit", "mouth_y_abs", "mouth_out", "mouth_z", "far_side", "angle_rad")
 PENALTY_FEATURES = ("mouth_y_abs", "mouth_z", "mouth_yz")
-GBM_SIGNS = {"xg_logit": 1, "mouth_y_in": 1}  # run5-ms5: monotone only up to INNER_Y
+GBM_SIGNS = {"xg_logit": 1}
 KEEPER = (
     "gk_x", "gk_y", "gk_in_cone", "gk_absent", "gk_to_goal_m", "gk_to_shot_m", "gk_off_line_m",
     "open_goal",
@@ -67,6 +76,14 @@ PLACEMENT_NAMES = (
     *("far_side", "mouth_far", "angle_x_mouth_y", "angle_x_mouth_z", "mouth_yz"),
     *("mouth_y_in", "mouth_y_past", "mouth_out"),
 )
+
+
+def lattice_y(goal_y: float) -> float:
+    """MS6 §2.2, written out: a pitch-width goal_y (metres) moved to the centre of the StatsBomb
+    0.1 yd goal-mouth cell that holds it (``pitch`` is the reference map)."""
+    yd = float(np.interp(goal_y, pitch.METRE_MOUTH_Y, pitch.STATSBOMB.mouth_y))
+    k = min(max(math.ceil(yd / 0.1 - 1e-4), 1), 800)
+    return float(pitch.goal_mouth_to_canonical([(k - 0.5) * 0.1], [0.0], "statsbomb")[0][0])
 
 
 def placement_names() -> tuple[str, ...]:
@@ -182,11 +199,17 @@ def check_inputs(
     recon: Any = None,
     head_features: tuple[str, ...] | None = None,
     xg_features: tuple[str, ...] = ("distance_m", "angle_rad"),
+    frame_y: Sequence[float] | None = None,
+    is_goal: Sequence[bool] | None = None,
+    oof: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     """Keyword arguments of ``xgot.checks``: every row is met unless a parameter moves it.
 
     The scores are set directly (the checks read ``Scores``); the arrays are valid but their
-    ECE is whatever the test patches ``metrics.ece`` to return.
+    ECE is whatever the test patches ``metrics.ece`` to return. MS6 row 12 reads ``dev``'s
+    goal-mouth points and ``head.oof``: by default every dev shot is at the goal centre
+    (``frame_y`` 0, goal-frame metres) with xGOT 1/3 and 17 goals in 50, so the band row is met
+    (|16.67 − 17| ≤ 2 · 3.33). ``frame_y``, ``is_goal`` and ``oof`` (50 values each) move it.
     """
     from football_shot_models import xgot
 
@@ -194,9 +217,12 @@ def check_inputs(
     dev = pl.DataFrame({
         "shot_id": [f"sb:d{i:02d}" for i in range(n_dev)],
         "match_id": [f"sb:m{i // 5:02d}" for i in range(n_dev)],
-        "is_goal": [i % 3 == 0 for i in range(n_dev)],
+        "is_goal": [i % 3 == 0 for i in range(n_dev)] if is_goal is None else list(is_goal),
         "on_target": [True] * n_dev,
+        "goal_y": [pitch.GOAL_CENTRE_Y - v for v in (frame_y or [0.0] * n_dev)],
+        "goal_z": [1.0] * n_dev,
     })  # fmt: skip
+    assert dev.height == n_dev  # the overrides have 50 values
     held = pl.DataFrame({
         "shot_id": [f"sb:h{i:02d}" for i in range(n_held)],
         "match_id": [f"sb:n{i // 5:02d}" for i in range(n_held)],
@@ -211,7 +237,8 @@ def check_inputs(
         spec = dataclasses.replace(spec, features=head_features)
     head = dataclasses.replace(
         mc.fake_eval(spec, cv=cv, holdout=holdout, folds=(cv,) * 5,
-                     oof=np.full(n_dev, 1 / 3), holdout_p=np.full(n_held, 1 / 3)),
+                     oof=np.full(n_dev, 1 / 3) if oof is None else np.asarray(oof, np.float64),
+                     holdout_p=np.full(n_held, 1 / 3)),
         fold_test=tuple(test for _, test in folds),
     )  # fmt: skip
     gain = evaluation.Comparison(
@@ -344,7 +371,12 @@ def xgot_tables(provider: str) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame
             player: int = 0) -> None:  # fmt: skip
         shots.append(shot)
         extra["outcome"].append(outcome)
-        extra["goal_y"].append(None if mouth is None else round(pitch.GOAL_CENTRE_Y - mouth[0], 4))
+        if mouth is None:
+            extra["goal_y"].append(None)
+        elif sb:  # MS6 §2.2: StatsBomb goal-mouth y on the 0.1 yd lattice
+            extra["goal_y"].append(lattice_y(pitch.GOAL_CENTRE_Y - mouth[0]))
+        else:
+            extra["goal_y"].append(round(pitch.GOAL_CENTRE_Y - mouth[0], 4))
         extra["goal_z"].append(None if mouth is None else round(mouth[1], 4))
         extra["deflected"].append(deflected if sb else None)
         extra["open_goal"].append(open_goal if sb else None)
@@ -452,10 +484,14 @@ def xgot_tables(provider: str) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame
     return frame, frames, matches_df
 
 
-def write_xgot_snapshot(root: Path, provider: str) -> Path:
+def write_xgot_snapshot(
+    root: Path, provider: str, *, edit: Callable[[pl.DataFrame], pl.DataFrame] | None = None
+) -> Path:
     """Write one provider's fixture under ``root`` (``statsbomb-open-v1`` / ``whoscored-v1``);
-    the manifest path."""
+    the manifest path. ``edit`` changes the shots table first (a near-miss snapshot)."""
     shots, frames, matches = xgot_tables(provider)
+    if edit is not None:
+        shots = edit(shots)
     sb = provider == "statsbomb"
     result = snapshot.write_snapshot(
         "statsbomb-open-v1" if sb else "whoscored-v1",
@@ -471,9 +507,9 @@ def write_xgot_snapshot(root: Path, provider: str) -> Path:
 # ---- a fixture-sized run -----------------------------------------------------------------------
 
 
-def tiny_candidates(prefix: str, *, keeper: bool) -> Callable[..., Any]:
-    """``Provider.candidates`` with one LR and a fixture-sized GBM; with ``keeper`` both read
-    ``open_goal`` (a ``KEEPER_POSITION`` member), so the keeper-neutral refit runs."""
+def tiny_candidates(prefix: str, *, keeper: bool) -> tuple[evaluation.ModelSpec, ...]:
+    """One LR step and a fixture-sized GBM of the xG run (``(step, gbm)``); with ``keeper`` both
+    read ``open_goal`` (a ``KEEPER_POSITION`` member), so the keeper-neutral refit runs."""
     feats = ("distance_m", "angle_rad", *(("open_goal",) if keeper else ()))
     lr = evaluation.ModelSpec(f"{prefix}xg-lr-t", "LR distance + angle", feats,
                               ablation.make_lr, baselines.lr_coefficients)  # fmt: skip
@@ -481,14 +517,23 @@ def tiny_candidates(prefix: str, *, keeper: bool) -> Callable[..., Any]:
     g = evaluation.ModelSpec(f"{prefix}xg-gbm-t", "Tiny monotone GBM", feats,
                              functools.partial(gbm.MonotoneGBM, signs, **mc.TINY),
                              gbm.gbm_settings)  # fmt: skip
+    return lr, g
 
-    def candidates(xg: Any, dev: pl.DataFrame, held: pl.DataFrame, folds: Any, cache: Any) -> Any:
-        ff = xg.freeze_frames if xg.freeze_frames.height else None
-        evs = tuple(evaluation.evaluate(s, dev, held, folds, freeze_frames=ff, cache=cache)
-                    for s in (lr, g))  # fmt: skip
-        return (evs[0],), evs[1]
 
-    return candidates
+def patch_candidates(mp: Any, *, baselines_off: bool = True) -> None:
+    """MS6 §4 fixture rewrite: the module globals ``Provider.candidate_specs`` and the xG runs
+    read, pointed at the tiny specs (StatsBomb reads ``open_goal``); ``baselines.BASELINES`` is
+    emptied unless ``baselines_off`` is False."""
+    from football_shot_models import models, v1
+
+    sb_lr, sb_gbm = tiny_candidates("", keeper=True)
+    ws_lr, ws_gbm = tiny_candidates("ws-", keeper=False)
+    mp.setattr(ablation, "STEPS", (sb_lr,))
+    mp.setattr(models, "GBM", sb_gbm)
+    mp.setattr(v1, "STEPS", (ws_lr,))
+    mp.setattr(v1, "GBM", ws_gbm)
+    if baselines_off:
+        mp.setattr(baselines, "BASELINES", ())
 
 
 def tiny_specs(original: Callable[[str, str], tuple[evaluation.ModelSpec, ...]]) -> Any:
@@ -508,14 +553,15 @@ def tiny_specs(original: Callable[[str, str], tuple[evaluation.ModelSpec, ...]])
     return specs
 
 
-def patched_providers(xgot: Any, manifests: dict[str, Path]) -> Any:
-    """``xgot.PROVIDERS`` pointing at the fixture manifests with the tiny candidates."""
+def patched_providers(xgot: Any, manifests: dict[str, Path], mp: Any) -> Any:
+    """``xgot.PROVIDERS`` pointing at the fixture manifests; patches the candidate globals
+    (:func:`patch_candidates`) and the xGOT specs (:func:`tiny_specs`) through ``mp``."""
     from types import MappingProxyType
 
-    out = {}
-    for key, p in xgot.PROVIDERS.items():
-        out[key] = dataclasses.replace(
-            p, manifest=str(manifests[key]),
-            candidates=tiny_candidates(p.prefix.removesuffix("xgot-"), keeper=key == "statsbomb"),
-        )  # fmt: skip
+    patch_candidates(mp)
+    mp.setattr(xgot, "xgot_specs", tiny_specs(xgot.xgot_specs))
+    out = {
+        key: dataclasses.replace(p, manifest=str(manifests[key]))
+        for key, p in xgot.PROVIDERS.items()
+    }
     return MappingProxyType(out)

@@ -54,6 +54,7 @@ from football_shot_models.cards import (
 from football_shot_models.evaluation import (
     Comparison,
     Evaluation,
+    Folds,
     ModelSpec,
     best,
     compare,
@@ -140,6 +141,75 @@ def select_headline(
     if not isinstance(best_lr.spec, ModelSpec):
         raise TypeError(f"best returned a benchmark: {best_lr.spec!r}")
     return headline(best_lr, gbm, dev, held)
+
+
+@dataclass(frozen=True, eq=False)
+class Candidates:
+    """The xG candidates of one run, evaluated on one set of folds.
+
+    Attributes
+    ----------
+    baselines : tuple of Evaluation
+        ``baselines.BASELINES``, in that order.
+    steps : tuple of Evaluation
+        The provider's LR steps, in the order given.
+    gbm : Evaluation
+        The provider's GBM.
+    """
+
+    baselines: tuple[Evaluation, ...]
+    steps: tuple[Evaluation, ...]
+    gbm: Evaluation
+
+    @property
+    def lrs(self) -> tuple[Evaluation, ...]:
+        """The LR candidates of the headline rule: the baselines, then the steps."""
+        return (*self.baselines, *self.steps)
+
+
+def evaluate_candidates(
+    steps: Sequence[ModelSpec],
+    gbm_spec: ModelSpec,
+    dev: pl.DataFrame,
+    held: pl.DataFrame,
+    folds: Folds,
+    *,
+    freeze_frames: pl.DataFrame | None,
+    cache: PredictionCache | None,
+) -> Candidates:
+    """Evaluate the baselines, the LR steps and the GBM of a run: the one candidate set.
+
+    ``models.run`` (StatsBomb xG), ``v1.run`` (WhoScored xG) and the xGOT input
+    (``xgot.xg_input_eval``) all call this, so the xGOT input is chosen from the very
+    evaluations the xG card prints. ``baselines.BASELINES`` is read when called. Every spec is
+    evaluated with the same ``freeze_frames`` and ``cache``; an empty ``freeze_frames`` is the
+    same as ``None``, so a frame feature on a provider without frames raises instead of being
+    derived from an empty table.
+
+    Raises
+    ------
+    ValueError
+        Two specs share a name (a duplicate would overwrite a cache entry); from ``evaluate``.
+
+    Examples
+    --------
+    >>> c = evaluate_candidates(ablation.STEPS, GBM, dev, held, folds,
+    ...                         freeze_frames=xg.freeze_frames, cache=pc)  # doctest: +SKIP
+    >>> [ev.spec.name for ev in c.steps], c.gbm.spec.name  # doctest: +SKIP
+    (['xg-lr-splines', 'xg-lr-context', 'xg-lr-frames'], 'xg-gbm')
+    """
+    base_specs = tuple(baselines.BASELINES)
+    names = [s.name for s in (*base_specs, *steps, gbm_spec)]
+    if dupes := sorted({n for n in names if names.count(n) > 1}):
+        raise ValueError(f"evaluate_candidates: spec name(s) {dupes} used twice")
+    ff = None if freeze_frames is None or freeze_frames.height == 0 else freeze_frames
+
+    def run(spec: ModelSpec) -> Evaluation:
+        return evaluate(spec, dev, held, folds, freeze_frames=ff, cache=cache)
+
+    return Candidates(
+        tuple(run(b) for b in base_specs), tuple(run(s) for s in steps), run(gbm_spec)
+    )
 
 
 def verdict(ev: Evaluation, head: Evaluation, gain: Comparison, *, split: str = "hold-out") -> str:
@@ -631,15 +701,16 @@ def run(
     dev, held = data.split_holdout(xg.shots, ho)
     folds = cv_folds(dev)
     pc = None if cache is None else PredictionCache(cache, xg.manifest.data_digest)
-    base = tuple(evaluate(b, dev, held, folds, cache=pc) for b in baselines.BASELINES)
+    ff = xg.freeze_frames
+    c = evaluate_candidates(ablation.STEPS, GBM, dev, held, folds, freeze_frames=ff, cache=pc)
+    base, steps, gbm = c.baselines, c.steps, c.gbm
     sb = evaluate_benchmark(dev, held, folds)
-    steps, variants = ablation.evaluate_steps(dev, held, folds, xg.freeze_frames, cache=pc)
-    gbm = evaluate(GBM, dev, held, folds, freeze_frames=xg.freeze_frames, cache=pc)
+    variants = ablation.evaluate_variants(dev, held, folds, ff, cache=pc)
     s0, evaluations = base[2], (*base, *steps, gbm)
     by_name = {ev.spec.name: ev for ev in (*base, *steps, *variants)}
     chain = (s0.spec.name, *(ev.spec.name for ev in steps))
     rows = ablation.comparisons(by_name, sb, dev, held, chain=chain)
-    head, gbm_gain = select_headline((*base, *steps), gbm, dev, held)
+    head, gbm_gain = select_headline(c.lrs, gbm, dev, held)
     gbm_rows = (gbm_gain, *(compare(f"over {r.spec.title}", r, gbm, dev, held) for r in (s0, sb)))
     s0_gain, sb_gain = (
         gbm_rows[1:] if head is gbm

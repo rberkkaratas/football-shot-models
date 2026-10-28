@@ -87,14 +87,23 @@ run5-ms5 census of the 1.2 snapshot (on-target, non-penalty |y| cells; counts on
 The correlation of lattice values per cell with the cell's goal rate is 0.457 on StatsBomb and
 0.046 on WhoScored, where Opta records goals and saves on one grid. The smooth LR cannot follow
 these spikes; the GBM partly can, so part of the StatsBomb GBM's gain over the LR may be the
-grid. Snapping the projected points to the match's recording grid in the loader is the open fix
-(it needs a snapshot rebuild). A ball whose centre is more than 3.55 m (`features.INNER_Y`) from
-the goal centre touches the post, so on-target shots out there are mostly saves: the GBM is
-monotone in |y| only up to that point (`mouth_y_in`), and the width past it (`mouth_y_past`)
-and the flag for a point recorded outside the frame + 0.15 m (`mouth_out`) are free. A
-StatsBomb save stopped just in front of the shot projects far outside the frame; it is clipped
-and flagged, never read as a ball in the corner. The cards print calibration by |y| band, which
-the reliability table (binned by prediction) cannot show. Near / far post is the ball's side against the shot's side; a shot within 0.5 m of the
+grid. MS6 fixed this in two steps. (1) football-core snaps every projected save to the centre of
+its 0.1 yd goal-mouth cell (`io.statsbomb.snap_goal_y`, outcome-blind), so every StatsBomb
+`goal_y` sits on the lattice and `fc goalmouth --check` fails otherwise. (2) Matches recorded on
+the coarse 1 yd grid (football-core's per-match rule, `goalmouth.match_grids`) leave the
+StatsBomb xGOT fit and the goalkeeper models (PM ruling E1 (a), 2026-10-28): a pooled fit nets
+two recording grids, which a placement model cannot tell from placement. They keep feeding the
+xG input fit; the reconciliation counts them under the reason *coarse recording grid* and
+measures the gap against C3 less these ruled-out rows, and the cards list them by
+competition-season. A ball whose centre is more than 3.55 m (`features.INNER_Y`) from the goal
+centre touches the post, so on-target shots out there are mostly saves; the flag for a point
+recorded outside the frame + 0.15 m (`mouth_out`) marks them. A StatsBomb save stopped just in
+front of the shot projects far outside the frame; it is clipped and flagged, never read as a
+ball in the corner. The cards print calibration by |y| band, which the reliability table (binned
+by prediction) cannot show: a band is judged by the 2-SD rule (|Σ xGOT − goals| ≤ 2 √Σ p(1 − p))
+only with at least 100 shots (`xgot.MIN_BAND_SHOTS`); smaller bands are printed with their counts
+as "not judged (n < 100)" (PM, 2026-10-28). The rule judges the headline xGOT (the GBM), which
+GSAx reads; the LR cards keep the table and name their failing bands as a limitation (PM E1). Near / far post is the ball's side against the shot's side; a shot within 0.5 m of the
 centre line has no near or far post (`far_side = 0`). StatsBomb saves stopped short of the line
 are projected to the goal line from the shot location (see football-core's conventions); their
 height is the stop height, and a deflected save is projected from the shot, not the deflection.
@@ -115,9 +124,10 @@ fold.
 
 **Models (P2.3, P2.4).** LR on logit xG, placement splines, the width past the post's inner
 edge, angle × placement and the near / far term; a monotone GBM on xG, |y| (up to and past the
-inner edge), the outside-the-frame flag, height, side and angle (non-decreasing in xG and in |y|
-up to 3.55 m at a fixed side), headline only when its CV gain over the LR has a match-bootstrap interval
-above 0; a placement-only penalty xGOT, reported apart with no target.
+inner edge), the outside-the-frame flag, height, side and angle; since MS6 it is monotone in xG only
+and free in placement (`xgot.GBM_SIGNS`), which removed the MS5 near-post misprice that the |y|
+constraint caused. It is the headline only when its CV gain over the LR has a match-bootstrap
+interval above 0; a placement-only penalty xGOT, reported apart with no target.
 
 **Checks.** AUC ≥ 0.80, ECE < 0.02 and calibration slope in [0.9, 1.1], on CV and on the hold-out
 (StatsBomb PL 2015/16) or test season (WhoScored 2026-27). ECE uses ten equal-count bins; on CV
@@ -132,9 +142,38 @@ split-half correlations (each player's matches alternated by date, `metrics.spli
 keeper split-half alternates shots within a keeper in time order (`unit="row"`, PM X5).
 
 ## Phase 3: Goalkeeper shot-stopping
-**Goals prevented = Σ PSxG faced − goals conceded** (penalties reported separately).
-Rate versions per shot and per 90, uncertainty intervals and season-to-season stability
-checks, because small samples dominate goalkeeper metrics.
+`football_shot_models.gsax` (MS6, P3.1-P3.3), pure functions of an `xgot.XgotFit`; the cards are
+written by `gsax_cards` (`make gsax`). Results are in the [GSAx card](models/gsax.md), the
+[keeper-model card](models/gk-model.md) and the README block printed by `make gsax`; none is
+typed here.
+
+**Season-out xGOT.** Each rated shot's xGOT comes from fits (xG input and xGOT) that never saw
+its season (`xgot.season_out`): StatsBomb folds grouped by competition-season, WhoScored the
+train-only fit for the test season and a swapped fit (trained on the test season) for the train
+season. The rated season's xGOT still comes from fits that saw later seasons (PM E4, disclosed).
+
+**GSAx (P3.1).** GSAx = Σ q − goals over a keeper's on-target shots, with q = expit(logit xGOT +
+δ) and one δ per competition-season and kind chosen so that Σ q = goals: each season's keepers
+are rated against that season's league sum, so the xGOT level gap is not charged to them (PM
+after MS5). Competition-seasons with at most 2 keepers or under 50 open-play shots are rated at
+δ = 0 and flagged (`gsax.SMALL_LEAGUE`, PM E2 (b)), because a league offset from two keepers
+absorbs their own performance. Penalties have their own δ, so GSAx with penalties minus GSAx
+without is exactly the keeper's penalty GSAx; shoot-outs are not rated. Keeper totals sum to the
+league sum exactly; each keeper-season has the analytic SD √Σ q(1 − q) and a 90% match-bootstrap
+interval. Team-selected seasons (one club's matches) rate the selected keeper against the
+opponents' finishing, so the StatsBomb table and chart flag them (†).
+
+**Hierarchical keeper model (P3.2).** goal ~ offset(logit q) + (1 | keeper-season), and the
+literal per-keeper (career) grouping beside it, fitted by a Laplace approximation of the marginal
+likelihood (`gsax.fit_keeper_model`). The shrunken estimates are tested on the next season's
+on-target shots (same keeper, same competition, next start year; fitted on earlier seasons only)
+by log loss against raw GSAx and against xGOT alone, with match-bootstrap intervals.
+
+**Stability (P3.3).** Split-half reliability of q − goal per shot by alternating shots within a
+keeper in time order (PM X5), stepped up with Spearman-Brown, at 100 / 250 / 500 total shots
+faced; a tier with no keeper is reported as empty, and a tier is judged only with at least 30
+keepers. The card sentences that say what GSAx allows about keeper skill are computed from these
+intervals.
 
 **Leakage guard (M1.0).** xG features come only from the C3 columns with role `pre_shot`
 (`football_shot_models.features.XG_ALLOWED`, derived from the schema, never typed by hand),

@@ -81,15 +81,22 @@ def _frames(provider: str) -> tuple[pl.DataFrame, pl.DataFrame, pl.Series, pl.Da
 @pytest.mark.parametrize("provider", ["statsbomb", "whoscored"])
 def test_reconcile_partition(provider: str) -> None:
     """Rows partition C3's on-target shots in ``RECONCILE_REASONS`` order, every row printed even
-    when 0; off-target excluded rows (own goal, missed kicks) count nowhere."""
+    when 0; off-target excluded rows (own goal, missed kicks) count nowhere. PM E1 (a), MS6:
+    ``coarse_grid`` is the first reason (0 rows without a coarse match)."""
     from football_shot_models import xgot
 
-    assert (*data.EXCLUSION_REASONS, "unresolved_assist", "modelled") == xgot.RECONCILE_REASONS
+    assert (
+        "coarse_grid",
+        *data.EXCLUSION_REASONS,
+        "unresolved_assist",
+        "modelled",
+    ) == xgot.RECONCILE_REASONS
     assert xgot.POPULATION_REASONS == ("shootout", "penalty", "modelled")
     assert xgot.RECONCILE_TOL == 0.01
     r = xgot.reconcile(*_frames(provider))
     sb = provider == "statsbomb"
     assert r.rows == (
+        ("coarse_grid", 0, 0),
         ("own_goal", 0, 0),
         ("shootout", 1, 1),
         ("penalty", 1, 0),
@@ -102,6 +109,36 @@ def test_reconcile_partition(provider: str) -> None:
     assert sum(n for _, n, _ in r.rows) == r.c3_shots
     assert sum(g for _, _, g in r.rows) == r.c3_goals
     assert (r.shots, r.goals, r.unscored) == (5, 3, 0)  # direct corner and the odd save unscored
+
+
+def test_reconcile_coarse_grid() -> None:
+    """PM E1 (a), MS6 (build ratify R1, R18): the on-target shots of a coarse-grid match are
+    ``coarse_grid`` ahead of every other reason (a shoot-out goal included), are never scored,
+    and leave the reconciliation's base (C3 less the ruled-out rows); scoring one is an error;
+    ``c3`` then needs ``match_id``."""
+    from football_shot_models import xgot
+
+    c3, exclusions, unresolved, pred = _frames("statsbomb")
+    coarse_ids = ("sb:s06", "sb:s02", "sb:s03")  # shoot-out goal, modelled goal, off target
+    c3 = c3.with_columns(
+        match_id=pl.when(pl.col("shot_id").is_in(coarse_ids)).then(pl.lit("sb:m2"))
+        .otherwise(pl.lit("sb:m1"))
+    )  # fmt: skip
+    kept = pred.filter(~pl.col("shot_id").is_in(coarse_ids))
+    coarse = pl.Series(["sb:m2", "sb:m9"])  # a coarse match with no shot counts nowhere
+    r = xgot.reconcile(c3, exclusions, unresolved, kept, coarse=coarse)
+    rows = dict((reason, (n, g)) for reason, n, g in r.rows)
+    assert r.rows[0][0] == "coarse_grid" and rows["coarse_grid"] == (2, 2)
+    assert rows["shootout"] == (0, 0) and rows["modelled"] == (2, 1)
+    assert (r.c3_shots, r.c3_goals, r.ruled) == (7, 4, (2, 2))
+    assert (r.base_shots, r.base_goals, r.shots, r.goals, r.unscored) == (5, 2, 3, 1, 0)
+    assert r.shots_gap == pytest.approx((3 - 5) / 5) and r.goals_gap == pytest.approx(-0.5)
+    with pytest.raises(ValueError, match=r"\b2\b"):  # the coarse rows scored: a population bug
+        xgot.reconcile(c3, exclusions, unresolved, pred, coarse=coarse)
+    with pytest.raises(ValueError, match="match_id"):
+        xgot.reconcile(c3.drop("match_id"), exclusions, unresolved, kept, coarse=coarse)
+    empty = xgot.reconcile(c3, exclusions, unresolved, pred, coarse=pl.Series([], dtype=pl.String))
+    assert empty == xgot.reconcile(c3, exclusions, unresolved, pred)
 
 
 def test_reconcile_counts_scored_rows() -> None:
@@ -163,7 +200,7 @@ def test_reconcile_tolerance(
     same for goals; each can be missed on its own."""
     inputs = xg.check_inputs(recon=xg.reconciliation(c3_shots, c3_goals, shots, goals))
     rows = xg.call_checks(inputs)
-    assert len(rows) == 11
+    assert len(rows) == 12  # MS6 xgot-ready §3.2: row 12, the band rule
     got = tuple(rows[i].result == "met" for i in (7, 8))
     assert got == met
     assert all(rows[i].result in ("met", "missed") for i in (7, 8))
@@ -218,8 +255,9 @@ def loaded(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
 def test_xgot_context(loaded: dict[str, Any], provider: str) -> None:
     """The card context counts the on-target frames passed, not the xG population; its exclusions
     are the reconciliation rows; the hold-out (WhoScored: the test season) is passed explicitly.
-    Each provider's filter labels are keyed exactly by ``RECONCILE_REASONS``."""
-    from football_shot_models import xgot
+    Each provider's filter labels are keyed exactly by ``RECONCILE_REASONS``. (MS6 §4: the
+    context is card-side, in ``xgot_cards``.)"""
+    from football_shot_models import xgot, xgot_cards
 
     xgd = loaded[provider]
     p = xgot.PROVIDERS[provider]
@@ -240,7 +278,7 @@ def test_xgot_context(loaded: dict[str, Any], provider: str) -> None:
     recon = dataclasses.replace(
         recon, rows=tuple((r, i + 1, i) for i, r in enumerate(xgot.RECONCILE_REASONS))
     )
-    c = xgot.xgot_context(xgd, dev, held, recon, holdout=ho)
+    c = xgot_cards.xgot_context(xgd, dev, held, recon, holdout=ho)
     both = pl.concat([dev, held])
     assert (c.dev_shots, c.holdout_shots) == (dev.height, held.height)
     assert (c.dev_matches, c.holdout_matches) == (

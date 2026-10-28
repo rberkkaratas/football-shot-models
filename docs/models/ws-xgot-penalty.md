@@ -1,7 +1,7 @@
 # Model card: Penalty xGOT (placement only)
 
 ## Overview
-- **Name / version:** `ws-xgot-penalty` v2
+- **Name / version:** `ws-xgot-penalty` v4
 - **Task:** P(goal | on-target penalty) from placement only; fitted on in-game kicks, shoot-out kicks scored apart
 - **Status:** experimental
 - P2.4: penalty xGOT, a logistic regression on placement only; it reads no xG, since every in-game penalty has the same pre-shot xG. Placement-only, reported apart from the open-play xGOT.
@@ -17,6 +17,7 @@ Penalty xGOT: P(goal) of an on-target penalty from where it crossed the line, ke
 
 | Filter | Shots | Goals |
 |---|---|---|
+| coarse recording grid (whole-yard locations; the match is left out of the xGOT fit, PM MS6 E1) | 0 | 0 |
 | own goal (Opta q28) | 0 | 0 |
 | shoot-out kick (period 5; penalty xGOT, reported apart) | 16 | 13 |
 | penalty (in-game; penalty xGOT) | 993 | 834 |
@@ -125,3 +126,5 @@ Data: a private WhoScored / Opta archive, never committed or redistributed; this
 ## Changelog
 - v1 (MS5, P2.2–P2.5): first version.
 - v2 (MS5 assessment): the GBM is monotone in `mouth_y_in` only, with `mouth_y_past` and `mouth_out` free; the LR reads `mouth_y_past`; calibration by placement band; the scored-once split's level gap; penalty calibration judged bound by bound.
+- v3 (MS6): saves recorded where the keeper stopped the ball and projected to the line are snapped to the 0.1 yd goal-mouth lattice of recorded points (football-core); the GBM's placement features carry no monotone constraint (chosen by the band rule); the band table prints the SD; the band rule is a check.
+- v4 (MS6, GSAx): matches recorded on the coarse (1 yd) grid leave the xGOT fit (PM E1); a band is judged by the band rule only with at least 100 shots.

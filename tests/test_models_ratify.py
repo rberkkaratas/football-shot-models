@@ -452,3 +452,108 @@ def test_summary_opens_with_headline(head_is_gbm: bool) -> None:
         f"Headline model: {head.spec.title}. "
         f"{models.benchmark_sentence(head, SB_ABOVE_THEN_NOT, sb)}"
     )
+
+
+# ---- MS6 xgot-ready §5: one shared candidate set ------------------------------------------------
+
+
+def _candidate_frames() -> tuple[pl.DataFrame, pl.DataFrame, Any]:
+    """40 dev shots in 10 matches and 10 hold-out shots in 2, with distance and angle."""
+    n, nh = 40, 10
+    dev = pl.DataFrame({
+        "shot_id": [f"sb:c{i:03d}" for i in range(n)],
+        "match_id": [f"sb:cm{i // 4:02d}" for i in range(n)],
+        "is_goal": [i % 4 == 0 for i in range(n)],
+        "distance_m": [6.0 + (i % 9) for i in range(n)],
+        "angle_rad": [0.3 + 0.05 * (i % 6) for i in range(n)],
+        "x": [95.0 + (i % 7) for i in range(n)],
+        "y": [30.0 + (i % 8) for i in range(n)],
+    })  # fmt: skip
+    held = pl.DataFrame({
+        "shot_id": [f"sb:h{i:03d}" for i in range(nh)],
+        "match_id": [f"sb:hm{i // 5}" for i in range(nh)],
+        "is_goal": [i % 3 == 0 for i in range(nh)],
+        "distance_m": [7.0 + i for i in range(nh)],
+        "angle_rad": [0.4] * nh,
+        "x": [96.0] * nh,
+        "y": [34.0] * nh,
+    })  # fmt: skip
+    return dev, held, evaluation.cv_folds(dev)
+
+
+def _spec(name: str, features: tuple[str, ...] = ("distance_m",)) -> evaluation.ModelSpec:
+    return evaluation.ModelSpec(name, name.upper(), features, evaluation.BaseRate)
+
+
+def test_evaluate_candidates_reads_baselines_at_call_time(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """§5: the baselines are ``baselines.BASELINES`` read when called (a patch is seen), in its
+    order; the steps in the given order; ``lrs`` is baselines then steps; every spec goes through
+    the same cache (each one written once)."""
+    from football_shot_models.cache import PredictionCache
+
+    models = _models()
+    dev, held, folds = _candidate_frames()
+    b1, b2, s1, s2, g = (_spec(n) for n in ("cb-one", "cb-two", "cs-one", "cs-two", "cg"))
+    monkeypatch.setattr(baselines, "BASELINES", (b2, b1))
+    pc = PredictionCache(tmp_path / "cache", "c" * 64, source="d" * 64)
+    c = models.evaluate_candidates((s2, s1), g, dev, held, folds, freeze_frames=None, cache=pc)
+    assert isinstance(c, models.Candidates)
+    assert [e.spec for e in c.baselines] == [b2, b1]
+    assert [e.spec for e in c.steps] == [s2, s1]
+    assert c.gbm.spec is g
+    assert [e.spec for e in c.lrs] == [b2, b1, s2, s1]
+    assert len(pc.written) == 5
+    monkeypatch.setattr(baselines, "BASELINES", ())
+    c = models.evaluate_candidates((s1,), g, dev, held, folds, freeze_frames=None, cache=None)
+    assert c.baselines == () and [e.spec for e in c.lrs] == [s1]
+
+
+@pytest.mark.parametrize(
+    ("steps", "gbm_name"),
+    [
+        (("cb-one", "cs-one"), "cg"),  # a step named like a baseline
+        (("cs-one", "cs-one"), "cg"),  # two steps with one name
+        (("cs-one",), "cs-one"),  # the GBM named like a step
+        (("cs-one",), "cb-one"),  # the GBM named like a baseline
+    ],
+)
+def test_evaluate_candidates_duplicate_name(
+    monkeypatch: pytest.MonkeyPatch, steps: tuple[str, ...], gbm_name: str
+) -> None:
+    """§5: a step or the GBM sharing a name with a baseline or another step raises
+    ``ValueError`` naming it (a duplicate name would overwrite a cache entry); distinct names
+    pass (near miss)."""
+    models = _models()
+    dev, held, folds = _candidate_frames()
+    monkeypatch.setattr(baselines, "BASELINES", (_spec("cb-one"),))
+    ok = models.evaluate_candidates((_spec("cs-one"),), _spec("cg"), dev, held, folds,
+                                    freeze_frames=None, cache=None)  # fmt: skip
+    assert len(ok.lrs) == 2
+    dup = next(n for n in (*steps, gbm_name) if [*steps, gbm_name, "cb-one"].count(n) > 1)
+    with pytest.raises(ValueError, match=dup):
+        models.evaluate_candidates(tuple(_spec(n) for n in steps), _spec(gbm_name), dev, held,
+                                   folds, freeze_frames=None, cache=None)  # fmt: skip
+
+
+def test_evaluate_candidates_empty_frames_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """§5, §6: an empty ``freeze_frames`` (WhoScored's, 0 rows with the C3 schema) is the same
+    input as ``None``: a step reading a frame feature raises ``pass freeze_frames=`` either way,
+    instead of deriving the feature from an empty table; a step without one gives the same
+    predictions either way."""
+    models = _models()
+    dev, held, folds = _candidate_frames()
+    monkeypatch.setattr(baselines, "BASELINES", ())
+    empty = pl.DataFrame(schema=schema.FREEZE_FRAME_SCHEMA)
+    framed = _spec("cs-frames", ("distance_m", "opponents_in_cone"))
+    for ff in (None, empty):
+        with pytest.raises(ValueError, match="pass freeze_frames="):
+            models.evaluate_candidates((framed,), _spec("cg"), dev, held, folds,
+                                       freeze_frames=ff, cache=None)  # fmt: skip
+    a, b = (
+        models.evaluate_candidates((_spec("cs-one"),), _spec("cg"), dev, held, folds,
+                                   freeze_frames=ff, cache=None)
+        for ff in (None, empty)
+    )  # fmt: skip
+    assert np.array_equal(a.steps[0].oof, b.steps[0].oof)

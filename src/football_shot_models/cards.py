@@ -78,6 +78,17 @@ class CardContext:
     team_selected_short: int  # of those, with one or two matches (both teams reach 50 %)
 
 
+def signed(x: float) -> str:
+    """A signed count with one decimal and a true minus sign (the band check's gap).
+
+    Examples
+    --------
+    >>> signed(-39.44), signed(8.0)
+    ('−39.4', '+8.0')
+    """
+    return f"{x:+.1f}".replace("-", "−")
+
+
 @dataclass(frozen=True)
 class CardText:
     """The parts of a card that belong to one model, written next to its spec.

@@ -8,6 +8,7 @@ from dataclasses import replace
 
 import hypothesis.strategies as st
 import numpy as np
+import polars as pl
 import pytest
 from hypothesis import assume, given, settings
 
@@ -237,3 +238,76 @@ def test_logit_clips_the_logit_symmetrically() -> None:
     assert lo == bound and hi == -bound  # clipping p instead makes hi differ by about 8e-4
     inner = np.array([1e-14, 0.1, 0.5, 0.9, 1.0 - 1e-12, 1.0 - 1e-14])
     assert np.array_equal(metrics.logit(inner), np.log(inner) - np.log1p(-inner))
+
+
+# ---- MS6 gsax §3.2: empty split-half, Spearman-Brown, GAIN_LEVEL ----------------------------
+
+
+def test_split_half_empty() -> None:
+    """An empty tier: a frame with no row, or none reaching ``min_rows``, gives
+    ``SplitHalf(0, None, None, None)`` instead of raising (spec §1 bug)."""
+    import datetime as dt
+
+    cols = {
+        "gk_id": pl.Series([], dtype=pl.String()),
+        "v": pl.Series([], dtype=pl.Float64()),
+        "match_date": pl.Series([], dtype=pl.Date()),
+        "period": pl.Series([], dtype=pl.Int8()),
+        "seconds_in_period": pl.Series([], dtype=pl.Float64()),
+        "shot_id": pl.Series([], dtype=pl.String()),
+        "match_id": pl.Series([], dtype=pl.String()),
+    }
+    empty = pl.DataFrame(cols)
+    for unit in ("row", "match"):
+        out = metrics.split_half(empty, by="gk_id", value="v", min_rows=100, unit=unit)
+        assert out == metrics.SplitHalf(0, None, None, None), unit
+    small = pl.DataFrame(
+        {
+            "gk_id": ["sb:g1", "sb:g2"] * 5,
+            "v": [0.1 * i for i in range(10)],
+            "match_date": [dt.date(2020, 1, 1 + i) for i in range(10)],
+            "period": pl.Series([1] * 10, dtype=pl.Int8()),
+            "seconds_in_period": [float(i) for i in range(10)],
+            "shot_id": [f"sb:s{i}" for i in range(10)],
+            "match_id": [f"sb:m{i}" for i in range(10)],
+        }
+    )
+    out = metrics.split_half(small, by="gk_id", value="v", min_rows=100, unit="row")
+    assert out == metrics.SplitHalf(0, None, None, None)
+
+
+@given(st.floats(min_value=-0.999, max_value=1.0, allow_nan=False))
+def test_spearman_brown(r: float) -> None:
+    """``2r / (1 + r)``; None for None or r <= -1; NaN and bools raise. Property: increasing,
+    and at least r for r in [0, 1] (a longer test is more reliable)."""
+    assert metrics.spearman_brown(0.5) == pytest.approx(2 / 3, abs=1e-12)
+    assert metrics.spearman_brown(0.0) == 0.0
+    assert metrics.spearman_brown(1.0) == pytest.approx(1.0, abs=1e-12)
+    assert metrics.spearman_brown(-0.5) == pytest.approx(-2.0, abs=1e-12)
+    for none in (None, -1.0, -1.5):
+        assert metrics.spearman_brown(none) is None, none
+    for bad in (math.nan, True, False):
+        with pytest.raises(ValueError):
+            metrics.spearman_brown(bad)  # type: ignore[arg-type]
+    out = metrics.spearman_brown(r)
+    assert out is not None and out == pytest.approx(2 * r / (1 + r), rel=1e-12, abs=1e-12)
+    up = metrics.spearman_brown(min(r + 1e-3, 1.0))
+    assert up is not None and up >= out
+    if r >= 0:
+        assert out >= r - 1e-15
+
+
+def test_gain_level() -> None:
+    """``GAIN_LEVEL`` is 0.95 and ``bootstrap_gain``'s interval is its central percentile
+    interval (no value change)."""
+    assert metrics.GAIN_LEVEL == 0.95
+    y = np.array([1, 0, 0, 1, 0, 0, 1, 0])
+    p_ref, p_new = np.full(8, 0.3), np.array([0.6, 0.2, 0.2, 0.5, 0.3, 0.3, 0.4, 0.1])
+    groups = np.array([f"sb:{i // 2}" for i in range(8)])
+    ci = metrics.bootstrap_gain(y, p_ref, p_new, groups, n_boot=500, seed=3)
+    loss = lambda p: -(y * np.log(p) + (1 - y) * np.log1p(-p))  # noqa: E731
+    inv, w = metrics.group_weights(groups, 500, 3)
+    d = np.bincount(inv, weights=loss(p_ref) - loss(p_new))
+    gains = (w @ d) / (w @ np.bincount(inv).astype(float))
+    lo, hi = np.quantile(gains, [0.025, 0.975])
+    assert (ci.low, ci.high) == (pytest.approx(lo, abs=1e-14), pytest.approx(hi, abs=1e-14))

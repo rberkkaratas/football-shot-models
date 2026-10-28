@@ -355,6 +355,47 @@ def cv_folds(dev: pl.DataFrame) -> Folds:
     )
 
 
+def season_folds(dev: pl.DataFrame, *, by: Sequence[str]) -> Folds:
+    """``N_SPLITS`` grouped folds by the key ``by`` (a competition-season), as :func:`cv_folds`.
+
+    Every row of a group lands in one test fold, so a fold's fit never sees a row of the
+    seasons it scores (MS6: season-out xGOT for GSAx). The groups are integer codes of the
+    sorted distinct keys, so the folds do not depend on row order or on the key's dtype.
+
+    Raises
+    ------
+    TypeError
+        ``by`` is a ``str``.
+    ValueError
+        A missing ``by`` column (named); a null in a ``by`` column (count); fewer distinct
+        groups than ``N_SPLITS``.
+
+    Examples
+    --------
+    >>> dev = pl.DataFrame({"c": ["b", "a", "b", "c", "a", "d", "e"], "s": ["1"] * 7})
+    >>> folds = season_folds(dev, by=("c", "s"))
+    >>> sorted(sorted(set(dev["c"].gather(test).to_list())) for _, test in folds)
+    [['a'], ['b'], ['c'], ['d'], ['e']]
+    """
+    if isinstance(by, str):
+        raise TypeError("by must be a sequence of column names, not a single str")
+    keys = list(by)
+    if missing := [c for c in keys if c not in dev.columns]:
+        raise ValueError(f"season_folds: missing column(s) {missing}")
+    for c in keys:
+        if n := dev[c].null_count():
+            raise ValueError(f"season_folds: {c} has {n} null value(s)")
+    codes = dev.select(keys).unique().sort(keys).with_row_index("g")
+    if codes.height < N_SPLITS:
+        raise ValueError(f"season_folds: {codes.height} group(s) by {keys}, fewer than {N_SPLITS}")
+    groups = dev.select(keys).join(codes, on=keys, how="left", maintain_order="left")["g"]
+    splitter = GroupKFold(n_splits=N_SPLITS)
+    return tuple(
+        (np.asarray(train, dtype=np.intp), np.asarray(test, dtype=np.intp))
+        for train, test in splitter.split(np.zeros((dev.height, 1)), groups=groups.to_numpy())
+    )
+
+
 def check_partition(folds: Folds, n: int) -> None:
     """Refuse folds whose test sets are not a partition of the ``n`` dev rows.
 

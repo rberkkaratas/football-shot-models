@@ -71,6 +71,10 @@ nav:
       - "xGOT LR (WhoScored / Opta)": models/ws-xgot-lr.md
       - "xGOT monotone GBM (WhoScored / Opta)": models/ws-xgot-gbm.md
       - "Penalty xGOT (WhoScored / Opta)": models/ws-xgot-penalty.md
+      - "GSAx (StatsBomb)": models/gsax.md
+      - "Keeper model (StatsBomb)": models/gk-model.md
+      - "GSAx (WhoScored / Opta)": models/ws-gsax.md
+      - "Keeper model (WhoScored / Opta)": models/ws-gk-model.md
   - References: references.md
   - API reference:
       - data: api/data.md
@@ -88,3 +92,6 @@ nav:
       - v1: api/v1.md
       - release: api/release.md
       - xgot: api/xgot.md
+      - xgot_cards: api/xgot_cards.md
+      - gsax: api/gsax.md
+      - gsax_cards: api/gsax_cards.md

@@ -301,14 +301,16 @@ def run(
     held_all = xg.shots.filter(data.holdout_mask(xg.shots, ho, "shots"))
     folds = cv_folds(dev)
     pc = None if cache is None else PredictionCache(cache, xg.manifest.data_digest)
-    base = tuple(evaluate(b, dev, held, folds, cache=pc) for b in baselines.BASELINES)
-    steps = tuple(evaluate(s, dev, held, folds, cache=pc) for s in STEPS)
-    best_lr = best((*base, *steps))
+    # the module globals, read when called: tests patch them
+    c = models.evaluate_candidates(
+        STEPS, GBM, dev, held, folds, freeze_frames=xg.freeze_frames, cache=pc
+    )
+    base, steps, gbm_ev = c.baselines, c.steps, c.gbm
+    best_lr = best(c.lrs)
     if not isinstance(best_lr.spec, ModelSpec):  # best returns a ModelSpec evaluation
         raise TypeError(f"best returned a benchmark: {best_lr.spec!r}")
-    gbm_ev = evaluate(GBM, dev, held, folds, cache=pc)  # the module global: tests patch it
     abl = evaluate(ablation_spec(best_lr.spec), dev, held, folds, cache=pc)
-    head, gbm_gain = models.select_headline((*base, *steps), gbm_ev, dev, held)
+    head, gbm_gain = models.select_headline(c.lrs, gbm_ev, dev, held)
     da = next(e for e in base if e.spec.name == DISTANCE_ANGLE)
 
     cov = legacy.covered(held)

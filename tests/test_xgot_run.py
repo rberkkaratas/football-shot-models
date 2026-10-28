@@ -1,11 +1,12 @@
 """xGOT LR, GBM and penalty xGOT on both providers, the checks, the cards and Rule 1 (spec
-``runs/MS5/xgot`` §6, §7, §9, §10; test plan 6 and 9).
+``runs/MS5/xgot`` §6, §7, §9, §10; test plan 6 and 9; MS6 ``runs/MS6/xgot-ready`` §3, §4, §8).
 
-The fast tests share one module-scoped ``xgot.run`` per provider on the synthetic snapshots of
-``xgot_cases`` (StatsBomb- and WhoScored-shaped), with ``xgot.PROVIDERS`` pointed at them and a
-fixture-sized xG candidate set and GBM grid swapped in (the StatsBomb candidates read
-``open_goal``, so the keeper-neutral refit of PM X1 (b) runs). The WhoScored fixture's ids are
-6-digit sentinels that the Rule 1 test looks for in every output.
+The fast tests share one module-scoped ``xgot_cards.run`` per provider (MS6 §4: ``run`` = ``fit``
++ ``render`` + write) on the synthetic snapshots of ``xgot_cases`` (StatsBomb- and
+WhoScored-shaped), with ``xgot.PROVIDERS`` pointed at them and a fixture-sized xG candidate set
+and GBM grid swapped in through the module globals ``Provider.candidate_specs`` reads (the
+StatsBomb candidates read ``open_goal``, so the keeper-neutral refit of PM X1 (b) runs). The
+WhoScored fixture's ids are 6-digit sentinels that the Rule 1 test looks for in every output.
 
 ``make reproduce`` runs the slow tests at the end: ``pytest -m slow`` runs ``test_models_run``
 and ``test_v1_run`` first, which warm the prediction cache with the xG candidates these runs read.
@@ -26,26 +27,28 @@ import numpy as np
 import polars as pl
 import pytest
 import xgot_cases as xg
+from conftest import real_xgot
 from scipy.special import expit
 
 from football_shot_models import cards, data, evaluation, features, gbm, metrics, models, v1
 
 REPO = Path(__file__).resolve().parents[1]
 PROVIDERS = ("statsbomb", "whoscored")
+XG_HEADLINE_CARD = {"statsbomb": "xg-gbm.md", "whoscored": "xg-v1.md"}
 CARDS = {
     "statsbomb": ("xgot-lr", "xgot-gbm", "xgot-penalty"),
     "whoscored": ("ws-xgot-lr", "ws-xgot-gbm", "ws-xgot-penalty"),
 }
-CHECKS_TITLE = "Milestone checks (MS5)"
+CHECKS_TITLE = "Milestone checks (MS5, MS6)"
 ROW_NAMES = (
     "cv auc", "holdout auc", "cv ece", "holdout ece", "cv slope", "holdout slope",
-    "gbm headline", "recon shots", "recon goals", "xg input", "keeper neutral",
+    "gbm headline", "recon shots", "recon goals", "xg input", "keeper neutral", "bands",
 )  # fmt: skip
 
 
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
-    from football_shot_models import xgot
+    from football_shot_models import xgot, xgot_cards
 
     root = tmp_path_factory.mktemp("xgot-run")
     manifests = {}
@@ -54,18 +57,17 @@ def runs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         manifests[p] = xg.write_xgot_snapshot(root / p, p)
     out: dict[str, Any] = {}
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(xgot, "PROVIDERS", xg.patched_providers(xgot, manifests))
-        mp.setattr(xgot, "xgot_specs", xg.tiny_specs(xgot.xgot_specs))
+        mp.setattr(xgot, "PROVIDERS", xg.patched_providers(xgot, manifests, mp))
         for p in PROVIDERS:
             docs = root / p / "docs" / "models"
             docs.mkdir(parents=True)
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                result = xgot.run(p, docs_dir=docs, cache=None)
+                result = xgot_cards.run(p, docs_dir=docs, cache=None)
             out[p] = {"run": result, "docs": docs, "stdout": buf.getvalue(),
                       "xg": data.load_xg_data(manifests[p], builder=p)}  # fmt: skip
-        out["block_ws"] = xgot.summary_block([out["whoscored"]["run"]])
-        out["block"] = xgot.summary_block([out[p]["run"] for p in PROVIDERS])
+        out["block_ws"] = xgot_cards.summary_block([out["whoscored"]["run"]])
+        out["block"] = xgot_cards.summary_block([out[p]["run"] for p in PROVIDERS])
     return out
 
 
@@ -114,7 +116,7 @@ def test_run_writes_cards(runs: dict[str, Any], p: str) -> None:
             assert f"| {text.label(reason)} |" in card, (name, reason)
         if p == "whoscored":
             assert "StatsBomb" not in card, name
-    assert len(r.checks) == 11
+    assert len(r.checks) == 12
     if p == "statsbomb":
         assert r.xg_input.spec.name == f"{r.xg_headline.spec.name}-keeper-neutral"
         assert "open_goal" in r.xg_headline.spec.features
@@ -299,43 +301,26 @@ def test_penalty_shootouts_scored_by_dev_fit(runs: dict[str, Any], p: str) -> No
     assert got == pytest.approx(oof, abs=1e-12)
 
 
-def test_gbm_monotone_in_placement() -> None:
-    """A fit of the ``gbm`` spec (its own sign map, a fixture-sized grid) never lowers xGOT as
-    the ball moves away from the centre, up to ``features.INNER_Y``, at a fixed side (near or
-    far post), height, xG and angle (run5-ms5: beyond it the width is free)."""
-    from football_shot_models import xgot
+def test_gbm_placement_free() -> None:
+    """MS6 §3 (candidate (b), replaces the MS5 monotone-placement test): the GBM reads the xG
+    input, ``mouth_y_abs``, ``mouth_out``, ``mouth_z``, ``far_side`` and ``angle_rad``, and its
+    sign map constrains the xG input only (placement is free). The card's reasons and note
+    follow: one reason, for the xG input; the note states no number. The LR keeps its features
+    (``mouth_y_past`` included) and the bands are not re-cut."""
+    from football_shot_models import xgot, xgot_cards
 
     spec = next(s for s in xgot.xgot_specs("xgot-", "xg-x") if s.name == "xgot-gbm")
-    signs = spec.make().get_params()["monotone"]
-    assert signs == xg.GBM_SIGNS
-    assert "mouth_far" not in spec.features and "far_side" in spec.features
-    tiny = dataclasses.replace(spec, make=functools.partial(gbm.MonotoneGBM, signs, **mc.SIGNAL))
-    rng = np.random.default_rng(17)
-    n = 800
-    gy, gz = rng.uniform(-3.6, 3.6, n), rng.uniform(0.05, 2.35, n)
-    y, angle, xgl = rng.uniform(15.0, 53.0, n), rng.uniform(0.2, 1.2, n), rng.normal(-1.5, 0.8, n)
-    far = -np.sign(34.0 - y) * np.sign(gy)
-    p = expit(0.9 * xgl + 0.9 + 0.9 * (np.abs(gy) - 1.8) + 0.3 * far + 0.4 * (gz - 1.2))
-    train = pl.DataFrame({
-        "shot_id": [f"sb:s{i:03d}" for i in range(n)],
-        "match_id": [f"sb:m{i // 10:02d}" for i in range(n)],
-        "is_goal": rng.uniform(size=n) < p,
-        "on_target": [True] * n,
-        "goal_y": 34.0 - gy, "goal_z": gz, "y": y, "angle_rad": angle, "xg_logit": xgl,
-    })  # fmt: skip
-    v = np.round(np.arange(0.2, features.INNER_Y, 0.1), 1)
-    assert v[-1] == 3.5 and v[-1] < features.INNER_Y  # precondition: the constrained range
-    for side in (1.0, -1.0):  # from y = 20: ball at frame y > 0 is the near post
-        grid = pl.DataFrame({
-            "shot_id": [f"sb:g{i:02d}" for i in range(v.size)],
-            "match_id": ["sb:g"] * v.size,
-            "is_goal": [False] * v.size,
-            "on_target": [True] * v.size,
-            "goal_y": 34.0 - side * v, "goal_z": [1.0] * v.size, "y": [20.0] * v.size,
-            "angle_rad": [0.6] * v.size, "xg_logit": [-1.0] * v.size,
-        })  # fmt: skip
-        out = evaluation.fit_predict(tiny, train, grid)
-        assert np.all(np.diff(out) >= -1e-12), (side, out)
+    assert spec.features == xg.GBM_FEATURES
+    assert xgot.GBM_FEATURES == xg.GBM_FEATURES
+    assert dict(xgot.GBM_SIGNS) == xg.GBM_SIGNS == {features.XG_INPUT: 1}
+    assert spec.make().get_params()["monotone"] == xg.GBM_SIGNS
+    assert "mouth_y_in" not in spec.features and "mouth_y_past" not in spec.features
+    assert set(xgot_cards.XGOT_MONOTONE_REASONS) == {features.XG_INPUT}
+    assert re.search(r"\d", xgot_cards.XGOT_MONOTONE_NOTE) is None
+    assert "band" in xgot_cards.XGOT_MONOTONE_NOTE
+    lr = next(s for s in xgot.xgot_specs("xgot-", "xg-x") if s.name == "xgot-lr")
+    assert lr.features == xg.LR_FEATURES
+    assert xgot.Y_BANDS == (0.0, 1.0, 2.0, 3.0, 3.3, features.INNER_Y) and features.INNER_Y == 3.55
 
 
 def test_gbm_beyond_post_not_top() -> None:
@@ -382,16 +367,19 @@ def test_gbm_beyond_post_not_top() -> None:
     assert post < top and saved < top, (top, post, saved)
 
 
-def test_band_lines_values() -> None:
-    """The calibration-by-placement table: shots, goals, goal rate, mean xGOT and Σ xGOT − goals
-    per ``Y_BANDS`` band of rounded |y|, points outside the frame in their own row; worked out by
-    hand from a frame with two shots per band."""
-    from football_shot_models import xgot
+def test_band_lines_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The calibration-by-placement table: shots, goals, goal rate, mean xGOT, Σ xGOT − goals,
+    and (MS6 §3.1) the SD √Σp(1−p) and ``Within 2 SD`` per ``Y_BANDS`` band of rounded |y|,
+    points outside the frame in their own row; worked out by hand from a frame with two shots
+    per band (the outside row misses: |−1.6| > 2 · 0.548). An emptied band prints 0 shots, no
+    rate or mean, SD 0.0 and ``yes`` (0 ≤ 0). Every band is judged here (minimum 0); at the
+    PM's 100-shot minimum (MS6 gsax) every 2-shot band prints ``not judged (n < 100)``."""
+    from football_shot_models import xgot, xgot_cards
 
     ay = [0.5, 0.6, 1.5, 1.4, 2.5, 2.6, 3.1, 3.2, 3.4, 3.5, 3.7, 3.8, 5.0, 9.0]
     sign = [1, -1] * 7
     goal = [True, False, False, False, True, True, False, True, True, False, False, False,
-            False, True]  # fmt: skip
+            True, True]  # fmt: skip
     p = np.array([0.2, 0.3, 0.4, 0.1, 0.5, 0.7, 0.6, 0.4, 0.5, 0.5, 0.6, 0.4, 0.3, 0.1])
     dev = pl.DataFrame({
         "shot_id": [f"sb:b{i:02d}" for i in range(14)],
@@ -399,26 +387,42 @@ def test_band_lines_values() -> None:
         "goal_z": [1.0] * 14, "on_target": [True] * 14, "is_goal": goal,
     })  # fmt: skip
     ev = mc.fake_eval(xg.lr_spec(), oof=p)
-    lines = xgot.band_lines(ev, dev)
+    small = [x for x in xgot_cards.band_lines(ev, dev) if x.startswith("| ") and "abs" not in x]
+    assert [x.rstrip(" |").rsplit("| ", 1)[-1] for x in small] == ["not judged (n < 100)"] * 7
+    monkeypatch.setattr(xgot, "MIN_BAND_SHOTS", 0)
+    lines = xgot_cards.band_lines(ev, dev)
     rows = [x for x in lines if x.startswith("| ") and not x.startswith("| abs")]
     assert xgot.Y_BANDS == (0.0, 1.0, 2.0, 3.0, 3.3, features.INNER_Y)
-    want = [  # band, shots, goals, rate, mean, Σ − goals: pairs of rows i, i + 1
-        ("[0, 1)", 2, 1, 0.5, 0.25, -0.5), ("[1, 2)", 2, 0, 0.0, 0.25, 0.5),
-        ("[2, 3)", 2, 2, 1.0, 0.6, -0.8), ("[3, 3.3)", 2, 1, 0.5, 0.5, 0.0),
-        ("[3.3, 3.55)", 2, 1, 0.5, 0.5, 0.0), (">= 3.55", 2, 0, 0.0, 0.5, 1.0),
-        ("outside the frame + 0.15 m", 2, 1, 0.5, 0.2, -0.6),
+    assert xgot.BAND_SDS == 2.0
+    want = [  # band, shots, goals, rate, mean, Σ − goals, SD, within: pairs of rows i, i + 1
+        ("[0, 1)", 2, 1, 0.5, 0.25, -0.5, "0.6", "yes"),  # √(0.16 + 0.21)
+        ("[1, 2)", 2, 0, 0.0, 0.25, 0.5, "0.6", "yes"),  # √(0.24 + 0.09)
+        ("[2, 3)", 2, 2, 1.0, 0.6, -0.8, "0.7", "yes"),  # √(0.25 + 0.21)
+        ("[3, 3.3)", 2, 1, 0.5, 0.5, 0.0, "0.7", "yes"),  # √(0.24 + 0.24)
+        ("[3.3, 3.55)", 2, 1, 0.5, 0.5, 0.0, "0.7", "yes"),  # √0.5
+        (">= 3.55", 2, 0, 0.0, 0.5, 1.0, "0.7", "yes"),  # 1.0 ≤ 2 · 0.693
+        ("outside the frame + 0.15 m", 2, 2, 1.0, 0.2, -1.6, "0.5", "no"),  # √(0.21 + 0.09)
     ]  # fmt: skip
     assert len(rows) == len(want)
-    for row, (band, n, g, rate, mean, gap) in zip(rows, want, strict=True):
+    for row, (band, n, g, rate, mean, gap, sd, within) in zip(rows, want, strict=True):
         cells = [c.strip() for c in row.strip("|").split("|")]
-        assert cells == [band, str(n), str(g), cards.fmt(rate), cards.fmt(mean), f"{gap:+.1f}"]
+        assert cells == [band, str(n), str(g), cards.fmt(rate), cards.fmt(mean), f"{gap:+.1f}",
+                         sd, within]  # fmt: skip
+    header = next(x for x in lines if x.startswith("| abs"))
+    assert [c.strip() for c in header.strip("|").split("|")][-2:] == ["SD", "Within 2 SD"]
+    keep = [i for i in range(14) if i not in (6, 7)]  # empty the [3, 3.3) band
+    empty = xgot_cards.band_lines(mc.fake_eval(xg.lr_spec(), oof=p[keep]), dev[keep])
+    row = next(x for x in empty if x.startswith("| [3, 3.3) |"))
+    cells = [c.strip() for c in row.strip("|").split("|")]
+    assert cells[1:3] == ["0", "0"] and cells[-2:] == ["0.0", "yes"]
+    assert cells[3] == cells[4] and cells[3] in ("–", cards.fmt(None))
 
 
 def test_level_and_penalty_calibration_lines(runs: dict[str, Any]) -> None:
     """The open-play cards state the scored-once split's Σ xGOT against goals (FDS m4); the
     penalty card judges each open-play bound on its own and prints the ranking AUC beside the
     advice when one is outside (FDS m1). Unit case: both slopes inside, ECE outside."""
-    from football_shot_models import xgot
+    from football_shot_models import xgot, xgot_cards
 
     for p in PROVIDERS:
         r = runs[p]["run"]
@@ -434,12 +438,12 @@ def test_level_and_penalty_calibration_lines(runs: dict[str, Any]) -> None:
         holdout=mc.scores(auc=0.566, slope=0.9168),
     )  # fmt: skip
     s = xgot.EceStats(mean=0.0892, max=0.1, pooled=0.04, held=0.12, floor=0.1)
-    line = xgot._penalty_calibration(pen, s, "hold-out")
+    line = xgot_cards._penalty_calibration(pen, s, "hold-out")
     assert "slope 0.9860 (inside [0.9, 1.1])" in line
     assert "hold-out slope 0.9168 (inside)" in line
     assert "CV ECE 0.0892 (fold mean; not below 0.02)" in line
     assert "AUC is 0.6400 on CV and 0.5660 on the hold-out" in line
-    ok = xgot._penalty_calibration(pen, dataclasses.replace(s, mean=0.0199), "hold-out")
+    ok = xgot_cards._penalty_calibration(pen, dataclasses.replace(s, mean=0.0199), "hold-out")
     assert "AUC" not in ok and "(fold mean; below 0.02)" in ok
 
 
@@ -491,23 +495,24 @@ def test_split_half_blocked_left_out(runs: dict[str, Any], p: str) -> None:
 
 
 def test_candidates_read_module_globals(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Build ratify 8 (run5-ms5 B2): the providers' candidates read ``models.GBM`` and
-    ``v1.GBM`` when called, so a patch of the module global is seen."""
+    """MS6 §5 (rewritten from run5-ms5 B2): ``Provider.candidate_specs`` returns the xG run's
+    step specs and GBM, read from the module globals when called (StatsBomb ``ablation.STEPS``
+    and ``models.GBM``, WhoScored ``v1.STEPS`` and ``v1.GBM``), so a patch is seen; the old
+    ``candidates`` field and private helpers are gone."""
     from football_shot_models import ablation, xgot
 
-    seen: list[tuple[Any, Any]] = []
-
-    def record(steps: Any, g: Any, *args: Any) -> Any:
-        seen.append((steps, g))
-        return (), None
-
-    monkeypatch.setattr(xgot, "_candidates", record)
-    sb, ws = object(), object()
-    monkeypatch.setattr(models, "GBM", sb)
-    monkeypatch.setattr(v1, "GBM", ws)
-    for key in ("statsbomb", "whoscored"):
-        xgot.PROVIDERS[key].candidates(None, None, None, (), None)  # type: ignore[arg-type]
-    assert seen == [(ablation.STEPS, sb), (v1.STEPS, ws)]
+    sb_steps, sb_gbm, ws_steps, ws_gbm = (object(),), object(), (object(),), object()
+    monkeypatch.setattr(ablation, "STEPS", sb_steps)
+    monkeypatch.setattr(models, "GBM", sb_gbm)
+    monkeypatch.setattr(v1, "STEPS", ws_steps)
+    monkeypatch.setattr(v1, "GBM", ws_gbm)
+    sb = xgot.PROVIDERS["statsbomb"].candidate_specs()
+    ws = xgot.PROVIDERS["whoscored"].candidate_specs()
+    assert sb[0] is sb_steps and sb[1] is sb_gbm
+    assert ws[0] is ws_steps and ws[1] is ws_gbm
+    assert not hasattr(xgot.PROVIDERS["statsbomb"], "candidates")
+    for name in ("_candidates", "_sb_candidates", "_ws_candidates"):
+        assert not hasattr(xgot, name), name
 
 
 def test_rule1_ws_outputs(runs: dict[str, Any]) -> None:
@@ -532,7 +537,7 @@ def test_rule1_ws_outputs(runs: dict[str, Any]) -> None:
 def test_ece_lines_values() -> None:
     """The ECE table on every card: CV fold mean, CV max, CV pooled, hold-out and its floor, each
     recomputed here from the folds; one table row and the binning sentence."""
-    from football_shot_models import xgot
+    from football_shot_models import xgot_cards
 
     rng = np.random.default_rng(23)
     n, nh = 60, 30
@@ -546,7 +551,7 @@ def test_ece_lines_values() -> None:
     per_fold = [metrics.ece(y[t], oof[t]) for _, t in folds]
     values = (np.mean(per_fold), max(per_fold), metrics.ece(y, oof), metrics.ece(yh, ph),
               metrics.ece_floor(ph))  # fmt: skip
-    lines = xgot.ece_lines(ev, y, yh)
+    lines = xgot_cards.ece_lines(ev, y, yh)
     text = "\n".join(lines)
     for value in values:
         assert cards.fmt(float(value)) in text, value
@@ -558,34 +563,17 @@ def test_main_errors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """``main`` exits 1 with ``fsm: error:`` and no traceback on a missing manifest."""
-    from football_shot_models import xgot
+    from football_shot_models import xgot, xgot_cards
 
     monkeypatch.setenv("FSM_CACHE", "off")
     missing = {p: tmp_path / "manifests" / f"{p}.json" for p in PROVIDERS}
-    monkeypatch.setattr(xgot, "PROVIDERS", xg.patched_providers(xgot, missing))
-    assert xgot.main(["--provider", "statsbomb"]) == 1
+    monkeypatch.setattr(xgot, "PROVIDERS", xg.patched_providers(xgot, missing, monkeypatch))
+    assert xgot_cards.main(["--provider", "statsbomb"]) == 1
     err = capsys.readouterr().err
     assert err.startswith("fsm: error: ") and "Traceback" not in err
 
 
 # ---- real snapshots (make reproduce) ----------------------------------------------------------
-
-
-def _real_run(p: str, tmp: Path) -> dict[str, Any]:
-    from football_shot_models import cache, xgot
-
-    manifest = REPO / xgot.PROVIDERS[p].manifest
-    snap = "statsbomb-open-v1" if p == "statsbomb" else "whoscored-v1"
-    if not ((REPO / "data" / "snapshots" / snap).is_dir() and manifest.is_file()):
-        pytest.skip(f"needs the {p} snapshot")
-    docs = tmp / p / "models"
-    result = xgot.run(p, docs_dir=docs, cache=cache.cache_root(REPO / "data" / "cache"))
-    return {"run": result, "docs": docs}
-
-
-@pytest.fixture(scope="module")
-def real(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
-    return {"tmp": tmp_path_factory.mktemp("real-xgot")}
 
 
 def _readme_block() -> str:
@@ -596,9 +584,21 @@ def _readme_block() -> str:
 
 
 def _sb(real: dict[str, Any]) -> dict[str, Any]:
-    if "statsbomb" not in real:
-        real["statsbomb"] = _real_run("statsbomb", real["tmp"])
-    return dict(real["statsbomb"])
+    return real_xgot(real, "statsbomb")  # the session fixture ``real`` lives in conftest
+
+
+def _ws(real: dict[str, Any]) -> dict[str, Any]:
+    return real_xgot(real, "whoscored")
+
+
+def _ms6_checks(r: Any) -> None:
+    """MS6 package 1: every check row is met (the MS5 rows and row 12, the band rule on the
+    headline), the headline is the GBM and its CV gain over the LR has an interval above 0."""
+    assert len(r.checks) == 12
+    assert [c.result for c in r.checks] == ["met"] * 12, [
+        (c.target, c.measured) for c in r.checks if c.result != "met"
+    ]
+    assert models.is_gbm(r.head) and r.gbm_gain.cv.low > 0
 
 
 @pytest.mark.slow
@@ -612,6 +612,7 @@ def test_reproduce_statsbomb(real: dict[str, Any]) -> None:
     r = sb["run"]
     assert [r.checks[i].result for i in (7, 8)] == ["met", "met"]
     assert r.recon.unscored == 0
+    _ms6_checks(r)
 
 
 @pytest.mark.slow
@@ -619,14 +620,14 @@ def test_reproduce_statsbomb(real: dict[str, Any]) -> None:
 def test_reproduce_whoscored(real: dict[str, Any]) -> None:
     """The three WhoScored xGOT cards and the README block (both providers) come back byte for
     byte; no ``ws:`` id is in them."""
-    from football_shot_models import xgot
+    from football_shot_models import xgot_cards
 
     sb = _sb(real)
-    ws = _real_run("whoscored", real["tmp"])
+    ws = _ws(real)
     for name in CARDS["whoscored"]:
         committed = (REPO / "docs" / "models" / f"{name}.md").read_bytes()
         assert (ws["docs"] / f"{name}.md").read_bytes() == committed, name
-    block = xgot.summary_block([sb["run"], ws["run"]])
+    block = xgot_cards.summary_block([sb["run"], ws["run"]])
     assert _readme_block() == block.strip("\n"), (
         "the README MS5 block is stale: `make xgot` prints it; paste it between the "
         "xgot:summary markers"
@@ -636,3 +637,26 @@ def test_reproduce_whoscored(real: dict[str, Any]) -> None:
     r = ws["run"]
     assert [r.checks[i].result for i in (7, 8)] == ["met", "met"]
     assert r.recon.unscored == 0
+    _ms6_checks(r)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("p", [pytest.param("statsbomb"),
+                               pytest.param("whoscored", marks=pytest.mark.whoscored)])  # fmt: skip
+def test_reproduce_xg_headline_on_card(real: dict[str, Any], p: str) -> None:
+    """MS6 §5, §8: the xGOT run's provider headline xG is the committed xG card's headline (its
+    title, and its CV log loss on that card's row), and the committed headline xGOT card names
+    the run's xG input. The run is ``fit`` + render (``test_run_is_fit_render_write``), so its
+    ``xg_headline`` and ``xg_input`` are ``fit(p)``'s."""
+    r = (_sb(real) if p == "statsbomb" else _ws(real))["run"]
+    title = r.xg_headline.spec.title
+    card = (REPO / "docs" / "models" / XG_HEADLINE_CARD[p]).read_text(encoding="utf-8")
+    if p == "statsbomb":
+        assert card.startswith(f"# Model card: {title}\n") and "This is the headline model" in card
+    else:
+        assert f"Headline model: {title}." in card
+    row = next(x for x in card.splitlines() if x.startswith((f"| {title} |", f"| **{title}** |")))
+    assert row.split("|")[2].strip() == cards.fmt(r.xg_headline.cv.log_loss), row
+    xgot_card = (REPO / "docs" / "models" / f"{r.head.spec.name}.md").read_text(encoding="utf-8")
+    assert f"xG input: {r.xg_input.spec.title}, cross-fitted; provider headline xG: {title}." in (
+        xgot_card)  # fmt: skip

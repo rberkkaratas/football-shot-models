@@ -8,17 +8,20 @@ Building, evaluating and documenting **shot models** for football from first pri
 | 2 | **xGOT / PSxG**: post-shot xG | Given where the shot ended up in the goal mouth, how likely was it to go in? |
 | 3 | **Goals prevented / GSAx** | How many goals did a goalkeeper save compared with an average keeper facing the same shots? |
 
-> **Status:** milestone 5 built: xGOT (post-shot xG) of on-target shots for StatsBomb and the
-> private WhoScored / Opta archive, keeper-neutral, with the cross-fitted xG as an input; a
-> placement-only penalty xGOT reported apart; and shooting goals added as split-half
-> correlations next to goals − xG, a descriptive measure. Its results are the generated MS5
-> block below and the [xGOT cards](docs/models/xgot-gbm.md); none is typed here. Milestone 4
-> (WhoScored xG v1, [card](docs/models/xg-v1.md)) has two check rows missed with computed
-> reasons: the test log-loss bound and the gain over the legacy v0, which reads Opta's
+> **Status:** milestone 6 built, the last of the shot-model roadmap: goalkeepers for StatsBomb
+> and the private WhoScored / Opta archive. GSAx is rated from season-out xGOT against each
+> competition-season's league sum, with and without penalties, an analytic SD and a 90 %
+> match-bootstrap interval per keeper-season; a hierarchical keeper model is tested on the next
+> season; split-half reliability is reported at 100 / 250 / 500 shots faced. Package 1 made xGOT
+> keeper-ready: StatsBomb saves snapped to the 0.1 yd goal-mouth lattice, a placement-free GBM,
+> coarse-grid matches left out (PM ruling E1 (a)) and the band rule judged on bands of at least
+> 100 shots. Results are the generated MS5 / MS6 blocks below and the
+> [GSAx](docs/models/gsax.md) and [xGOT](docs/models/xgot-gbm.md) cards; none is typed here.
+> Milestone 4 (WhoScored xG v1, [card](docs/models/xg-v1.md)) has two check rows missed with
+> computed reasons: the test log-loss bound and the gain over the legacy v0, which reads Opta's
 > big-chance tag (q214, a column v1's leakage rule bars). PM ruling (2026-10-25): both misses
 > stand as recorded misses, and the v0 comparison is re-baselined to v0's inputs without q214,
-> which the headline beats with an interval above 0. Milestone 3 (the StatsBomb xG model) is
-> below. See [`docs/roadmap.md`](docs/roadmap.md).
+> which the headline beats with an interval above 0. See [`docs/roadmap.md`](docs/roadmap.md).
 
 ### Results (MS3, every model and StatsBomb xG on the same shots)
 
@@ -62,38 +65,53 @@ Penalties (in-game): P(goal) 0.7775 [95% interval 0.7500, 0.8038] from 918 train
 WhoScored test season, 16,164 shots, goal rate 0.0999; not comparable with the StatsBomb block.
 <!-- v1:summary:end -->
 
-### Results (MS5, xGOT of on-target shots, both providers)
+### Results (MS5, MS6: xGOT of on-target shots, both providers)
 
 Printed by `make xgot` (paste it between the markers) and checked byte for byte by `make reproduce`. Headline model per provider in bold; CV is grouped by match on on-target shots, the hold-out is Premier League 2015/16 (StatsBomb) and the test season 2026-27 (WhoScored). ECE: CV fold mean, hold-out / test point value (its noise floor is on the cards).
 
 <!-- xgot:summary:start -->
 | Provider | Model | CV AUC | CV ECE | CV cal. slope | Hold-out / test AUC | Hold-out / test ECE | Hold-out / test cal. slope |
 |---|---|---|---|---|---|---|---|
-| StatsBomb open data | Base rate (on target) | 0.5000 | 0.0154 | n/a | 0.5000 | 0.0231 | n/a |
-| StatsBomb open data | LR xG only | 0.7612 | 0.0198 | 1.0012 | 0.7512 | 0.0300 | 0.9712 |
-| StatsBomb open data | LR xG + placement, no near / far | 0.8530 | 0.0216 | 1.0005 | 0.8609 | 0.0303 | 1.0500 |
-| StatsBomb open data | LR xG + placement | 0.8608 | 0.0197 | 1.0004 | 0.8656 | 0.0174 | 1.0214 |
-| StatsBomb open data | **Monotone GBM + Platt** | 0.8671 | 0.0152 | 1.0115 | 0.8710 | 0.0107 | 1.0083 |
-| StatsBomb open data | Penalty xGOT (placement only) | 0.6384 | 0.0892 | 0.9860 | 0.5663 | 0.1279 | 0.9168 |
+| StatsBomb open data | Base rate (on target) | 0.5000 | 0.0155 | n/a | 0.5000 | 0.0233 | n/a |
+| StatsBomb open data | LR xG only | 0.7618 | 0.0203 | 1.0014 | 0.7512 | 0.0302 | 0.9630 |
+| StatsBomb open data | LR xG + placement, no near / far | 0.8547 | 0.0210 | 1.0003 | 0.8604 | 0.0298 | 1.0237 |
+| StatsBomb open data | LR xG + placement | 0.8620 | 0.0206 | 1.0000 | 0.8652 | 0.0164 | 0.9984 |
+| StatsBomb open data | **Monotone GBM + Platt** | 0.8674 | 0.0166 | 1.0098 | 0.8708 | 0.0148 | 1.0064 |
+| StatsBomb open data | Penalty xGOT (placement only) | 0.6367 | 0.0842 | 0.9448 | 0.5663 | 0.1278 | 0.8948 |
 | private WhoScored / Opta event archive | Base rate (on target) | 0.5000 | 0.0146 | n/a | 0.5000 | 0.0165 | n/a |
 | private WhoScored / Opta event archive | LR xG only | 0.7464 | 0.0217 | 1.0004 | 0.7484 | 0.0234 | 1.0076 |
 | private WhoScored / Opta event archive | LR xG + placement, no near / far | 0.8270 | 0.0195 | 0.9988 | 0.8296 | 0.0234 | 1.0161 |
 | private WhoScored / Opta event archive | LR xG + placement | 0.8368 | 0.0143 | 0.9987 | 0.8388 | 0.0146 | 1.0164 |
-| private WhoScored / Opta event archive | **Monotone GBM + Platt** | 0.8425 | 0.0121 | 1.0013 | 0.8472 | 0.0178 | 1.0333 |
+| private WhoScored / Opta event archive | **Monotone GBM + Platt** | 0.8435 | 0.0121 | 1.0020 | 0.8475 | 0.0194 | 1.0314 |
 | private WhoScored / Opta event archive | Penalty xGOT (placement only) | 0.5999 | 0.0975 | 0.9784 | 0.5279 | 0.0962 | 0.0399 |
 
-StatsBomb open data: headline Monotone GBM + Platt; xG input Monotone GBM + Platt without keeper position (provider headline xG Monotone GBM + Platt); 11 of 11 MS5 checks met; 35,604 of 35,632 C3 on-target shots scored (-0.079%), goals -0.159%.
+StatsBomb open data: headline Monotone GBM + Platt; xG input Monotone GBM + Platt without keeper position (provider headline xG Monotone GBM + Platt); 12 of 12 checks met (MS5, MS6); 33,749 of 35,632 C3 on-target shots scored, 1,855 left out by a PM ruling (-0.083%), goals -0.167%.
 
-StatsBomb open data, penalty xGOT (placement only, in-game kicks): CV AUC 0.6384, CV cal. slope 0.9860; shoot-out kicks scored apart: 321 kicks, 242 goals, Σ xGOT 259.0, log loss 0.5591.
+StatsBomb open data, penalty xGOT (placement only, in-game kicks): CV AUC 0.6367, CV cal. slope 0.9448; shoot-out kicks scored apart: 266 kicks, 201 goals, Σ xGOT 214.9, log loss 0.5609.
 
-StatsBomb open data, shooting goals added (descriptive), split-half r at >= 40 shots, 633 players: SGA per shot +0.084 [+0.006, +0.161], goals − xG per shot +0.076 [-0.002, +0.153].
+StatsBomb open data, shooting goals added (descriptive), split-half r at >= 40 shots, 597 players: SGA per shot +0.096 [+0.016, +0.175], goals − xG per shot +0.053 [-0.027, +0.133].
 
-private WhoScored / Opta event archive: headline Monotone GBM + Platt; xG input Monotone GBM + Platt (provider headline xG Monotone GBM + Platt); 11 of 11 MS5 checks met; 32,480 of 32,490 C3 on-target shots scored (-0.031%), goals -0.067%.
+private WhoScored / Opta event archive: headline Monotone GBM + Platt; xG input Monotone GBM + Platt (provider headline xG Monotone GBM + Platt); 12 of 12 checks met (MS5, MS6); 32,480 of 32,490 C3 on-target shots scored, 0 left out by a PM ruling (-0.031%), goals -0.067%.
 
 private WhoScored / Opta event archive, penalty xGOT (placement only, in-game kicks): CV AUC 0.5999, CV cal. slope 0.9784; shoot-out kicks scored apart: 16 kicks, 13 goals, Σ xGOT 13.3, log loss 0.5031.
 
-private WhoScored / Opta event archive, shooting goals added (descriptive), split-half r at >= 40 shots, 711 players: SGA per shot -0.041 [-0.114, +0.033], goals − xG per shot +0.040 [-0.034, +0.113].
+private WhoScored / Opta event archive, shooting goals added (descriptive), split-half r at >= 40 shots, 711 players: SGA per shot -0.038 [-0.111, +0.036], goals − xG per shot +0.040 [-0.034, +0.113].
 <!-- xgot:summary:end -->
+
+### Results (MS6, goalkeepers, both providers)
+
+Printed by `make gsax` (paste it between the markers) and checked byte for byte by `make reproduce`. GSAx is rated against each competition-season's league sum from season-out xGOT; the next-season columns are log-loss gains of the shrunken keeper model with 95% match-bootstrap intervals. Counts and metrics only; the StatsBomb keeper table is on the [GSAx card](docs/models/gsax.md).
+
+<!-- gsax:summary:start -->
+| Provider | Rated shots | Keeper-seasons | Keeper-seasons >= 100 shots | Checks met | τ̂ keeper-season | Next season: gain over raw | Gain over xGOT alone |
+|---|---|---|---|---|---|---|---|
+| StatsBomb open data | 33,483 | 1,205 | 97 | 6 of 6 | 0.1225 | +0.03501 [+0.02677, +0.04361] | +0.00099 [+0.00015, +0.00183] |
+| private WhoScored / Opta event archive | 32,464 | 674 | 126 | 6 of 6 | 0.0770 | +0.01047 [+0.00513, +0.01630] | +0.00001 [-0.00007, +0.00010] |
+
+StatsBomb open data: Shrunken estimates predict next season better than raw GSAx, because raw GSAx overfits small samples, and add +0.00099 log loss over xGOT alone. Stability: not distinguishable from noise at 100 shots; 6 keepers reach 250 shots: too few to judge (r +0.85 [+0.13, +0.98]); 2 keepers reach 500 shots: too few to estimate.
+
+private WhoScored / Opta event archive: Shrunken estimates predict next season better than raw GSAx, because raw GSAx overfits small samples, and predict next season no better than xGOT alone (the league average). Stability: not distinguishable from noise at 100 shots; no keeper reaches 250 shots (empty tier); no keeper reaches 500 shots (empty tier).
+<!-- gsax:summary:end -->
 
 Part of the `football-*-models` family; shared loaders and pitch conventions come from
 [football-core](../football-core).
@@ -122,7 +140,10 @@ Part of the `football-*-models` family; shared loaders and pitch conventions com
 | `legacy` | Legacy v0 xG behind a SHA-256 pin, scored on its own inputs | ✅ M0 |
 | `v1` | WhoScored xG run: season split, candidates, v0 comparison, CLI | ✅ M1.6 |
 | `release` | The `xg-v1` card and README block | ✅ M1.7 |
-| `xgot` | xGOT of on-target shots, both providers: population, cross-fitted xG input, LR / GBM / penalty xGOT, shooting goals added, cards | ✅ P2.2–P2.5 |
+| `xgot` | xGOT of on-target shots, both providers: population, cross-fitted xG input, LR / GBM / penalty xGOT, shooting goals added; pure `fit`, coarse-grid filter, season-out refits | ✅ P2.2–P2.5, MS6 |
+| `xgot_cards` | The xGOT cards and README block from an `XgotFit` (render-only) | ✅ MS6 |
+| `gsax` | GSAx rated against the league sum, keeper tables with SD and CI, hierarchical keeper model, next-season test, stability | ✅ P3.1–P3.3 |
+| `gsax_cards` | The goalkeeper cards, README block and StatsBomb keeper chart (render-only) | ✅ P3.1–P3.3 |
 
 ```bash
 make snapshot && make xg-baselines   # freeze StatsBomb open data, write the M1.1 cards
@@ -131,13 +152,16 @@ make xg-models                       # every MS3 model and its card (about 10 mi
 make snapshot-whoscored WHOSCORED_ARCHIVE=<archive>/data && make legacy-v0 LEGACY_V0=<v0 json>
 make xg-v1                           # the WhoScored v1 card (about 8-10 min cold)
 make xgot                            # the six xGOT cards (after xg-models and xg-v1)
+make statsbomb-logo                  # once (network): the logo every StatsBomb chart carries
+make gsax                            # the four goalkeeper cards and the StatsBomb keeper chart
 make reproduce                       # every card and README block, byte for byte
 ```
 
 ## Repository layout
 ```
 src/football_shot_models/   # data, features, metrics, evaluation, cards, baselines, ablation,
-                            #   models, gbm, penalties, cache, legacy, v1, release, xgot
+                            #   models, gbm, penalties, cache, legacy, v1, release, xgot,
+                            #   xgot_cards, gsax, gsax_cards
 notebooks/                  # exploration & narrative
 docs/                       # methodology, model cards, roadmap (Zensical site)
 data/                       # git-ignored

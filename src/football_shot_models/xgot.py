@@ -1,4 +1,4 @@
-"""MS5 xGOT / PSxG: the post-shot goal probability of on-target shots, for both providers.
+"""MS5 / MS6 xGOT / PSxG: the post-shot goal probability of on-target shots, for both providers.
 
 **Population (P2.2).** xGOT answers "how likely was this shot to go in, given where it crossed
 the goal line", so its rows are the shots that reached the net or the keeper: C3 ``on_target``
@@ -18,26 +18,28 @@ itself.
 **Models (P2.3, P2.4).** Every model goes through ``evaluation.evaluate`` with the xGOT guard
 (``features.check_xgot_features``) and registry (``features.XGOT_DERIVED``). The LR reads the
 xG input, placement splines, the width past the inner post edge and angle × placement terms
-(near / far post included); the GBM is monotone in the xG input and in the distance from the
-goal centre up to ``features.INNER_Y`` at a fixed side (beyond it a ball hits the post, so the
-width past it and the outside-the-frame flag are free), and is the headline only if its CV gain
-over the LR has a match-bootstrap interval above 0. The penalty
-xGOT reads placement only, with its own folds; shoot-out kicks are scored by its dev fit.
+(near / far post included); the GBM is monotone in the xG input only, its placement free (MS6:
+chosen by the band rule of :func:`band_table` over a monotone width cut), and is the headline
+only if its CV gain over the LR has a match-bootstrap interval above 0. The penalty xGOT reads
+placement only, with its own folds; shoot-out kicks are scored by its dev fit.
 
 **Shooting goals added (P2.5)** is xGOT − xG per shot (:func:`sga`), with blocked and
 off-target shots at 0 xGOT. It is reported as split-half correlations next to goals − xG
 (``metrics.split_half`` by alternating matches): a descriptive measure, not a claim about
 finishing skill.
 
-Nothing here writes a row: :func:`predictions` stays in memory (for MS6), and the WhoScored
-cards, README block and output hold counts and metrics only. Run ``python -m
-football_shot_models.xgot --provider both`` (``make xgot``) after ``make xg-models xg-v1``, so
-the xG candidates come from the prediction cache.
+**Fit, then render (MS6).** :func:`fit` computes everything of one provider and returns it as
+an :class:`XgotFit`; it writes nothing and prints nothing (a cache root, when given, is the
+only place it writes), so the goalkeeper models and charts read predictions and tables from
+it without a card. :mod:`football_shot_models.xgot_cards` renders and writes the cards: run
+``python -m football_shot_models.xgot_cards --provider both`` (``make xgot``) after ``make
+xg-models xg-v1``, so the xG candidates come from the prediction cache. Nothing here writes a
+row: :func:`predictions` stays in memory, and the WhoScored cards, README block and output hold
+counts and metrics only.
 """
 
 from __future__ import annotations
 
-import argparse
 import dataclasses
 import functools
 import math
@@ -46,14 +48,13 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
-from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
 import numpy as np
 import numpy.typing as npt
 import polars as pl
-from football_core import goalmouth, pitch
+from football_core import goalmouth
 from football_core.io import snapshot
 
 from football_shot_models import (
@@ -70,7 +71,7 @@ from football_shot_models import (
     v1,
 )
 from football_shot_models.cache import PredictionCache
-from football_shot_models.cards import CardContext, CardText, ProviderText, fmt, gain_cell
+from football_shot_models.cards import ProviderText, fmt, gain_cell, signed
 from football_shot_models.evaluation import Comparison, Evaluation, ModelSpec, evaluate, labels
 from football_shot_models.metrics import Check, Scores, SplitHalf
 
@@ -78,13 +79,13 @@ FloatArray = npt.NDArray[np.float64]
 BoolArray = npt.NDArray[np.bool_]
 StrPath = str | os.PathLike[str]
 Folds = evaluation.Folds
-Candidates = Callable[
-    [data.XgData, pl.DataFrame, pl.DataFrame, Folds, PredictionCache | None],
-    tuple[tuple[Evaluation, ...], Evaluation],
-]
+CandidateSpecs = Callable[[], tuple[Sequence[ModelSpec], ModelSpec]]
 
-RECONCILE_REASONS: Final = (*data.EXCLUSION_REASONS, "unresolved_assist", "modelled")
+# MS6 (PM E1 (a)): a StatsBomb match on the coarse (1 yd) recording grid leaves the xGOT fit
+# and GSAx whole, so "coarse_grid" is the first reason of its on-target rows
+RECONCILE_REASONS: Final = ("coarse_grid", *data.EXCLUSION_REASONS, "unresolved_assist", "modelled")
 POPULATION_REASONS: Final = ("shootout", "penalty", "modelled")  # the rows xGOT scores
+RULED_OUT: Final = ("coarse_grid",)  # left out by a PM ruling: off the reconciliation's base
 RECONCILE_TOL: Final[float] = 0.01
 AUC_MIN: Final[float] = 0.80
 ECE_MAX: Final[float] = 0.02
@@ -97,6 +98,10 @@ _IDS: Final = ("shot_id", "match_id", "player_id", "competition_id", "season_id"
 # lower edges of the cards' |y| calibration bands, metres; the last band starts at the post's
 # inner edge, and points recorded outside the frame get a row of their own
 Y_BANDS: Final[tuple[float, ...]] = (0.0, 1.0, 2.0, 3.0, 3.3, features.INNER_Y)
+BAND_SDS: Final[float] = 2.0  # the PM's band rule (MS6): |Σ p − goals| <= BAND_SDS · √Σp(1−p)
+MIN_BAND_SHOTS: Final[int] = 100  # PM (MS6 gsax): a smaller band is printed, not judged
+CHECKS_MILESTONES: Final[str] = "MS5, MS6"
+CHECKS_TITLE: Final[str] = f"Milestone checks ({CHECKS_MILESTONES})"
 
 
 # ---- P2.2 population and reconciliation ----------------------------------------------------
@@ -127,16 +132,33 @@ class Reconciliation:
     rows: tuple[tuple[str, int, int], ...]
 
     @property
+    def ruled(self) -> tuple[int, int]:
+        """``(shots, goals)`` of the ``RULED_OUT`` reasons: left out by a PM ruling, so the
+        reconciliation compares the scored rows with C3 less them."""
+        return (sum(n for r, n, _ in self.rows if r in RULED_OUT),
+                sum(g for r, _, g in self.rows if r in RULED_OUT))  # fmt: skip
+
+    @property
+    def base_shots(self) -> int:
+        """C3 on-target shots less the ruled-out ones."""
+        return self.c3_shots - self.ruled[0]
+
+    @property
+    def base_goals(self) -> int:
+        """C3 on-target goals less the ruled-out ones."""
+        return self.c3_goals - self.ruled[1]
+
+    @property
     def shots_gap(self) -> float:
-        """``(shots − c3_shots) / c3_shots``."""
-        return (self.shots - self.c3_shots) / self.c3_shots
+        """``(shots − base_shots) / base_shots``."""
+        return (self.shots - self.base_shots) / self.base_shots
 
     @property
     def goals_gap(self) -> float:
-        """``(goals − c3_goals) / c3_goals``; 0 with no goal on either side."""
-        if self.c3_goals == 0:
+        """``(goals − base_goals) / base_goals``; 0 with no goal on either side."""
+        if self.base_goals == 0:
             return 0.0 if self.goals == 0 else math.inf
-        return (self.goals - self.c3_goals) / self.c3_goals
+        return (self.goals - self.base_goals) / self.base_goals
 
 
 def _keyed(frame: pl.DataFrame, what: str, columns: Sequence[str]) -> None:
@@ -148,7 +170,12 @@ def _keyed(frame: pl.DataFrame, what: str, columns: Sequence[str]) -> None:
 
 
 def reconcile(
-    c3: pl.DataFrame, exclusions: pl.DataFrame, unresolved: pl.Series, pred: pl.DataFrame
+    c3: pl.DataFrame,
+    exclusions: pl.DataFrame,
+    unresolved: pl.Series,
+    pred: pl.DataFrame,
+    *,
+    coarse: pl.Series | None = None,
 ) -> Reconciliation:
     """Partition C3's on-target shots by first matching reason and count the scored rows.
 
@@ -163,6 +190,10 @@ def reconcile(
         assisting event); empty for StatsBomb.
     pred : polars.DataFrame
         :func:`predictions` (``shot_id``, ``on_target``, ``is_goal``, ``kind``).
+    coarse : polars.Series, optional
+        The ``match_id`` values of coarse-grid matches (:func:`coarse_matches`): their
+        on-target shots are ``coarse_grid``, ahead of every other reason, and never scored.
+        ``c3`` then needs ``match_id``. None or empty: no such match.
 
     Returns
     -------
@@ -188,15 +219,20 @@ def reconcile(
     >>> (r.c3_shots, r.shots, r.unscored), [row for row in r.rows if row[1]]
     ((3, 2, 0), [('direct_corner', 1, 1), ('modelled', 2, 1)])
     """
-    _keyed(c3, "c3", ("shot_id", "on_target", "is_goal"))
+    ids = pl.Series([], dtype=pl.String) if coarse is None else coarse.cast(pl.String)
+    grid = ids.len() > 0
+    _keyed(c3, "c3", ("shot_id", "on_target", "is_goal", *(("match_id",) if grid else ())))
     _keyed(exclusions, "exclusions", ("shot_id", "reason"))
     _keyed(pred, "pred", ("shot_id", "on_target", "is_goal", "kind"))
-    on = c3.filter(pl.col("on_target")).select("shot_id", "is_goal")
+    in_grid = pl.col("match_id").is_in(ids.implode()) if grid else pl.lit(False)
+    on = c3.filter(pl.col("on_target")).select("shot_id", "is_goal", coarse_grid=in_grid)
     if on.height == 0:
         raise ValueError("reconcile: C3 has no on-target shot")
     log = exclusions.select("shot_id", reason=pl.col("reason").cast(pl.String))
     tagged = on.join(log, on="shot_id", how="left", maintain_order="left").with_columns(
-        reason=pl.when(pl.col("reason").is_not_null())
+        reason=pl.when(pl.col("coarse_grid"))
+        .then(pl.lit("coarse_grid"))
+        .when(pl.col("reason").is_not_null())
         .then(pl.col("reason"))
         .when(pl.col("shot_id").is_in(unresolved.cast(pl.String).implode()))
         .then(pl.lit("unresolved_assist"))
@@ -332,33 +368,87 @@ def xg_input(ev: Evaluation, dev: pl.DataFrame, held: pl.DataFrame, folds: Folds
     )
 
 
+def coarse_matches(c3: pl.DataFrame) -> pl.Series:
+    """The ``match_id`` values of the StatsBomb matches on the coarse (1 yd) recording grid.
+
+    Core's per-match rule (``goalmouth.match_grids``). PM E1 (a), MS6: their end locations sit
+    on whole yards, so the pooled xGOT fit over-predicted them by 16.5 % and netted that against
+    the fine grid at the near post; they leave the xGOT fit and GSAx (counted, reason
+    ``coarse_grid``). Empty for WhoScored and for a match whose grid is unknown.
+
+    Examples
+    --------
+    >>> c3 = pl.DataFrame({"provider": ["statsbomb"] * 2, "match_id": ["sb:1", "sb:2"],
+    ...                    "is_own_goal": [False] * 2,
+    ...                    "raw_qualifiers": ['{"location":[100.0,40.0]}',
+    ...                                       '{"location":[100.4,40.0]}']})
+    >>> coarse_matches(c3).to_list()
+    ['sb:1']
+    """
+    grids = goalmouth.match_grids(c3)
+    return grids.filter(pl.col("fidelity") == "coarse")["match_id"]
+
+
+def drop_matches(inp: XgInput, match_ids: pl.Series) -> XgInput:
+    """``inp`` without the rows of ``match_ids``; every fold keeps its rows' assignment.
+
+    Raises
+    ------
+    ValueError
+        From ``evaluation.restrict_folds``: a fold left with no test row.
+
+    Examples
+    --------
+    >>> drop_matches(inp, coarse_matches(c3)).on_dev.height <= inp.on_dev.height
+    ... # doctest: +SKIP
+    True
+    """
+    if match_ids.len() == 0:
+        return inp
+    out = pl.col("match_id").is_in(match_ids.cast(pl.String).implode())
+    keep = ~inp.on_dev.select(out).to_series().to_numpy()
+    return dataclasses.replace(
+        inp,
+        dev=inp.dev.filter(~out),
+        held=inp.held.filter(~out),
+        on_dev=inp.on_dev.filter(pl.Series(keep)),
+        on_held=inp.on_held.filter(~out),
+        folds=evaluation.restrict_folds(inp.folds, keep),
+    )
+
+
+def grid_counts(c3: pl.DataFrame, coarse: pl.Series, matches: pl.DataFrame) -> pl.DataFrame:
+    """The on-target shots left out as ``coarse_grid``, per competition-season.
+
+    Returns
+    -------
+    polars.DataFrame
+        ``competition_name``, ``season_name`` (String), ``matches``, ``shots``, ``goals``
+        (Int64), sorted by shots descending, then names; empty without a coarse match.
+
+    Examples
+    --------
+    >>> c3 = pl.DataFrame({"match_id": ["sb:1", "sb:1", "sb:2"], "on_target": [True] * 3,
+    ...                    "is_goal": [True, False, False]})
+    >>> m = pl.DataFrame({"match_id": ["sb:1", "sb:2"], "competition_name": ["A", "B"],
+    ...                   "season_name": ["2018", "2019"]})
+    >>> grid_counts(c3, pl.Series(["sb:1"]), m).rows()
+    [('A', '2018', 1, 2, 1)]
+    """
+    rows = c3.filter(pl.col("on_target") & pl.col("match_id").is_in(coarse.implode()))
+    return (
+        rows.join(matches.select("match_id", "competition_name", "season_name"), on="match_id")
+        .group_by("competition_name", "season_name")
+        .agg(
+            matches=pl.col("match_id").n_unique().cast(pl.Int64),
+            shots=pl.len().cast(pl.Int64),
+            goals=pl.col("is_goal").sum().cast(pl.Int64),
+        )
+        .sort(pl.col("shots"), "competition_name", "season_name", descending=[True, False, False])
+    )
+
+
 # ---- providers -----------------------------------------------------------------------------
-
-
-def _candidates(
-    steps: Sequence[ModelSpec], gbm_spec: ModelSpec, xg: data.XgData, dev: pl.DataFrame,
-    held: pl.DataFrame, folds: Folds, pc: PredictionCache | None,
-) -> tuple[tuple[Evaluation, ...], Evaluation]:  # fmt: skip
-    """The xG run's LR candidates and GBM, as ``models.run`` / ``v1.run`` evaluate them."""
-    ff = xg.freeze_frames  # empty for WhoScored, whose specs read no frame feature
-    base = tuple(evaluate(b, dev, held, folds, cache=pc) for b in baselines.BASELINES)
-    steps_ = tuple(evaluate(s, dev, held, folds, freeze_frames=ff, cache=pc) for s in steps)
-    return (*base, *steps_), evaluate(gbm_spec, dev, held, folds, freeze_frames=ff, cache=pc)
-
-
-def _sb_candidates(
-    xg: data.XgData, dev: pl.DataFrame, held: pl.DataFrame, folds: Folds,
-    pc: PredictionCache | None,
-) -> tuple[tuple[Evaluation, ...], Evaluation]:  # fmt: skip
-    # module globals read when called, so a patch of models.GBM is seen
-    return _candidates(ablation.STEPS, models.GBM, xg, dev, held, folds, pc)
-
-
-def _ws_candidates(
-    xg: data.XgData, dev: pl.DataFrame, held: pl.DataFrame, folds: Folds,
-    pc: PredictionCache | None,
-) -> tuple[tuple[Evaluation, ...], Evaluation]:  # fmt: skip
-    return _candidates(v1.STEPS, v1.GBM, xg, dev, held, folds, pc)
 
 
 def _ws_population(xg: data.XgData) -> tuple[pl.DataFrame, pl.Series]:
@@ -390,8 +480,10 @@ class Provider:
         ``holdout(matches) -> data.Holdout``.
     population : callable
         ``population(xg) -> (shots, unresolved shot ids)``: the xG population.
-    candidates : callable
-        ``candidates(xg, dev, held, folds, cache) -> (LR candidates, GBM)`` of the xG run.
+    candidate_specs : callable
+        ``candidate_specs() -> (LR steps, GBM spec)`` of the provider's xG run, read when
+        called (module globals: tests patch them); ``models.evaluate_candidates`` evaluates
+        them with the baselines.
     mouth_note : str or None
         A provider fact about the goal-mouth point the cards state, ``{deflected}`` filled
         with the count of deflected saves; None prints nothing.
@@ -406,7 +498,7 @@ class Provider:
     split: str
     holdout: Callable[[pl.DataFrame], data.Holdout]
     population: Callable[[data.XgData], tuple[pl.DataFrame, pl.Series]]
-    candidates: Candidates
+    candidate_specs: CandidateSpecs
     mouth_note: str | None = None
 
 
@@ -425,12 +517,6 @@ _FOLDS: Final[str] = (
     "over the out-of-fold test sets. **Train** is the fit on all on-target dev shots, scored "
     "in-sample."
 )
-PENALTY_FOLDS: Final[str] = (
-    f"Grouped {evaluation.N_SPLITS}-fold cross-validation by `match_id` on the in-game dev "
-    "kicks (their own "
-    "folds); the {split} kicks are scored once by the fit on all of them, and the shoot-out "
-    "kicks of every season by that fit too. The penalty xGOT reads no xG input."
-)
 _XGOT_LOG: Final[str] = (
     "C3 on-target shots by first matching reason; penalty and shoot-out rows are scored by the "
     "penalty xGOT, modelled rows by the LR and GBM."
@@ -442,6 +528,8 @@ def _xgot_text(base: ProviderText) -> ProviderText:
         "shootout": "shoot-out kick (period 5; penalty xGOT, reported apart)",
         "penalty": "penalty (in-game; penalty xGOT)",
         "unresolved_assist": "unresolved assisting event (left out of the xG population)",
+        "coarse_grid": "coarse recording grid (whole-yard locations; the match is left out of "
+        "the xGOT fit, PM MS6 E1)",
         "modelled": "modelled (open-play xGOT)",
     }
     labels_ = MappingProxyType({r: own.get(r) or base.label(r) for r in RECONCILE_REASONS})
@@ -458,11 +546,12 @@ PROVIDERS: Final[Mapping[str, Provider]] = MappingProxyType({
         f"{_FOLDS} **Test** is the hold-out competition-season named under Data, scored once by "
         f"that fit. {XGOT_CROSS_FIT}",
         "hold-out", data.pair_holdout, lambda xg: (xg.shots, pl.Series("shot_id", [], pl.String)),
-        _sb_candidates,
+        lambda: (ablation.STEPS, models.GBM),
         "StatsBomb records a save where the keeper stopped the ball: its `goal_z` is that height, "
         "not the height at the goal line, and a save stopped short of the line has its `goal_y` "
-        "projected along the line from the shot location ({deflected:,} of the on-target saves "
-        "were deflected, so their projection starts at the shot, not at the deflection).",
+        "projected along the line from the shot location and snapped to the 0.1 yd goal-mouth "
+        "lattice of recorded points ({deflected:,} of the on-target saves were deflected, so "
+        "their projection starts at the shot, not at the deflection).",
     ),
     "whoscored": Provider(
         "whoscored", v1.BUILDER, v1.DEFAULT_MANIFEST, "ws-xgot-",
@@ -470,7 +559,7 @@ PROVIDERS: Final[Mapping[str, Provider]] = MappingProxyType({
         f"{_FOLDS} Train is the {', '.join(v1.TRAIN_SEASONS)} seasons; **Test** is the "
         f"{', '.join(v1.TEST_SEASONS)} season, scored once by that fit and never used to choose. "
         f"{XGOT_CROSS_FIT}",
-        "test", _ws_holdout, _ws_population, _ws_candidates,
+        "test", _ws_holdout, _ws_population, lambda: (v1.STEPS, v1.GBM),
     ),
 })  # fmt: skip
 
@@ -485,9 +574,10 @@ def xg_input_eval(
 ) -> tuple[Evaluation, Evaluation]:
     """The xG input of the xGOT and the provider's headline xG, both on ``folds``.
 
-    The headline is chosen by ``models.select_headline`` over the provider's candidates; the
-    input is that spec made keeper-neutral (:func:`keeper_neutral`, one extra fit for
-    StatsBomb, through the cache).
+    The candidates are ``models.evaluate_candidates`` of ``provider.candidate_specs()``, the
+    set the xG run evaluates, so the headline (``models.select_headline``) is the xG card's
+    headline; the input is that spec made keeper-neutral (:func:`keeper_neutral`, one extra fit
+    for StatsBomb, through the cache).
 
     Raises
     ------
@@ -501,8 +591,11 @@ def xg_input_eval(
     >>> inp.spec.name, head.spec.name  # doctest: +SKIP
     ('xg-gbm-keeper-neutral', 'xg-gbm')
     """
-    candidates, gbm_ev = provider.candidates(xg, dev, held, folds, cache)
-    head, _ = models.select_headline(candidates, gbm_ev, dev, held)
+    steps, gbm_spec = provider.candidate_specs()
+    c = models.evaluate_candidates(
+        steps, gbm_spec, dev, held, folds, freeze_frames=xg.freeze_frames, cache=cache
+    )
+    head, _ = models.select_headline(c.lrs, c.gbm, dev, held)
     spec = keeper_neutral(head.spec) if isinstance(head.spec, ModelSpec) else None
     if spec is None or spec is head.spec:
         inp = head
@@ -526,23 +619,13 @@ LR_FEATURES: Final[tuple[str, ...]] = (
     "angle_x_mouth_z",
     "mouth_far",
 )
+# MS6: placement carries no monotone constraint; distance to the post (3.66 − |y|) and to the
+# bar (2.44 − z) are order reversals of mouth_y_abs / mouth_z, which a tree splits identically
 GBM_FEATURES: Final[tuple[str, ...]] = (
-    features.XG_INPUT, "mouth_y_in", "mouth_y_past", "mouth_out", "mouth_z", "far_side",
-    "angle_rad",
+    features.XG_INPUT, "mouth_y_abs", "mouth_out", "mouth_z", "far_side", "angle_rad",
 )  # fmt: skip
-GBM_SIGNS: Final[Mapping[str, int]] = MappingProxyType({features.XG_INPUT: 1, "mouth_y_in": 1})
+GBM_SIGNS: Final[Mapping[str, int]] = MappingProxyType({features.XG_INPUT: 1})
 PENALTY_FEATURES: Final[tuple[str, ...]] = ("mouth_y_abs", "mouth_z", "mouth_yz")
-XGOT_MONOTONE_REASONS: Final[Mapping[str, str]] = MappingProxyType({
-    features.XG_INPUT: "a higher xG at the same placement never lowers xGOT",
-    "mouth_y_in": f"further from the centre, up to {features.INNER_Y:g} m, at the same height "
-    "and on the same side (`far_side` fixed) never helps the keeper",
-})  # fmt: skip
-XGOT_MONOTONE_NOTE: Final[str] = (
-    "Each constraint holds along one column with every other column held fixed: `mouth_y_in` "
-    "moves the ball towards a post at the same height, on the same side (near or far). Beyond "
-    f"{features.INNER_Y:g} m from the centre a ball's centre is within its radius of the post, "
-    "so a shot there hits the post or is saved: `mouth_y_past` and `mouth_out` are free."
-)
 
 
 def xgot_specs(prefix: str, xg_name: str) -> tuple[ModelSpec, ...]:
@@ -666,36 +749,111 @@ def ece_stats(ev: Evaluation, y_dev: BoolArray, y_held: BoolArray) -> EceStats:
     )
 
 
-def ece_lines(
-    ev: Evaluation, y_dev: BoolArray, y_held: BoolArray, *, split: str = "hold-out"
-) -> list[str]:
-    """The ECE section of every xGOT card: a one-row table and the binning sentence.
+def _check(target: str, measured: str, ok: bool) -> Check:
+    return Check(target, measured, "met" if ok else "missed")
+
+
+def band_table(p: FloatArray, dev: pl.DataFrame) -> pl.DataFrame:
+    """Calibration by placement band: Σ xGOT against goals per ``|y|`` band of ``dev``.
+
+    The reliability table bins by prediction, so it cannot show a placement the model
+    misprices; this table bins by ``mouth_y_abs`` (after rounding, ``Y_BANDS``) with the points
+    recorded outside the frame (``mouth_out``) in a row of their own. A band is ``within`` when
+    ``|Σ p − goals| <= BAND_SDS · sd``, ``sd = √Σ p(1 − p)`` (the Poisson-binomial SD of the
+    goal count if ``p`` is calibrated): the PM's screening rule, not a proof of calibration.
+
+    Parameters
+    ----------
+    p : numpy.ndarray
+        Any model's probabilities on ``dev``, in ``dev`` order (the cards pass ``ev.oof``).
+    dev : polars.DataFrame
+        On-target shots: ``goal_y``, ``goal_z``, ``on_target`` and ``is_goal``.
+
+    Returns
+    -------
+    polars.DataFrame
+        One row per band, in band order: ``band`` (String), ``shots`` / ``goals`` (Int64),
+        ``goal_rate`` / ``mean_xgot`` (Float64, null for an empty band), ``gap`` = Σ p − goals
+        and ``sd`` (Float64, 0.0 for an empty band) and ``within`` (Boolean; an empty band is
+        within, since 0 <= 0).
+
+    Raises
+    ------
+    ValueError
+        ``p`` not of shape ``(dev.height,)``, not finite or outside [0, 1]; from
+        ``features.placement`` (a shot not on target, a null ``goal_y``).
 
     Examples
     --------
-    >>> ece_lines(head, y_dev, y_held)[0]  # doctest: +SKIP
-    '### Expected calibration error'
+    >>> dev = pl.DataFrame({"goal_y": [34.0, 34.0, 30.8], "goal_z": [1.0, 1.0, 1.0],
+    ...                     "on_target": [True] * 3, "is_goal": [True, False, True]})
+    >>> t = band_table(np.array([0.5, 0.5, 0.9]), dev)
+    >>> t.select("band", "shots", pl.col("gap").round(2), "within").rows()[:4]
+    [('[0, 1)', 2, 0.0, True), ('[1, 2)', 0, 0.0, True), ('[2, 3)', 0, 0.0, True), \
+('[3, 3.3)', 1, -0.1, True)]
     """
-    s = ece_stats(ev, y_dev, y_held)
-    return [
-        "### Expected calibration error",
-        "",
-        f"ECE ({metrics.ECE_BINS} equal-count bins): the shot-weighted mean of |mean prediction "
-        "− goal rate| over the bins of the reliability table. CV is "
-        "judged on the fold mean, with the worst fold and the pooled out-of-fold value beside "
-        f"it; the {split} value has beside it its noise floor, the mean ECE of outcomes drawn "
-        f"from its own predictions ({FLOOR_REPS} draws, seed {metrics.SEED}), which a perfectly "
-        "calibrated model reaches by chance.",
-        "",
-        f"| CV fold mean | CV max | CV pooled | {(cap := split.capitalize())} | {cap} floor |",
-        "|---|---|---|---|---|",
-        f"| {fmt(s.mean)} | {fmt(s.max)} | {fmt(s.pooled)} | {fmt(s.held)} | {fmt(s.floor)} |",
-        "",
+    p = np.asarray(p, dtype=np.float64)
+    if p.shape != (dev.height,):
+        raise ValueError(f"band_table: {p.size} prediction(s) for the {dev.height} dev row(s)")
+    if bad := int((~np.isfinite(p) | (p < 0) | (p > 1)).sum()):
+        raise ValueError(f"band_table: {bad} prediction(s) are not finite or outside [0, 1]")
+    place = features.placement(dev.select("goal_y", "goal_z", "on_target"))
+    ay, out = place["mouth_y_abs"].to_numpy(), place["mouth_out"].to_numpy() > 0
+    y = labels(dev)
+    masks = [
+        (f"[{lo:g}, {hi:g})" if math.isfinite(hi) else f">= {lo:g}", (ay >= lo) & (ay < hi) & ~out)
+        for lo, hi in pairwise((*Y_BANDS, math.inf))
     ]
+    masks.append((f"outside the frame + {goalmouth.GOAL_TOLERANCE:g} m", out))
+    rows = []
+    for band, m in masks:
+        n, goals = int(m.sum()), int(y[m].sum())
+        gap, sd = float(p[m].sum()) - goals, math.sqrt(float((p[m] * (1 - p[m])).sum()))
+        rate, mean = (goals / n, float(p[m].mean())) if n else (None, None)
+        rows.append((band, n, goals, rate, mean, gap, sd, abs(gap) <= BAND_SDS * sd))
+    schema = {
+        "band": pl.String,
+        "shots": pl.Int64,
+        "goals": pl.Int64,
+        "goal_rate": pl.Float64,
+        "mean_xgot": pl.Float64,
+        "gap": pl.Float64,
+        "sd": pl.Float64,
+        "within": pl.Boolean,
+    }
+    return pl.DataFrame(rows, schema=schema, orient="row")  # fmt: skip
 
 
-def _check(target: str, measured: str, ok: bool) -> Check:
-    return Check(target, measured, "met" if ok else "missed")
+def judged(table: pl.DataFrame) -> pl.Series:
+    """Per band of :func:`band_table`: judged by the band rule, i.e. ``shots >= MIN_BAND_SHOTS``.
+
+    PM (MS6 gsax): the 2-SD rule is a normal approximation, so a band under
+    ``MIN_BAND_SHOTS`` shots is printed with its counts and marked not judged.
+
+    Examples
+    --------
+    >>> judged(pl.DataFrame({"shots": [99, 100]})).to_list()
+    [False, True]
+    """
+    return (table["shots"] >= MIN_BAND_SHOTS).alias("judged")
+
+
+def _band_check(table: pl.DataFrame) -> Check:
+    """Check row 12: the worst judged band by |gap| / sd (inf for sd 0 and gap != 0)."""
+    ok = judged(table).to_list()
+    ratio = [
+        -1.0 if not j else 0.0 if gap == 0 and sd == 0 else math.inf if sd == 0 else abs(gap) / sd
+        for gap, sd, j in zip(table["gap"], table["sd"], ok, strict=True)
+    ]
+    i = max(range(len(ratio)), key=ratio.__getitem__)  # the first band on a tie
+    band, gap, sd = table["band"][i], table["gap"][i], table["sd"][i]
+    worst = f"{band}: {signed(gap)} (SD {sd:.1f})" if ok[i] else "no band judged"
+    return _check(
+        f"Σ xGOT − goals within {BAND_SDS:g} SD (√Σp(1−p)) in every placement band of at least "
+        f"{MIN_BAND_SHOTS} shots, dev out of fold",
+        f"{worst}; {sum(ok)} of {table.height} bands judged",
+        bool((table["within"] | ~judged(table)).all()),
+    )
 
 
 def checks(
@@ -707,12 +865,16 @@ def checks(
     held: pl.DataFrame,
     split: str,
 ) -> tuple[Check, ...]:
-    """The MS5 checks of the headline xGOT model, in the card's order; bounds from constants.
+    """The MS5 and MS6 checks of the headline xGOT model, in the card's order; bounds from
+    constants.
 
     Rows 1-9 can be missed: AUC (CV fold mean, ``split``), ECE (CV fold mean, ``split``),
     calibration slope (CV fold mean, ``split``), the GBM headline rule, reconciliation of
     shots and goals. Rows 10-11 record guards that raise rather than miss: the xG input is
-    keeper-neutral and no ablation, and the headline reads no keeper-position feature.
+    keeper-neutral and no ablation, and the headline reads no keeper-position feature. Row 12
+    (MS6) can be missed: every band of :func:`band_table` of the headline's out-of-fold
+    predictions on ``dev`` with at least ``MIN_BAND_SHOTS`` shots is within ``BAND_SDS`` SD;
+    it names the worst judged band.
 
     Raises
     ------
@@ -723,7 +885,7 @@ def checks(
     --------
     >>> [c.result for c in checks(head, gg, recon, xg_ev, on_dev, on_held, "hold-out")]
     ... # doctest: +SKIP
-    ['met', 'met', 'met', 'met', 'met', 'met', 'met', 'met', 'met', 'met', 'met']
+    ['met', 'met', 'met', 'met', 'met', 'met', 'met', 'met', 'met', 'met', 'met', 'met']
     """
     xg_feats = xg_ev.spec.features if isinstance(xg_ev.spec, ModelSpec) else ()
     features.check_keeper_neutral(xg_feats)
@@ -735,6 +897,11 @@ def checks(
     lo, hi = models.SLOPE_RANGE
     band = f"Calibration slope in [{lo:g}, {hi:g}]"
     tol = f"within {RECONCILE_TOL:.0%} (two-sided)"
+    less = (
+        f" less {recon.ruled[0]:,} coarse-grid (PM E1)",
+        f" less {recon.ruled[1]:,} coarse-grid",
+    )
+    less = less if recon.ruled[0] else ("", "")
     return (
         _check(f"ROC AUC >= {AUC_MIN:.2f}, CV fold mean", fmt(head.cv.auc), head.cv.auc >= AUC_MIN),
         _check(f"ROC AUC >= {AUC_MIN:.2f}, {split}", fmt(head.holdout.auc),
@@ -748,16 +915,17 @@ def checks(
         _check(f"GBM headline iff its CV gain {gbm_gain.label} has a 95% interval above 0",
                f"CV {gain_cell(gbm_gain.cv)}; headline {head.spec.title}",
                models.is_gbm(head) == (gbm_gain.cv.low > 0)),
-        _check(f"On-target shots scored reconcile with C3 {tol}",
-               f"{recon.shots:,} of {recon.c3_shots:,} ({recon.shots_gap:+.3%}); unscored "
+        _check(f"On-target shots scored reconcile with C3 (less PM-ruled exclusions) {tol}",
+               f"{recon.shots:,} of {recon.c3_shots:,}{less[0]} ({recon.shots_gap:+.3%}); unscored "
                f"{recon.unscored:,}", abs(recon.shots_gap) <= RECONCILE_TOL),
-        _check(f"On-target goals scored reconcile with C3 {tol}",
-               f"{recon.goals:,} of {recon.c3_goals:,} ({recon.goals_gap:+.3%})",
+        _check(f"On-target goals scored reconcile with C3 (less PM-ruled exclusions) {tol}",
+               f"{recon.goals:,} of {recon.c3_goals:,}{less[1]} ({recon.goals_gap:+.3%})",
                abs(recon.goals_gap) <= RECONCILE_TOL),
         Check(f"xG input {xg_ev.spec.title}: cross-fitted on the same folds, keeper-neutral, not "
               "an ablation (the run raises otherwise)", "guards ran", "met"),
         Check("No keeper-position feature in the headline xGOT (the xGOT guard raises "
               "otherwise)", ", ".join(head_feats) or "none", "met"),
+        _band_check(band_table(head.oof, dev)),
     )  # fmt: skip
 
 
@@ -870,429 +1038,132 @@ def sga(pred: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-# ---- cards ---------------------------------------------------------------------------------
-
-_PLACED: Final[str] = (
-    f"clipped to the frame + {goalmouth.GOAL_TOLERANCE:g} m and rounded to "
-    f"{features.PLACEMENT_STEP:g} m"
-)
-_SRC: Final[str] = "`goal_y`, `goal_z` via `pitch.to_goal_frame`; on target only"
-FEATURE_ROWS: Final[Mapping[str, str]] = MappingProxyType({
-    features.XG_INPUT: "| `xg_logit` | Logit of the shot's cross-fitted xG (the xG input, out "
-    "of sample for the row) | xG model |",
-    "mouth_y_abs": f"| `mouth_y_abs` | Distance from the goal centre across the goal, m, "
-    f"{_PLACED} | {_SRC} |",
-    "mouth_z": f"| `mouth_z` | Height above the ground, m, {_PLACED} | {_SRC} |",
-    **{
-        f"{col}_rcs{j + 1}": f"| `{col}_rcs{j + 1}` | Restricted cubic spline term {j + 1} of "
-        f"`{col}`, knots {', '.join(f'{k:g}' for k in knots)} m | `{col}` |"
-        for col, knots in (("mouth_y_abs", features.MOUTH_Y_KNOTS),
-                           ("mouth_z", features.MOUTH_Z_KNOTS))
-        for j in range(len(knots) - 2)
-    },
-    "far_side": "| `far_side` | +1 far post, −1 near post (the ball's side against the shot's), "
-    f"0 for a shot within {features.CENTRE_DEAD_ZONE:g} m of the centre line or a ball at the "
-    f"centre | `y`, {_SRC} |",
-    "mouth_far": "| `mouth_far` | `far_side` × `mouth_y_abs` | `y`, " + _SRC + " |",
-    "angle_x_mouth_y": "| `angle_x_mouth_y` | `angle_rad` × `mouth_y_abs` | `angle_rad`, "
-    + _SRC + " |",
-    "angle_x_mouth_z": "| `angle_x_mouth_z` | `angle_rad` × `mouth_z` | `angle_rad`, "
-    + _SRC + " |",
-    "mouth_yz": "| `mouth_yz` | `mouth_y_abs` × `mouth_z` | " + _SRC + " |",
-    "mouth_y_in": f"| `mouth_y_in` | `min(mouth_y_abs, {features.INNER_Y:g})`: the distance from "
-    "the goal centre up to where a ball starts to touch the post, m | `mouth_y_abs` |",
-    "mouth_y_past": "| `mouth_y_past` | `mouth_y_abs − mouth_y_in`: how far past that point "
-    "the ball crossed, m | `mouth_y_abs` |",
-    "mouth_out": f"| `mouth_out` | 1 when the point was recorded beyond the frame + "
-    f"{goalmouth.GOAL_TOLERANCE:g} m (before clipping), else 0 | {_SRC} |",
-    "angle_rad": ablation.FEATURE_ROWS["angle_rad"],
-})  # fmt: skip
-INTENDED_USE: Final[str] = (
-    "xGOT (post-shot xG) for on-target shots: P(goal) of a shot that reached the goal frame, "
-    "from where it crossed the line and its pre-shot xG. Keeper-neutral (no keeper position), "
-    "so goals saved against it credit the keeper's positioning too. For research and as the "
-    "input of the MS6 goalkeeper models; not a rating of finishers, and not for other "
-    "providers' data without re-fitting."
-)
-TASK: Final[str] = (
-    "binary classification: P(goal | on-target shot) for the on-target shots of the non-penalty "
-    "xG population (a goal or a keeper save; own goals are never on target)"
-)
-PENALTY_TASK: Final[str] = (
-    "P(goal | on-target penalty) from placement only; fitted on in-game kicks, shoot-out kicks "
-    "scored apart"
-)
-PENALTY_USE: Final[str] = (
-    "Penalty xGOT: P(goal) of an on-target penalty from where it crossed the line, kept apart "
-    "from the open-play xGOT. For research and as the penalty input of the MS6 goalkeeper "
-    "models; not a rating of takers or keepers on its own."
-)
-TARGET: Final[str] = (
-    "`is_goal` of an on-target shot: the ball went in rather than being saved. Blocked shots "
-    "(clearances off the line included), woodwork and misses are not on target (C3 "
-    "`on_target`), so they are not in the population."
-)
-CHANGELOG: Final[tuple[str, ...]] = (
-    "v1 (MS5, P2.2–P2.5): first version.",
-    "v2 (MS5 assessment): the GBM is monotone in `mouth_y_in` only, with `mouth_y_past` and "
-    "`mouth_out` free; the LR reads `mouth_y_past`; calibration by placement band; the "
-    "scored-once split's level gap; penalty calibration judged bound by bound.",
-)
-
-
-def _lr_model(ev: Evaluation, c: CardContext) -> list[str]:
-    lr = ablation.make_lr()[-1]
-    return [
-        f"`make_pipeline(StandardScaler(), LogisticRegression(C={lr.C}, solver={lr.solver!r}, "
-        f"tol={lr.tol:g}, max_iter={lr.max_iter}))`: unpenalised logistic regression, no class "
-        "weights, no calibration step; the scaler is fitted on the training rows of each fit. "
-        f"scikit-learn {c.sklearn_version}.",
-        "",
-        "Coefficients of the fit on all of dev (natural units: log-odds per unit of the feature).",
-        "",
-        "| Term | Standardised | Natural units |",
-        "|---|---|---|",
-        *(f"| {term} | {fmt(std)} | {fmt(nat)} |" for term, std, nat in ev.coefficients),
-    ]
-
-
-def _feature_table(names: Sequence[str]) -> tuple[str, ...]:
-    return (
-        "| Feature | Definition | Source field(s) |",
-        "|---|---|---|",
-        *(FEATURE_ROWS[f] for f in names),
-    )
-
-
-def _limits(p: Provider, on: pl.DataFrame, *, flagged: bool = True) -> tuple[str, ...]:
-    """Limitations computed from the on-target rows ``on`` (dev and the scored-once split);
-    ``flagged`` when the card's models read ``mouth_out``."""
-    gy, gz = pitch.to_goal_frame(on["goal_y"].to_numpy(), on["goal_z"].to_numpy())
-    clipped = int(features.clipped(gy, gz).sum())
-    dead = int(features.dead_zone(on["y"].to_numpy()).sum())
-    deflected = on.filter(pl.col("deflected").fill_null(False) & ~pl.col("is_goal")).height
-    psxg = on["provider_psxg"].null_count()
-    lines = [
-        f"{clipped:,} of {on.height:,} on-target shots ({p.split} included) are recorded "
-        f"beyond the frame + {goalmouth.GOAL_TOLERANCE:g} m and are clipped to its edge"
-        + (
-            " and flagged by `mouth_out`, since where they would have crossed the line is not "
-            "known; "
-            if flagged
-            else "; "
-        )
-        + f"{dead:,} are struck within {features.CENTRE_DEAD_ZONE:g} m of the centre line, so they "
-        "have no near or far post.",
-        f"`provider_psxg` is null on {psxg:,} of {on.height:,} on-target shots, so there is no "
-        "provider xGOT benchmark.",
-    ]
-    if p.mouth_note is not None:
-        lines.append(p.mouth_note.format(deflected=deflected))
-    return tuple(lines)
-
-
-def band_lines(ev: Evaluation, dev: pl.DataFrame) -> list[str]:
-    """Calibration by placement band: dev out-of-fold xGOT against goals per |y| band.
-
-    The reliability table bins by prediction, so it cannot show a placement the model
-    misprices; this table bins by ``mouth_y_abs`` (rounded, ``Y_BANDS``) with the points
-    recorded outside the frame (``mouth_out``) in a row of their own.
-
-    Examples
-    --------
-    >>> band_lines(head, inp.on_dev)[0]  # doctest: +SKIP
-    '### Calibration by placement band'
-    """
-    place = features.placement(dev.select("goal_y", "goal_z", "on_target"))
-    ay, out = place["mouth_y_abs"].to_numpy(), place["mouth_out"].to_numpy() > 0
-    y, p = labels(dev), ev.oof
-    masks = [
-        (f"[{lo:g}, {hi:g})" if math.isfinite(hi) else f">= {lo:g}", (ay >= lo) & (ay < hi) & ~out)
-        for lo, hi in pairwise((*Y_BANDS, math.inf))
-    ]
-    masks.append((f"outside the frame + {goalmouth.GOAL_TOLERANCE:g} m", out))
-    rows = []
-    for label, m in masks:
-        n, goals = int(m.sum()), int(y[m].sum())
-        rate, mean = (goals / n, float(p[m].mean())) if n else (None, None)
-        gap = f"{float(p[m].sum()) - goals:+.1f}" if n else "n/a"
-        rows.append(f"| {label} | {n:,} | {goals:,} | {fmt(rate)} | {fmt(mean)} | {gap} |")
-    return [
-        "### Calibration by placement band",
-        "",
-        "Dev out-of-fold xGOT by the ball's distance from the goal centre (`mouth_y_abs`, m, "
-        f"after rounding); a ball beyond {features.INNER_Y:g} m touches the post. The "
-        "reliability table bins by prediction, so it cannot show a placement the model "
-        "misprices.",
-        "",
-        "| abs(y) band (m) | Shots | Goals | Goal rate | Mean xGOT | Σ xGOT − goals |",
-        "|---|---|---|---|---|---|",
-        *rows,
-        "",
-    ]
-
-
-def _level(ev: Evaluation, split: str) -> str:
-    """The scored-once split's level gap, a limitation the ECE does not show."""
-    h = ev.holdout
-    gap = f"{h.xg_signed_error:+.2%}" if h.goals else "n/a"
-    return (
-        f"On the {split}, Σ xGOT is {h.xg:,.1f} against {h.goals:,} goals "
-        f"({gap}; calibration intercept {fmt(h.cal_intercept)}). A level gap "
-        "moves every keeper's goals saved against this xGOT the same way, so a season's "
-        "keepers read better or worse as a group."
-    )
-
-
-def _text(
-    role: str, feats: tuple[str, ...], model: Callable[[Evaluation, CardContext], Sequence[str]],
-    limits: tuple[str, ...], *, task: str = TASK,
-) -> CardText:  # fmt: skip
-    return CardText(
-        role=role, intended_use=INTENDED_USE, features=feats, model=model, limitations=limits,
-        changelog=CHANGELOG, task=task, target=TARGET, best_label="xGOT model",
-        checks_title="Milestone checks (MS5)",
-        checks_note="Bounds from the PM brief (MS5); AUC >= 0.80 reads \"about 0.80 or better\" "
-        "strictly. ECE is judged on the CV fold mean and the point value of the scored-once "
-        "split (PM X3).",
-        quantity="xGOT",
-    )  # fmt: skip
-
-
-def xgot_context(
-    xg: data.XgData,
-    dev: pl.DataFrame,
-    held: pl.DataFrame,
-    recon: Reconciliation,
-    *,
-    holdout: data.Holdout,
-) -> CardContext:
-    """``cards.card_context`` with every count taken from the on-target frames passed.
-
-    Examples
-    --------
-    >>> c = xgot_context(xg, inp.on_dev, inp.on_held, recon, holdout=ho)  # doctest: +SKIP
-    >>> c.dev_shots == inp.on_dev.height  # doctest: +SKIP
-    True
-    """
-    both = pl.concat([dev.select("competition_id", "season_id", "gender"),
-                      held.select("competition_id", "season_id", "gender")])  # fmt: skip
-    return dataclasses.replace(
-        cards.card_context(xg, dev, held, holdout),
-        competition_seasons=both.select("competition_id", "season_id").n_unique(),
-        male_shots=int((both["gender"] == "male").sum()),
-        female_shots=int((both["gender"] == "female").sum()),
-        exclusions=recon.rows,
-    )
-
-
-def _r(s: SplitHalf) -> str:
-    if s.r is None or s.low is None or s.high is None:
-        return "n/a"
-    return f"{s.r:+.3f} [{s.low:+.3f}, {s.high:+.3f}]"
-
-
-def _halves(rows: Sequence[tuple[int, bool, SplitHalf, SplitHalf]]) -> list[str]:
-    return [
-        "### Shooting goals added (descriptive)",
-        "",
-        "Shooting goals added (SGA) is xGOT − xG per shot, next to goals − xG; both subtract the "
-        "same xG, the xG input above. Blocked and off-target shots count as 0 xGOT. Each "
-        "player's matches are ordered by date (then match id) and alternated into two halves, "
-        "so a match never spans halves; r is the Pearson correlation across players of the "
-        "per-shot value in the two halves, with a 95% interval by Fisher z (n/a under 4 "
-        "players). A descriptive measure of shots beating their xG on target, not a "
-        "finishing-skill claim.",
-        "",
-        "| Min shots | Blocked shots | Players | SGA per shot: r [95% CI] | Goals − xG per "
-        "shot: r [95% CI] |",
-        "|---|---|---|---|---|",
-        *(
-            f"| {m} | {'in' if blocked else 'left out'} | {a.keys:,} | {_r(a)} | {_r(b)} |"
-            for m, blocked, a, b in rows
-        ),
-        "",
-    ]
-
-
-def _recon_lines(recon: Reconciliation) -> list[str]:
-    return [
-        "### Reconciliation with C3",
-        "",
-        "Every C3 on-target shot is in one row of the Filters table; the scored rows are the "
-        "open-play and penalty xGOT predictions.",
-        "",
-        "| | Shots | Goals |",
-        "|---|---|---|",
-        f"| C3 on target | {recon.c3_shots:,} | {recon.c3_goals:,} |",
-        f"| Scored by xGOT | {recon.shots:,} | {recon.goals:,} |",
-        f"| Difference | {recon.shots_gap:+.3%} | {recon.goals_gap:+.3%} |",
-        "",
-        f"Population rows without a prediction: {recon.unscored:,}.",
-        "",
-    ]
-
-
-# ---- run -----------------------------------------------------------------------------------
+# ---- fit -------------------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, eq=False)
-class XgotRun:
-    """Everything :func:`run` evaluated for one provider.
+class XgotFit:
+    """Everything :func:`fit` computed for one provider; the cards render from it alone.
 
-    ``xg_input`` is the xG input's evaluation (``xg_headline`` the provider's headline xG);
-    ``evaluations`` is (base rate, xG only, LR without near / far, LR, GBM); ``split_half``
-    holds (min shots, blocked shots left in, SGA, goals − xG) rows; ``cards`` maps card name to
-    the Markdown written.
+    Attributes
+    ----------
+    provider : str
+        The key of :data:`PROVIDERS`.
+    setup : Provider
+        ``PROVIDERS[provider]`` as read when :func:`fit` ran.
+    xg, holdout : data.XgData, data.Holdout
+        The loaded snapshot and its scored-once split.
+    inp : XgInput
+        The xG population with the cross-fitted xG and its on-target part.
+    xg_input, xg_headline : Evaluation
+        The xG input (keeper-neutral) and the provider's headline xG.
+    evaluations : tuple of Evaluation
+        Base rate, xG only, LR without near / far, LR, GBM.
+    head : Evaluation
+        The headline xGOT.
+    gbm_gain, far_gain : Comparison
+        The GBM over the LR, and the LR over the LR without near / far.
+    kicks : Kicks
+        The on-target kicks and the penalty xGOT.
+    penalty_base : Evaluation
+        The base rate on the in-game kicks.
+    shootouts : Scores or None
+        The shoot-out kicks' scores (None without both outcomes).
+    recon : Reconciliation
+    grid : polars.DataFrame
+        :func:`grid_counts`: the on-target shots of coarse-grid matches left out (PM E1 (a)),
+        per competition-season; empty for WhoScored.
+    checks : tuple of Check
+    split_half : tuple
+        (min shots, blocked shots left in, SGA, goals − xG) rows.
+    predictions : polars.DataFrame
+        :func:`predictions`, in memory only.
+    cache : PredictionCache or None
+        The cache read and written (its ``hits`` / ``written``), None without one.
     """
 
     provider: str
+    setup: Provider
+    xg: data.XgData
+    holdout: data.Holdout
+    inp: XgInput
     xg_input: Evaluation
     xg_headline: Evaluation
     evaluations: tuple[Evaluation, ...]
     head: Evaluation
     gbm_gain: Comparison
     far_gain: Comparison
-    penalty: Evaluation
+    kicks: Kicks
+    penalty_base: Evaluation
     shootouts: Scores | None
     recon: Reconciliation
+    grid: pl.DataFrame
     checks: tuple[Check, ...]
     split_half: tuple[tuple[int, bool, SplitHalf, SplitHalf], ...]
     predictions: pl.DataFrame
-    cards: Mapping[str, str]
+    cache: PredictionCache | None
+
+    @property
+    def penalty(self) -> Evaluation:
+        """The penalty xGOT (``kicks.ev``)."""
+        return self.kicks.ev
 
 
-def _y(pred: pl.DataFrame, kind: str, split: str) -> BoolArray:
-    rows = pred.filter((pl.col("kind") == kind) & (pl.col("split") == split) & pl.col("on_target"))
-    y: BoolArray = rows["is_goal"].to_numpy()
-    return y
-
-
-def summary_block(runs: Sequence[XgotRun]) -> str:
-    """The README block: every xGOT model per provider, then the headline, penalty and SGA lines.
-
-    Examples
-    --------
-    >>> print(summary_block([sb_run]))  # doctest: +SKIP
-    | Provider | Model | CV AUC | CV ECE | CV cal. slope | ...
-    """
-    lines = [
-        "| Provider | Model | CV AUC | CV ECE | CV cal. slope | Hold-out / test AUC | "
-        "Hold-out / test ECE | Hold-out / test cal. slope |",
-        "|---|---|---|---|---|---|---|---|",
-    ]
-    notes = []
-    for r in runs:
-        source = PROVIDERS[r.provider].text.source
-        for ev, kind in (*((e, "open_play") for e in r.evaluations), (r.penalty, "penalty")):
-            s = ece_stats(ev, _y(r.predictions, kind, "dev"), _y(r.predictions, kind, "holdout"))
-            title = f"**{ev.spec.title}**" if ev is r.head else ev.spec.title
-            lines.append(
-                f"| {source} | {title} | {fmt(ev.cv.auc)} | {fmt(s.mean)} | "
-                f"{fmt(ev.cv.cal_slope)} | {fmt(ev.holdout.auc)} | {fmt(s.held)} | "
-                f"{fmt(ev.holdout.cal_slope)} |"
-            )
-        met = sum(c.result == "met" for c in r.checks)
-        so = r.shootouts
-        sga40 = next(row for row in r.split_half if row[0] == MIN_SHOTS[1] and row[1])
-        notes += [
-            f"{source}: headline {r.head.spec.title}; xG input {r.xg_input.spec.title} (provider "
-            f"headline xG {r.xg_headline.spec.title}); {met} of {len(r.checks)} MS5 checks met; "
-            f"{r.recon.shots:,} of {r.recon.c3_shots:,} C3 on-target shots scored "
-            f"({r.recon.shots_gap:+.3%}), goals {r.recon.goals_gap:+.3%}.",
-            "",
-            f"{source}, penalty xGOT (placement only, in-game kicks): CV AUC "
-            f"{fmt(r.penalty.cv.auc)}, CV cal. slope {fmt(r.penalty.cv.cal_slope)}; shoot-out "
-            + ("kicks: none with both outcomes." if so is None else
-               f"kicks scored apart: {so.n:,} kicks, {so.goals:,} goals, Σ xGOT {so.xg:.1f}, log "
-               f"loss {fmt(so.log_loss)}."),
-            "",
-            f"{source}, shooting goals added (descriptive), split-half r at >= {sga40[0]} shots, "
-            f"{sga40[2].keys:,} players: SGA per shot {_r(sga40[2])}, goals − xG per shot "
-            f"{_r(sga40[3])}.",
-            "",
-        ]  # fmt: skip
-    return "\n".join([*lines, "", *notes[:-1]]) + "\n"
-
-
-def _penalty_calibration(pen: Evaluation, s: EceStats, split: str) -> str:
-    """The penalty card's calibration line: each open-play bound judged on its own."""
-    lo, hi = models.SLOPE_RANGE
-
-    def within(v: float | None) -> str:
-        return "not estimable" if v is None else "inside" if lo <= v <= hi else "outside"
-
-    slopes = (pen.cv.cal_slope, pen.holdout.cal_slope)
-    inside = all(v is not None and lo <= v <= hi for v in slopes) and s.mean < ECE_MAX
-    line = (
-        f"Against the open-play bounds, each on its own: CV calibration slope "
-        f"{fmt(slopes[0])} ({within(slopes[0])} [{lo:g}, {hi:g}]), {split} slope "
-        f"{fmt(slopes[1])} ({within(slopes[1])}), CV ECE {fmt(s.mean)} (fold mean; "
-        f"{'below' if s.mean < ECE_MAX else 'not below'} {ECE_MAX:g})."
-    )
-    if inside:
-        return line
-    return (
-        f"{line} Its probabilities are not calibrated to the open-play standard; as a ranking "
-        f"of placements its AUC is {fmt(pen.cv.auc)} on CV and {fmt(pen.holdout.auc)} on the "
-        f"{split} (0.5 is no ranking)."
-    )
-
-
-def run(provider: str, *, docs_dir: StrPath, cache: StrPath | None) -> XgotRun:
-    """Evaluate the xGOT models of one provider, write its three cards and print the results.
+def fit(provider: str, *, cache: StrPath | None) -> XgotFit:
+    """Evaluate the xGOT models of one provider: no write, no print.
 
     Parameters
     ----------
     provider : str
-        A key of :data:`PROVIDERS`.
-    docs_dir : str or path
-        Where ``<name>.md`` is written.
-    cache : str or path, optional
-        Prediction cache root; ``None`` fits everything and writes nothing.
+        A key of :data:`PROVIDERS` (read when called).
+    cache : str or path or None
+        Prediction cache root, the only place this writes; ``None`` fits everything and
+        writes nothing.
 
     Returns
     -------
-    XgotRun
+    XgotFit
 
     Raises
     ------
     ValueError
-        An unknown provider; from the loader, the fits, the guards and the self-checks.
+        An unknown provider; a StatsBomb snapshot whose ``goal_y`` is off the goal-mouth
+        lattice (built before the MS6 snap: rebuild it); from the loader, the fits, the guards
+        and the self-checks.
 
     Examples
     --------
-    >>> run("statsbomb", docs_dir="docs/models", cache="data/cache").head.spec.name
-    ... # doctest: +SKIP
+    >>> fit("statsbomb", cache="data/cache").head.spec.name  # doctest: +SKIP
     'xgot-gbm'
     """
     if provider not in PROVIDERS:
         raise ValueError(f"unknown provider {provider!r}; expected one of {sorted(PROVIDERS)}")
     p = PROVIDERS[provider]
     xg = data.load_xg_data(p.manifest, builder=p.builder)
+    if problems := goalmouth.lattice_problems(xg.shots):
+        raise ValueError(
+            f"{p.manifest}: {problems[0]}; the snapshot predates the goal-mouth snap, rebuild it "
+            "with make snapshot OVERWRITE=--overwrite"
+        )
     shots, unresolved = p.population(xg)
     ho = p.holdout(xg.matches)
     dev, held = data.split_holdout(shots, ho)
     folds = evaluation.cv_folds(dev)
     pc = None if cache is None else PredictionCache(cache, xg.manifest.data_digest)
     xg_ev, xg_head = xg_input_eval(p, xg, dev, held, folds, pc)
-    inp = xg_input(xg_ev, dev, held, folds)
-    specs = xgot_specs(p.prefix, inp.spec_name)
-    on_dev, on_held, y_dev, y_held = (
-        inp.on_dev,
-        inp.on_held,
-        labels(inp.on_dev),
-        labels(inp.on_held),
-    )
-    by = {s.name.removeprefix(p.prefix): s for s in specs}
+    c3 = snapshot.load_snapshot(p.manifest, tables=("shots",))["shots"]
+    coarse = coarse_matches(c3)
+    inp = drop_matches(xg_input(xg_ev, dev, held, folds), coarse)
+    on_dev, on_held = inp.on_dev, inp.on_held
+    by = {s.name.removeprefix(p.prefix): s for s in xgot_specs(p.prefix, inp.spec_name)}
     names = ("base-rate", "xg-only", "lr-no-far", "lr", "gbm")
     evs = tuple(evaluate(by[n], on_dev, on_held, inp.folds, cache=pc) for n in names)
     head, gbm_gain = models.headline(evs[3], evs[4], on_dev, on_held)
     far_gain = evaluation.compare(
         "`mouth_far` (near / far post): dropped", evs[2], evs[3], on_dev, on_held
     )
-    kicks = penalty_kicks(by["penalty"], xg.penalties, ho, pc)
-    pen, k_dev, k_held = kicks.ev, labels(kicks.dev), labels(kicks.held)
+    on_grid = pl.col("match_id").is_in(coarse.implode())
+    kicks = penalty_kicks(by["penalty"], xg.penalties.filter(~on_grid), ho, pc)
     pen_base = evaluate(
         dataclasses.replace(by["base-rate"], name=f"{p.prefix}penalty-base-rate",
                             title="Penalty base rate (on target)"),
@@ -1303,8 +1174,7 @@ def run(provider: str, *, docs_dir: StrPath, cache: StrPath | None) -> XgotRun:
         metrics.score(k_shoot, kicks.shootout_p) if 0 < k_shoot.sum() < k_shoot.size else None
     )
     pred = predictions(inp, head, kicks, xg.matches)
-    c3 = snapshot.load_snapshot(p.manifest, tables=("shots",))["shots"]
-    recon = reconcile(c3, xg.exclusions, unresolved, pred)
+    recon = reconcile(c3, xg.exclusions, unresolved, pred, coarse=coarse)
     run_checks = checks(head, gbm_gain, recon, xg_ev, on_dev, on_held, p.split)
     per_shot = sga(pred)
     halves = tuple(
@@ -1315,104 +1185,193 @@ def run(provider: str, *, docs_dir: StrPath, cache: StrPath | None) -> XgotRun:
         for blocked in (True, False)
         for f in (per_shot if blocked else per_shot.filter(pl.col("outcome") != "blocked"),)
     )  # fmt: skip
-
-    # cards: LR and GBM on the open-play on-target shots, the penalty xGOT on the kicks
-    limits = _limits(p, pl.concat([on_dev, on_held]))
-    lead = (f"xG input: {xg_ev.spec.title}, cross-fitted; provider headline xG: "
-            f"{xg_head.spec.title}.", "")  # fmt: skip
-    texts = (
-        _text("P2.3: logistic regression of the goal on the logit of the cross-fitted xG, "
-              "placement splines, the width past the post's inner edge, angle × placement and "
-              "the near / far post.",
-              (*lead, *_feature_table(LR_FEATURES)), _lr_model,
-              (*limits, _level(evs[3], p.split))),
-        _text("P2.4: monotone gradient boosting on the xG input, placement, side and angle, "
-              "tuned and Platt-calibrated inside each fit by grouped CV.",
-              (*lead, *models.gbm_features(evs[4], FEATURE_ROWS, XGOT_MONOTONE_REASONS,
-                                           XGOT_MONOTONE_NOTE)),
-              models.gbm_model, (*limits, _level(evs[4], p.split))),
-    )  # fmt: skip
-    ctx = xgot_context(xg, on_dev, on_held, recon, holdout=ho)
-    written = {
-        ev.spec.name: cards.render_card(
-            ev, text, evaluations=evs, benchmark=None, dev=on_dev, context=ctx, provider=p.text,
-            validation=p.validation, thresholds=(), comparisons=(gain,),
-            verdict=models.verdict(ev, head, gbm_gain, split=p.split),
-            checks=run_checks if ev is head else (),
-            extra=[*ece_lines(ev, y_dev, y_held, split=p.split), *band_lines(ev, on_dev),
-                   *((*_recon_lines(recon), *_halves(halves)) if ev is head else ())],
-        )
-        for ev, text, gain in ((evs[3], texts[0], far_gain), (evs[4], texts[1], gbm_gain))
-    }  # fmt: skip
-    calib = _penalty_calibration(pen, ece_stats(pen, k_dev, k_held), p.split)
-    shoot = [
-        "### Shoot-out kicks (reported apart)", "",
-        f"{k_shoot.size:,} on-target shoot-out kicks ({int(k_shoot.sum()):,} goals), scored by "
-        "the fit on all in-game dev kicks and never pooled with them: Σ xGOT "
-        f"{float(kicks.shootout_p.sum()):.1f}, log loss "
-        f"{fmt(None if shootouts is None else shootouts.log_loss)}.", "",
-    ]  # fmt: skip
-    pen_text = dataclasses.replace(_text(
-        "P2.4: penalty xGOT, a logistic regression on placement only; it reads no xG, since "
-        "every in-game penalty has the same pre-shot xG.",
-        _feature_table(PENALTY_FEATURES), _lr_model,
-        (calib, *_limits(p, pl.concat([kicks.dev, kicks.held]), flagged=False)),
-        task=PENALTY_TASK,
-    ), intended_use=PENALTY_USE)  # fmt: skip
-    written[pen.spec.name] = cards.render_card(
-        pen, pen_text, evaluations=(pen_base, pen), benchmark=None, dev=kicks.dev,
-        context=xgot_context(xg, kicks.dev, kicks.held, recon, holdout=ho), provider=p.text,
-        validation=PENALTY_FOLDS.format(split=p.split), thresholds=(),
-        verdict="Placement-only, reported apart from the open-play xGOT.",
-        extra=[*ece_lines(pen, k_dev, k_held, split=p.split), *shoot],
-    )  # fmt: skip
-    out = Path(docs_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    for name, card in written.items():
-        (out / f"{name}.md").write_text(card, encoding="utf-8", newline="\n")
-    for ev in dict.fromkeys((xg_head, xg_ev, *evs, pen)):
-        print(baselines.summary_line(ev))
-    for g in (gbm_gain, far_gain):
-        print(f"gain | {g.label}: cv {gain_cell(g.cv)} | {p.split} {gain_cell(g.holdout)}")
-    print(f"headline: {head.spec.name}")
-    print(*(f"check | {c.target} | {c.measured} | {c.result}" for c in run_checks), sep="\n")
-    print(f"cards: {out}")
-    if pc is not None:
-        print(f"cache: {pc.dir} ({len(pc.hits)} read, {len(pc.written)} written)")
-    return XgotRun(
-        provider, xg_ev, xg_head, evs, head, gbm_gain, far_gain, pen, shootouts, recon,
-        run_checks, halves, pred, MappingProxyType(written),
+    return XgotFit(
+        provider, p, xg, ho, inp, xg_ev, xg_head, evs, head, gbm_gain, far_gain, kicks,
+        pen_base, shootouts, recon, grid_counts(c3, coarse, xg.matches), run_checks, halves, pred,
+        pc,
     )  # fmt: skip
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Command-line entry point; exit 0 even when a check is missed (it reports).
+# ---- MS6: season-out refits for the goalkeeper models ---------------------------------------
+
+SEASON_KEY: Final = ("competition_id", "season_id")
+SOURCE: Final = pl.Enum(("season_folds", "holdout_fit", "swapped_fit"))
+# how each provider's rated rows get xGOT from fits that never saw their season
+SEASON_OUT: Final[Mapping[str, str]] = MappingProxyType(
+    {"statsbomb": "season_folds", "whoscored": "swapped_fit"}
+)
+SUFFIX: Final[Mapping[str, str]] = MappingProxyType(
+    {"season_folds": "-season-out", "swapped_fit": "-swap"}
+)
+
+
+def _renamed(spec: object, suffix: str, xg_name: str | None = None) -> ModelSpec:
+    if not isinstance(spec, ModelSpec):
+        raise ValueError(f"refit: {spec!r} is not a fitted model spec")
+    xg = spec.xg_input if xg_name is None else xg_name
+    return dataclasses.replace(spec, name=f"{spec.name}{suffix}", xg_input=xg)
+
+
+def refit(
+    f: XgotFit,
+    *,
+    dev: pl.DataFrame,
+    held: pl.DataFrame,
+    folds: Folds,
+    kicks_dev: pl.DataFrame,
+    kicks_held: pl.DataFrame,
+    kicks_folds: Folds,
+    suffix: str,
+) -> pl.DataFrame:
+    """The :func:`fit` chain of ``f`` on other frames and folds: xG input, headline, penalty.
+
+    Every spec is ``f``'s, renamed ``name + suffix`` so its cache entry never evicts the match
+    out-of-fold one. The xG input is refitted on ``dev`` with ``folds`` and cross-fitted into
+    the frames (:func:`xg_input`), then the headline xGOT and the penalty xGOT are refitted on
+    them; shoot-out kicks keep ``f``'s scores.
+
+    Returns
+    -------
+    polars.DataFrame
+        :func:`predictions` of the refitted models (``split`` is the refit's own).
+
+    Raises
+    ------
+    ValueError
+        From the fits and the self-checks of :func:`xg_input` and :func:`predictions`.
 
     Examples
     --------
-    >>> main(["--provider", "statsbomb"])  # doctest: +SKIP
-    0
+    >>> pred = refit(f, dev=f.inp.dev, held=f.inp.held, folds=folds, kicks_dev=f.kicks.dev,
+    ...              kicks_held=f.kicks.held, kicks_folds=k_folds, suffix="-x")  # doctest: +SKIP
     """
-    parser = argparse.ArgumentParser(
-        prog="python -m football_shot_models.xgot",
-        description="Evaluate the xGOT models (MS5) and write their cards.",
+    ff = None if f.xg.freeze_frames.height == 0 else f.xg.freeze_frames
+    xg_ev = evaluate(
+        _renamed(f.xg_input.spec, suffix), dev, held, folds, freeze_frames=ff, cache=f.cache
     )
-    parser.add_argument("--provider", choices=(*PROVIDERS, "both"), default="both")
-    parser.add_argument("--docs-dir", default="docs/models", help="where the cards go")
-    where = parser.add_mutually_exclusive_group()
-    where.add_argument("--cache", default="data/cache", help="prediction cache root (git-ignored)")
-    where.add_argument("--no-cache", action="store_true", help="fit everything, write no cache")
-    args = parser.parse_args(argv)
-    keys = tuple(PROVIDERS) if args.provider == "both" else (args.provider,)
-    cache = None if args.no_cache else args.cache
-    try:
-        runs = [run(k, docs_dir=args.docs_dir, cache=cache) for k in keys]
-    except (ValueError, OSError, snapshot.SnapshotError) as e:
-        print(f"fsm: error: {e}", file=sys.stderr)
-        return 1
-    print(summary_block(runs), end="")
-    return 0
+    inp = xg_input(xg_ev, dev, held, folds)
+    head = evaluate(
+        _renamed(f.head.spec, suffix, xg_ev.spec.name),
+        inp.on_dev, inp.on_held, inp.folds, cache=f.cache,
+    )  # fmt: skip
+    pen = evaluate(
+        _renamed(f.penalty.spec, suffix), kicks_dev, kicks_held, kicks_folds, cache=f.cache
+    )
+    kicks = dataclasses.replace(f.kicks, dev=kicks_dev, held=kicks_held, ev=pen)
+    return predictions(inp, head, kicks, f.xg.matches)
+
+
+def _seasons(frame: pl.DataFrame) -> set[tuple[str, str]]:
+    return set(frame.select(SEASON_KEY).unique().iter_rows())
+
+
+def _check_season_folds(frame: pl.DataFrame, folds: Folds, what: str) -> None:
+    keys = frame.select(SEASON_KEY)
+    for i, (train, test) in enumerate(folds):
+        if shared := _seasons(keys[test]) & _seasons(keys[train]):
+            raise ValueError(f"season_out: {what} fold {i} trains on {len(shared)} test season(s)")
+
+
+def _disjoint(rated: pl.DataFrame, trained: pl.DataFrame, what: str) -> None:
+    if shared := _seasons(rated) & _seasons(trained):
+        raise ValueError(
+            f"season_out: {len(shared)} {what} season(s) are in the fit that rates them"
+        )
+
+
+def season_out(f: XgotFit) -> pl.DataFrame:
+    """Every on-target open-play and in-game penalty row of ``f``, its xGOT season-out.
+
+    Each row's ``xgot`` comes from fits (xG input and xGOT both) that never saw its season,
+    built by :func:`refit` on ``f``'s own frames, so a population ruling made in :func:`fit`
+    (coarse-grid matches out) carries over. StatsBomb (``SEASON_OUT``: ``season_folds``): dev
+    rows from folds grouped by competition-season, hold-out rows from that refit's dev fit
+    (``holdout_fit``). WhoScored (``swapped_fit``): the test-season rows are ``f.predictions``
+    as they are (the train-only fit, ``holdout_fit``); the train-season rows are the hold-out
+    rows of a fit on the test season (MS5 O1). Shoot-out kicks are left out. Pure: the cache of
+    ``f`` is the only place it writes.
+
+    Returns
+    -------
+    polars.DataFrame
+        The :func:`predictions` columns (``split`` from ``f.predictions``), plus
+        ``competition_name``, ``season_name`` (String), ``family`` (``data.FAMILY``) and
+        ``source`` (``SOURCE``); none null.
+
+    Raises
+    ------
+    ValueError
+        An unknown ``f.provider``; ids that differ from ``f``'s on-target non-shoot-out rows;
+        a fold whose train rows hold one of its test seasons; a rated season among the
+        training seasons of the fit that scored it; a null added column; a family that is not
+        constant within a competition-season; from the fits.
+
+    Examples
+    --------
+    >>> rows = season_out(xgot.fit("statsbomb", cache="data/cache"))  # doctest: +SKIP
+    >>> rows["source"].unique().sort().to_list()  # doctest: +SKIP
+    ['season_folds', 'holdout_fit']
+    """
+    if f.provider not in SEASON_OUT:
+        raise ValueError(f"season_out: unknown provider {f.provider!r}; {sorted(SEASON_OUT)}")
+    source = SEASON_OUT[f.provider]
+    suffix, rated = SUFFIX[source], pl.col("on_target") & (pl.col("kind") != "shootout")
+    if source == "season_folds":
+        folds = evaluation.season_folds(f.inp.dev, by=SEASON_KEY)
+        k_folds = evaluation.season_folds(f.kicks.dev, by=SEASON_KEY)
+        _check_season_folds(f.inp.dev, folds, "open-play")
+        _check_season_folds(f.kicks.dev, k_folds, "kick")
+        _disjoint(pl.concat([f.inp.held.select(SEASON_KEY), f.kicks.held.select(SEASON_KEY)]),
+                  pl.concat([f.inp.dev.select(SEASON_KEY), f.kicks.dev.select(SEASON_KEY)]),
+                  "hold-out")  # fmt: skip
+        new = refit(f, dev=f.inp.dev, held=f.inp.held, folds=folds, kicks_dev=f.kicks.dev,
+                    kicks_held=f.kicks.held, kicks_folds=k_folds, suffix=suffix)  # fmt: skip
+        out = new.filter(rated).with_columns(
+            source=pl.when(pl.col("split") == "dev").then(pl.lit(source)).otherwise(
+                pl.lit("holdout_fit")).cast(SOURCE)
+        )  # fmt: skip
+    else:
+        train = pl.concat([f.inp.dev.select(SEASON_KEY), f.kicks.dev.select(SEASON_KEY)])
+        test = pl.concat([f.inp.held.select(SEASON_KEY), f.kicks.held.select(SEASON_KEY)])
+        _disjoint(test, train, "test")
+        new = refit(f, dev=f.inp.held, held=f.inp.dev, folds=evaluation.cv_folds(f.inp.held),
+                    kicks_dev=f.kicks.held, kicks_held=f.kicks.dev,
+                    kicks_folds=evaluation.cv_folds(f.kicks.held), suffix=suffix)  # fmt: skip
+        out = pl.concat([
+            new.filter(rated & (pl.col("split") == "holdout")).with_columns(
+                source=pl.lit(source, dtype=SOURCE)),
+            f.predictions.filter(rated & (pl.col("split") == "holdout")).with_columns(
+                source=pl.lit("holdout_fit", dtype=SOURCE)),
+        ])  # fmt: skip
+    want = f.predictions.filter(rated).select("shot_id", "split")
+    ids = out["shot_id"]
+    if ids.n_unique() != out.height or set(ids) != set(want["shot_id"]):
+        raise ValueError(
+            f"season_out: {out.height} row(s) for the {want.height} rated rows of the fit"
+        )
+    meta = f.xg.matches.select("match_id", "competition_name", "season_name").join(
+        data.match_family(f.xg.matches), on="match_id", how="left"
+    )
+    out = (
+        out.drop("split")
+        .join(want, on="shot_id", how="left", maintain_order="left")
+        .join(meta, on="match_id", how="left", validate="m:1", maintain_order="left")
+        .select(*f.predictions.columns, "competition_name", "season_name", "family", "source")
+        .sort("shot_id")
+    )
+    added = ("split", "competition_name", "season_name", "family", "source")
+    if nulls := out.select(pl.any_horizontal(pl.col(added).is_null())).to_series().sum():
+        raise ValueError(f"season_out: {nulls} row(s) have a null {added} value")
+    if (
+        out.group_by(SEASON_KEY)
+        .agg(pl.col("family").n_unique())
+        .filter(pl.col("family") > 1)
+        .height
+    ):
+        raise ValueError("season_out: a competition-season has two families")
+    return out
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    print("fsm: error: run python -m football_shot_models.xgot_cards", file=sys.stderr)
+    raise SystemExit(2)

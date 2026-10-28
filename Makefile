@@ -1,5 +1,6 @@
 .PHONY: check lint format typecheck test docs docs-notebooks docs-serve snapshot xg-baselines xg-models reproduce \
-	reproduce-cold reproduce-public reproduce-public-cold snapshot-whoscored legacy-v0 xg-v1 xgot
+	reproduce-cold reproduce-public reproduce-public-cold snapshot-whoscored legacy-v0 xg-v1 xgot \
+	statsbomb-logo gsax
 
 ## Run every quality gate (CI runs the same target)
 check: lint typecheck test docs
@@ -33,9 +34,28 @@ docs-serve: docs-notebooks
 ## Rebuild a snapshot after a schema bump with OVERWRITE=--overwrite (default: refuse to replace)
 OVERWRITE ?=
 
+## football-core's StatsBomb open-data cache: the snapshot input and the lineups (keeper names);
+## the one place this repo names the sibling checkout
+STATSBOMB_RAW ?= ../football-core/data/raw/statsbomb/open-data
+export STATSBOMB_RAW  # the slow tests read it (gsax_cards defaults to this repo's own cache)
+
 ## Freeze StatsBomb open data (football-core's raw checkout) as the 'statsbomb-open-v1' snapshot
 snapshot:
-	uv run fc snapshot statsbomb-open-v1 --builder statsbomb --input ../football-core/data/raw/statsbomb/open-data $(OVERWRITE)
+	uv run fc snapshot statsbomb-open-v1 --builder statsbomb --input "$(STATSBOMB_RAW)" $(OVERWRITE)
+
+## Fetch the StatsBomb logo once (needs the network) into the git-ignored data/raw/statsbomb cache;
+## every StatsBomb chart carries it and it is never committed
+statsbomb-logo:
+	uv run python -c "from football_core.io import statsbomb; print(statsbomb.fetch_logo())"
+
+## The logo and the StatsBomb checkout must be there before any StatsBomb chart or keeper name
+define NEED_STATSBOMB_EXTRAS
+	@uv run python -c "import sys; from football_core.io import statsbomb; \
+	sys.exit(0 if statsbomb.logo_file().is_file() else 1)" || { echo "$@: no StatsBomb logo; \
+	run make statsbomb-logo first; it needs the network once" >&2; exit 1; }
+	@test -d "$(STATSBOMB_RAW)" || { echo "$@: no StatsBomb checkout at $(STATSBOMB_RAW) (the \
+	lineups name the keepers); set STATSBOMB_RAW" >&2; exit 1; }
+endef
 
 ## Freeze the private WhoScored CSV archive as 'whoscored-v1' (WHOSCORED_ARCHIVE=<archive>/data).
 ## The data and the manifest are git-ignored; the manifest check fails closed (exit code only).
@@ -67,11 +87,18 @@ xg-baselines:
 xg-models:
 	uv run python -m football_shot_models.models
 
-## Evaluate the MS5 xGOT models of both providers and write docs/models/xgot-*.md and ws-xgot-*.md
-## (about 30 min cold). No Make prerequisites (xg-models / xg-v1 are phony and would re-run):
+## Evaluate the MS5 / MS6 xGOT models of both providers and write docs/models/xgot-*.md and
+## ws-xgot-*.md (about 30 min cold). No Make prerequisites (xg-models / xg-v1 are phony and would re-run):
 ## run `make xg-models xg-v1 xgot` so the xG candidates come from the prediction cache.
 xgot:
-	uv run python -m football_shot_models.xgot --provider both
+	uv run python -m football_shot_models.xgot_cards --provider both
+
+## Rate the goalkeepers (MS6 P3.1-P3.3) of both providers from season-out xGOT refits; write
+## docs/models/gsax.md, gk-model.md, ws-gsax.md, ws-gk-model.md and the git-ignored StatsBomb
+## chart data/charts/gsax-keepers.svg. Run after `make xgot` (the xGOT fits come from the cache).
+gsax:
+	$(NEED_STATSBOMB_EXTRAS)
+	uv run python -m football_shot_models.gsax_cards --provider both --statsbomb-raw "$(STATSBOMB_RAW)"
 
 ## Regenerate the model cards from the real snapshot and compare them with the committed ones.
 ## First `fc goalmouth --check`: >= 99 % of each provider's goals in the frame, Opta direction confirmed.
@@ -88,6 +115,7 @@ reproduce:
 	@test -f data/legacy/xg_model.json || { \
 		echo "reproduce: no legacy v0 at data/legacy/xg_model.json; run make legacy-v0 first" >&2; \
 		exit 1; }
+	$(NEED_STATSBOMB_EXTRAS)
 	uv run fc goalmouth --check manifests/statsbomb-open-v1.json manifests/whoscored-v1.json >/dev/null
 	uv run pytest -m slow
 
@@ -96,6 +124,7 @@ reproduce-public:
 	@test -d data/snapshots/statsbomb-open-v1 || { \
 		echo "reproduce-public: no snapshot at data/snapshots/statsbomb-open-v1; run make snapshot \
 		first" >&2; exit 1; }
+	$(NEED_STATSBOMB_EXTRAS)
 	uv run fc goalmouth --check manifests/statsbomb-open-v1.json >/dev/null
 	uv run pytest -m "slow and not whoscored"
 
