@@ -10,8 +10,9 @@ prediction cache, so it is orchestration-only (``cache.ORCHESTRATION_ONLY``): a 
 keeps the cache warm.
 
 **The level test.** Goals on ``n`` shots with probabilities ``p`` are a Poisson-binomial count:
-its SD is ``√Σ p(1−p)``, and the gap ``Σ p − goals`` is within the noise band when ``|z| <=
-LEVEL_SD`` (two-sided; equality is within).
+its SD is ``√Σ p(1−p)`` (``metrics.poisson_binomial``), and the gap ``Σ p − goals`` is within
+the noise band when ``|z| <= metrics.BAND_SDS`` (``metrics.within``, the xGOT and GSAx band rule,
+read when called; two-sided, equality is within).
 
 **The rule.** A fix is adoptable iff its hold-out level is within the band, every MS3 check that
 the pooled GBM meets is met by the fix too, and no xGOT / GSAx check refused it
@@ -25,7 +26,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 
 import numpy as np
 import numpy.typing as npt
@@ -33,13 +34,12 @@ import polars as pl
 
 from football_shot_models import data, features, metrics
 from football_shot_models.cards import fmt, signed
-from football_shot_models.evaluation import Evaluation, ModelSpec, labels
+from football_shot_models.evaluation import BENCHMARK, Evaluation, ModelSpec, labels
 from football_shot_models.metrics import Check
 
 FloatArray = npt.NDArray[np.float64]
 BoolArray = npt.NDArray[np.bool_]
 
-LEVEL_SD: Final = 2.0
 DISTANCE_BANDS: Final = (6.0, 11.0, 16.0, 20.0, 25.0)  # metres, (a, b], via np.searchsorted
 HOLDOUT_KINDS: Final = ("phase", "body part", "distance", "assist type", "shot freeze frame",
                         "360 frame")  # fmt: skip
@@ -65,22 +65,21 @@ def level_z(y: BoolArray, p: FloatArray) -> tuple[float, float, float]:
         raise ValueError(f"level_z: {y.size} outcome(s) for {p.size} probabilities (need >= 1)")
     if not np.isfinite(p).all():
         raise ValueError("level_z: a probability is NaN or infinite")
-    sd = math.sqrt(float(np.sum(p * (1.0 - p))))
+    diff, sd = metrics.poisson_binomial(y, p)
     if sd == 0.0:
         raise ValueError("level_z: the Poisson-binomial SD is 0 (every p is 0 or 1)")
-    diff = float(p.sum()) - float(np.sum(y))
     return diff, sd, diff / sd
 
 
 def within(z: float) -> bool:
-    """``|z| <= LEVEL_SD`` (read when called), the one band rule of this module.
+    """``|z| <= metrics.BAND_SDS`` (read when called): ``metrics.within`` on a z (SD 1).
 
     Examples
     --------
     >>> within(-2.0), within(2.0001)
     (True, False)
     """
-    return abs(z) <= LEVEL_SD
+    return metrics.within(z, 1.0)
 
 
 @dataclass(frozen=True)
@@ -120,7 +119,8 @@ class LevelProbe:
         The pooled GBM, then each fix in ``models.LEVEL_FIXES`` order.
     segments : polars.DataFrame
         One row per (split, kind, level): ``n``, ``goals``, then ``xg``, ``diff``, ``sd``,
-        ``z`` of the pooled GBM (``_pooled``) and of the headline (``_head``).
+        ``z`` of the pooled GBM (``_pooled``) and of the headline (``_head``), and ``xg_bench``,
+        Σ of the provider's own xG (``evaluation.BENCHMARK``; null without that column).
     pooled, head : Evaluation
         The pooled GBM and the headline (the adopted fix, or the pooled GBM without one).
     fixes : tuple of Evaluation
@@ -269,6 +269,8 @@ def segments(
     Hold-out: phase, body part, distance band (``DISTANCE_BANDS``), assist type, shot freeze
     frame (its ``shot_id`` in ``freeze_frames``) and 360 frame (``visible_area`` not null). Dev
     out of fold: family, shot freeze frame, 360 frame. A null level prints as ``"null"``.
+    ``xg_bench`` is Σ ``BENCHMARK.column`` on the segment (a counterfactual for the card: the
+    provider's own xG on the same shots), null when the frame has no such column.
 
     Raises
     ------
@@ -288,6 +290,8 @@ def segments(
         (SPLITS[1], dev, pooled.oof, head.oof),
     ):
         y = labels(frame)
+        col = BENCHMARK.column
+        bench = frame[col].cast(pl.Float64).to_numpy() if col in frame.columns else None
         for kind, values in _kinds(frame, split, freeze_frames):
             keys = values.fill_null("null").to_numpy()
             n_sum = goals_sum = 0
@@ -313,13 +317,14 @@ def segments(
                         d1,
                         s1,
                         z1,
+                        None if bench is None else float(bench[m].sum()),
                     )
                 )
             if (n_sum, goals_sum) != (frame.height, int(y.sum())):
                 raise ValueError(f"segments: {split} {kind} rows do not sum to the totals")
     names = ("split", "kind", "level", "n", "goals")
     stats = ("xg", "diff", "sd", "z")
-    cols = (*names, *(f"{s}_pooled" for s in stats), *(f"{s}_head" for s in stats))
+    cols = (*names, *(f"{s}_pooled" for s in stats), *(f"{s}_head" for s in stats), "xg_bench")
     schema = {c: pl.String if c in names[:3] else pl.Int64 if c in names else pl.Float64
               for c in cols}  # fmt: skip
     return pl.DataFrame(rows, schema=schema, orient="row")
@@ -404,6 +409,24 @@ def _segment_lines(table: pl.DataFrame) -> list[str]:
     return lines
 
 
+def _share(gap: float, goals: int) -> str:
+    return f"{gap / goals:+.1%}".replace("-", "−") if goals else "n/a"
+
+
+def _bench_text(part: pl.DataFrame, w: dict[str, Any]) -> str:
+    """The provider's own xG on the worst segment and on the whole split (``part``: every level
+    of that segment's kind, so its sums are the split's), or "" without it."""
+    xb, total = w["xg_bench"], float(part["xg_bench"].sum())
+    goals, all_goals = int(w["goals"]), int(part["goals"].sum())
+    if not isinstance(xb, float) or not math.isfinite(xb) or not math.isfinite(total):
+        return ""
+    return (
+        f" {BENCHMARK.title} on the same shots: Σ {xb:.1f} for {goals:,} goals "
+        f"({signed(xb - goals)}, {_share(xb - goals, goals)}); on the whole hold-out "
+        f"{_share(total - all_goals, all_goals)} (a computed counterfactual, not a causal claim)."
+    )
+
+
 def _family_diff(table: pl.DataFrame, family: str, column: str) -> str:
     part = table.filter(
         (pl.col("split") == SPLITS[1]) & (pl.col("kind") == "family") & (pl.col("level") == family)
@@ -414,7 +437,8 @@ def _family_diff(table: pl.DataFrame, family: str, column: str) -> str:
     xg = r[column.replace("diff", "xg")]
     rel = r[column] / r["goals"] if r["goals"] else float("nan")
     share = f"{rel:+.1%}".replace("-", "−")
-    return f"{signed(r[column])} ({share} of {r['goals']:,} goals; Σ xG {xg:.1f})"
+    z = f", z {_z(r[column.replace('diff', 'z')])}" if column.endswith("_head") else ""
+    return f"{signed(r[column])} ({share} of {r['goals']:,} goals; Σ xG {xg:.1f}{z})"
 
 
 def level_lines(probe: LevelProbe, *, steps_train_exclude: tuple[str, ...]) -> tuple[str, ...]:
@@ -453,8 +477,8 @@ def level_lines(probe: LevelProbe, *, steps_train_exclude: tuple[str, ...]) -> t
         *_segment_lines(t),
         "",
         f"At most two candidate fixes, one refit each. A fix is adopted iff its hold-out Σ xG is "
-        f"within {LEVEL_SD:g} SD of goals and every MS3 check the pooled GBM meets stays met; the "
-        "first such fix in this order is adopted.",
+        f"within {metrics.BAND_SDS:g} SD of goals and every MS3 check the pooled GBM meets stays "
+        "met; the first such fix in this order is adopted.",
         "",
         "| Model | Hold-out Σ xG | Goals | Gap | SD | z | Within | MS3 checks met | CV log loss "
         "| Hold-out log loss | Fold Σ xG error mean | max |",
@@ -483,13 +507,19 @@ def level_lines(probe: LevelProbe, *, steps_train_exclude: tuple[str, ...]) -> t
         lines.append(
             f"- Largest headline hold-out segment gap (segments of {least}+ shots): {w['kind']} = "
             f"{w['level']}, {signed(w['diff_head'])} on {w['n']:,} shots (z {_z(w['z_head'])})."
+            + _bench_text(held.filter(pl.col("kind") == w["kind"]), w)
         )
     league, team = data.FAMILIES[0], data.FAMILIES[1]
     lines += [
         f"- Dev out of fold, {league}: pooled {_family_diff(t, league, 'diff_pooled')}; headline "
         f"{_family_diff(t, league, 'diff_head')}; this is support the hold-out did not choose.",
         f"- Dev out of fold, {team}, under pooled training: "
-        f"{_family_diff(t, team, 'diff_pooled')}.",
+        f"{_family_diff(t, team, 'diff_pooled')}"
+        + (
+            f"; under the headline: {_family_diff(t, team, 'diff_head')}."
+            if head is not pooled
+            else "."
+        ),
     ]
     exclude = head_exclude(probe.head)
     if exclude != steps_train_exclude:
@@ -512,5 +542,16 @@ def head_exclude(ev: Evaluation) -> tuple[str, ...]:
     return ev.spec.train_exclude if isinstance(ev.spec, ModelSpec) else ()
 
 
+def fit_population(exclude: tuple[str, ...]) -> str:
+    """The training rows of a fit with ``train_exclude`` = ``exclude``, as the cards name them.
+
+    Examples
+    --------
+    >>> fit_population(()), fit_population(("team-selected",))
+    ('all of dev', 'dev without team-selected seasons')
+    """
+    return "all of dev" if not exclude else f"dev without {', '.join(exclude)} seasons"
+
+
 def _population(exclude: tuple[str, ...]) -> str:
-    return "all of dev (pooled)" if not exclude else f"dev without {', '.join(exclude)} seasons"
+    return f"{fit_population(exclude)}{'' if exclude else ' (pooled)'}"

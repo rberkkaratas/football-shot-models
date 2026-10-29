@@ -71,6 +71,7 @@ SEED: Final[int] = 0
 ECE_BINS: Final[int] = 10
 GAIN_LEVEL: Final[float] = 0.95  # the level of bootstrap_gain's percentile interval
 MIN_JUDGED_SHOTS: Final = 100  # PM (MS6): the normal-approximation minimum of a judged group
+BAND_SDS: Final = 2.0  # PM (MS6): the band rule, |Σ p − goals| <= BAND_SDS · √Σ p(1 − p)
 _LOGIT_EPS: Final[float] = float(np.log(EPS) - np.log1p(-EPS))
 
 
@@ -429,6 +430,36 @@ def reliability(y: Outcomes, p: FloatArray, bins: int = 10) -> pl.DataFrame:
         )
         .sort("bin")
     )
+
+
+def poisson_binomial(y: Outcomes, p: FloatArray) -> tuple[float, float]:
+    """``(Σ p − Σ y, √Σ p(1 − p))``: a goal count's gap and its Poisson-binomial SD.
+
+    Goals on shots with probabilities ``p`` are a Poisson-binomial count if ``p`` is
+    calibrated; this is the SD of every band rule (:func:`within`). An empty group gives
+    ``(0.0, 0.0)``.
+
+    Examples
+    --------
+    >>> poisson_binomial(np.array([1, 0, 0, 0]), np.full(4, 0.5))
+    (1.0, 1.0)
+    """
+    p = np.asarray(p, dtype=np.float64)
+    return float(p.sum()) - float(np.sum(y)), math.sqrt(float((p * (1 - p)).sum()))
+
+
+def within(gap: float, sd: float) -> bool:
+    """The band rule (PM, MS6): ``|gap| <= BAND_SDS · sd``, ``BAND_SDS`` read when called.
+
+    The one expression behind the xGOT and GSAx band tables and the xG hold-out level rule
+    (``level.within`` passes a z with ``sd`` 1). Equality is within, and so is an empty band.
+
+    Examples
+    --------
+    >>> within(-2.0, 1.0), within(2.0001, 1.0), within(0.0, 0.0)
+    (True, False, True)
+    """
+    return abs(gap) <= BAND_SDS * sd
 
 
 def ece(y: Outcomes, p: FloatArray, bins: int = ECE_BINS) -> float:

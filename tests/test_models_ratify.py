@@ -302,8 +302,9 @@ def test_gbm_training_mix_line(
     exceed the league rate (strictly); over- or under-prediction by the sign of the hold-out Σ xG
     error; the StatsBomb clause only when the CV gain over StatsBomb lies above 0 and the
     hold-out gain does not. run3-ms3 (football 8): no causal claim, because a men's-league-only
-    refit still over-predicts the hold-out; the line reports the rates and says the cause is not
-    tested."""
+    refit still over-predicts the hold-out; the line reports the rates and points to the PR1
+    Hold-out level section (run7-pr1 A15 / F4: its training-population fixes are the only test of
+    the mix, StatsBomb xG on the largest segment a counterfactual, not a cause)."""
     text, ev, _, _ = _gbm_text(rates=rates, xg=xg, sb_gain=sb_gain)
     league, team, women = (cards.pct(r) for r in rates)
     signed = ev.holdout.xg_signed_error
@@ -311,8 +312,10 @@ def test_gbm_training_mix_line(
     assert text.limitations[1] == (
         f"The CV population mixes women's and team-selected seasons that {word} a men's league "
         f"(dev goal rate {league} league, {team} team-selected, {women} women; hold-out 25.00%). "
-        f"The hold-out {direction}-prediction ({signed:+.2%}){tail} reported, not explained: "
-        f"this card does not test whether the mix causes {'them' if clause else 'it'}."
+        f"The hold-out {direction}-prediction ({signed:+.2%}){tail} decomposed by segment in the "
+        "Hold-out level section, not explained: its training-population fixes are the only test "
+        "of the mix this card makes, and StatsBomb xG on the largest segment is printed there as "
+        "a counterfactual, not a cause."
     )
     assert "cause of" not in text.limitations[1] and "likely" not in text.limitations[1]
 

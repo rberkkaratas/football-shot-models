@@ -39,12 +39,35 @@ FEATURE_ROWS: Final = {
     "rebound": "| `rebound` | The team's previous shot of the period is at most "
     f"{whoscored.REBOUND_S} s earlier | Shot event clocks |",
 }
+CONTEXT_NAMES: Final = " and ".join(f"`{c}`" for c in v2.CONTEXT_COLUMNS)
+# PR1 design history: the context set was chosen by a probe that scored the test season
+CHOSEN_ON_TEST: Final = (
+    f"The design probe that chose {CONTEXT_NAMES} scored its candidates on the test season, so "
+    "the test gain over xG v1 carries selection optimism"
+)
 VALIDATION: Final = (
     f"Train: season(s) {', '.join(v1.TRAIN_SEASONS)}; test: {', '.join(v1.TEST_SEASONS)}, the "
-    f"population and split of xG v1. Grouped {evaluation.N_SPLITS}-fold CV by `match_id` on "
-    "train only (**Validation**); **Train** is the fit on all of train, scored in-sample; "
-    "**Hold-out** below is the test season, scored once by that fit and never used to choose."
+    "population and split of xG v1. Every train match precedes every test match (checked). "
+    f"Grouped {evaluation.N_SPLITS}-fold CV by `match_id` on train only (**Validation**); "
+    "**Train** is the fit on all of train, scored in-sample; **Hold-out** below is the test "
+    f"season, scored by that fit. {CHOSEN_ON_TEST}: the evidence the test season did not choose "
+    "is the CV gain over xG v1 (training season only), in the gain table."
 )
+
+
+def cv_evidence(fit: v2.V2Fit) -> str:
+    """The sentence naming the CV gain over v1 as the clean evidence (overview, README block).
+
+    Examples
+    --------
+    >>> cv_evidence(fit).startswith("The design probe")  # doctest: +SKIP
+    True
+    """
+    g = fit.gain_over_v1.cv
+    return (
+        f"{CHOSEN_ON_TEST}; the CV gain over xG v1 on the training season, which the probe "
+        f"never scored, is {gain_cell(g)}, an interval that {cards.side(g)}."
+    )
 
 
 def _model(ev: Evaluation, c: CardContext) -> list[str]:
@@ -71,7 +94,7 @@ def text(fit: v2.V2Fit) -> cards.CardText:
     feats = fit.head.spec.features if isinstance(fit.head.spec, evaluation.ModelSpec) else ()
     return cards.CardText(
         role="PR1: WhoScored xG with the pre-shot context of the previous play event (v1's "
-        "inputs plus `prev_action` and `rebound`), beside xG v1.",
+        f"inputs plus {CONTEXT_NAMES}), beside xG v1. {cv_evidence(fit)}",
         intended_use="The context-model result beside xG v1 for WhoScored / Opta shot events. "
         "xG v1's card stays the record, and v1's keeper-neutral headline stays the WhoScored "
         "xGOT input (PM PR1 E4 (a); `prev_action` and `rebound` read the keeper's previous "
@@ -209,8 +232,8 @@ def summary_block(fit: v2.V2Fit) -> str:
             for label, e in (("xG v1", v), ("**xG v2**", h))
         ),
         "",
-        f"Test gain of v2 over v1: {gain_cell(g)}, an interval that {cards.side(g)}. Share of "
-        f"the big-chance ablation gap closed on test: {share}. "
+        f"Test gain of v2 over v1: {gain_cell(g)}, an interval that {cards.side(g)}. "
+        f"{cv_evidence(fit)} Share of the big-chance ablation gap closed on test: {share}. "
         f"PR1 checks met: {sum(ch.result == 'met' for ch in judged)} of {len(judged)}. v1 stays "
         f"the WhoScored xG of record and the xGOT input; test goal rate "
         f"{pct(h.holdout.goals / h.holdout.n)}.",

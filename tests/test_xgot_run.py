@@ -389,11 +389,11 @@ def test_band_lines_values(monkeypatch: pytest.MonkeyPatch) -> None:
     ev = mc.fake_eval(xg.lr_spec(), oof=p)
     small = [x for x in xgot_cards.band_lines(ev, dev) if x.startswith("| ") and "abs" not in x]
     assert [x.rstrip(" |").rsplit("| ", 1)[-1] for x in small] == ["not judged (n < 100)"] * 7
-    monkeypatch.setattr(xgot, "MIN_BAND_SHOTS", 0)
+    monkeypatch.setattr(metrics, "MIN_JUDGED_SHOTS", 0)
     lines = xgot_cards.band_lines(ev, dev)
     rows = [x for x in lines if x.startswith("| ") and not x.startswith("| abs")]
     assert xgot.Y_BANDS == (0.0, 1.0, 2.0, 3.0, 3.3, features.INNER_Y)
-    assert xgot.BAND_SDS == 2.0
+    assert metrics.BAND_SDS == 2.0
     want = [  # band, shots, goals, rate, mean, Σ − goals, SD, within: pairs of rows i, i + 1
         ("[0, 1)", 2, 1, 0.5, 0.25, -0.5, "0.6", "yes"),  # √(0.16 + 0.21)
         ("[1, 2)", 2, 0, 0.0, 0.25, 0.5, "0.6", "yes"),  # √(0.24 + 0.09)

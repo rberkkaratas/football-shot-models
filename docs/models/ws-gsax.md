@@ -100,7 +100,7 @@ Open play; `mouth_y_abs` and `mouth_z` (m) as on the xGOT card, `angle_rad` the 
 | angle_rad | [0.7, 1) | season_folds | 3,498 | 1,585 | +0.3 | 25.1 | yes | +2.4 (25.1) |
 | angle_rad | >= 1 | season_folds | 2,274 | 1,599 | −17.5 | 20.1 | yes | −13.2 (20.1) |
 
-Limitation: 2 of 51 judged bands are outside 2 SD (mouth_y_abs [0, 1) (holdout_fit): 1,429 shots, 223 goals, Σ q − goals +25.2 (SD 12.2, z +2.06; match out of fold +25.3), escalated to the PM; mouth_y_abs [3.3, 3.55) (holdout_fit): 156 shots, 75 goals, Σ q − goals −11.6 (SD 5.1, z -2.25; match out of fold −11.9), escalated to the PM); the league shift removes a season's level gap, not a misprice of shape, so a keeper whose shots lean to these bands is charged or credited for it.
+Limitation: 2 of 51 judged bands are outside 2 SD (mouth_y_abs [0, 1) (holdout_fit): 1,429 shots, 223 goals, Σ q − goals +25.2 (SD 12.2, z +2.06; match out of fold +25.3), escalated, ruled a listed limitation (PM PR1 E1 (a)); mouth_y_abs [3.3, 3.55) (holdout_fit): 156 shots, 75 goals, Σ q − goals −11.6 (SD 5.1, z −2.25; match out of fold −11.9), escalated, ruled a listed limitation (PM PR1 E1 (a))); the league shift removes a season's level gap, not a misprice of shape, so a keeper whose shots lean to these bands is charged or credited for it.
 
 Keeper-level effect: rated from the match out-of-fold xGOT instead, the 126 keeper-seasons with >= 100 shots move by a median of 0.30 goals (max 1.02; their mean SD 4.36).
 

@@ -177,6 +177,75 @@ def test_season_out_other_mode_raises(
         so.season_out(gsax_fits["xgot"]["whoscored"])
 
 
+def test_season_out_leaky_fold_raises(
+    gsax_fits: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run7 assessment (QA 4), ``Raises``: a fold whose train rows hold one of its test seasons
+    (``_folds`` patched to train fold 0 on every dev row) → ValueError before any fit."""
+    so = _so()
+    f = gsax_fits["xgot"]["statsbomb"]
+
+    def leaky(dev: pl.DataFrame) -> Any:
+        every = np.arange(dev.height)
+        return ((every, every[:1]),)
+
+    assert f.frames[0].height > 1  # precondition: fold 0's test row is also a train row
+    monkeypatch.setattr(so, "_folds", leaky)
+    monkeypatch.setattr(so, "refit", lambda *a, **k: pytest.fail("refit reached"))
+    with pytest.raises(ValueError, match=r"open-play fold 0 trains on 1 test season"):
+        so.season_out(f)
+
+
+def test_season_out_held_season_in_dev_raises(
+    gsax_fits: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run7 assessment (QA 4), ``Raises``: a rated hold-out season that is also a training
+    season of the fit that scores it (``f.frames``' held given a dev row) → ValueError."""
+    from football_shot_models import evaluation
+
+    so = _so()
+    monkeypatch.setattr(evaluation, "N_SPLITS", 2)
+    monkeypatch.setattr(so, "refit", lambda *a, **k: pytest.fail("refit reached"))
+    f = gsax_fits["xgot"]["statsbomb"]
+    dev, held = f.frames
+    leaked = pl.concat([held, dev.head(1)], how="vertical")
+    assert _seasons(dev.head(1)) <= _seasons(dev)  # precondition: the added season trains
+    with pytest.raises(ValueError, match=r"1 hold-out season\(s\) are in the fit that rates them"):
+        so.season_out(dataclasses.replace(f, frames=(dev, leaked)))
+
+
+def test_season_out_two_families_raises(
+    gsax_fits: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run7 assessment (QA 4), ``Raises``: a competition-season with two families → ValueError.
+    The refit is replaced by ``f``'s own predictions (the guard reads only ids, keys and
+    families); near miss: with the real ``match_family`` the same call passes."""
+    from football_shot_models import evaluation
+
+    so = _so()
+    monkeypatch.setattr(evaluation, "N_SPLITS", 2)
+    f = gsax_fits["xgot"]["statsbomb"]
+    monkeypatch.setattr(so, "refit", lambda *a, **k: f.predictions)
+    assert so.season_out(f).height  # near miss: one family per competition-season
+    real = data.match_family
+
+    def split(matches: pl.DataFrame) -> pl.DataFrame:
+        out = real(matches)
+        alt = pl.int_range(pl.len()) % 2 == 0
+        other = pl.when(pl.col("family") == data.FAMILIES[0]).then(pl.lit(data.FAMILIES[1]))
+        return out.with_columns(
+            family=pl.when(alt).then(other.otherwise(pl.lit(data.FAMILIES[0])))
+            .otherwise(pl.col("family")).cast(data.FAMILY)
+        )  # fmt: skip
+
+    rated = f.predictions.filter(pl.col("on_target"))
+    per = rated.join(f.xg.matches.select("match_id", *KEY), on="match_id").group_by(KEY)
+    assert per.agg(pl.col("match_id").n_unique())["match_id"].max() >= 2  # precondition
+    monkeypatch.setattr(data, "match_family", split)
+    with pytest.raises(ValueError, match="two families"):
+        so.season_out(f)
+
+
 def _by_shot(frame: pl.DataFrame, p: np.ndarray) -> dict[str, float]:
     return dict(zip(frame["shot_id"].to_list(), p.tolist(), strict=True))
 

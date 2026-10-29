@@ -11,8 +11,11 @@ or keeper action) and whether the shot is a rebound within 3 s of the team's pre
 
 **Same population and split as v1** (:func:`fit` calls ``v1.population`` and
 ``data.season_holdout`` with ``v1.TRAIN_SEASONS`` / ``v1.TEST_SEASONS``): train 2025-26, test
-2026-27 scored once. Candidates are the MS2 baselines, v1's LR steps plus one LR on the v2
-context, and a monotone GBM on the v2 inputs; ``models.select_headline`` picks the headline.
+2026-27. The test season is not clean for v2: the design probe that chose ``prev_action`` and
+``rebound`` scored candidates on it (PR1 spec §1), so the evidence it did not choose is the CV
+gain over v1 on the training season. Candidates are the MS2 baselines, v1's LR steps plus one LR
+on the v2 context, and a monotone GBM on the v2 inputs; ``models.select_headline`` picks the
+headline.
 
 **Keeper-derived context stays out of xGOT** (PM MS6 E5): ``prev_action`` and ``rebound`` read
 the keeper's previous event, so ``features.KEEPER_DERIVED`` refuses them in the xGOT input
@@ -436,7 +439,9 @@ def fit(manifest: StrPath = v1.DEFAULT_MANIFEST, *, cache: StrPath | None) -> V2
     )
     head, gbm_gain = models.select_headline(c.lrs, c.gbm, dev, held)
     v1_head = evaluate(v1.GBM, dev, held, folds, cache=pc)
-    v1_best = best((*c.baselines, *c.steps[: len(v1.STEPS)])).spec
+    # v1's candidates by name, not by position in STEPS: the ablation is v1's labelled one
+    v1_names = {s.name for s in (*baselines.BASELINES, *v1.STEPS)}
+    v1_best = best(tuple(e for e in c.lrs if e.spec.name in v1_names)).spec
     if not isinstance(v1_best, ModelSpec):
         raise TypeError(f"best returned a benchmark: {v1_best!r}")
     v1_abl = evaluate(v1.ablation_spec(v1_best), dev, held, folds, cache=pc)

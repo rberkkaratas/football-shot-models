@@ -301,7 +301,6 @@ def test_cards_band_section(gsax_fits: dict[str, Any], sb: dict[str, Any],
     ``placement_bands`` row) and its limitation with the count of failing judged bands; no card
     mentions a swapped fit (PR1: deleted); with the minimum at 0 every failing band is named in
     the limitation."""
-    from football_shot_models import xgot
 
     gsax, cards = _gsax(), _cards()
     for p, names in (("statsbomb", sb["names"]), ("whoscored", None)):
@@ -317,7 +316,7 @@ def test_cards_band_section(gsax_fits: dict[str, Any], sb: dict[str, Any],
         judged = int(t["judged"].sum())
         assert f"Limitation: {bad:,} of {judged:,} judged bands" in card, p
         assert "swapped_fit" not in card and "Swapped fit" not in card, p
-    monkeypatch.setattr(xgot, "MIN_BAND_SHOTS", 0)
+    monkeypatch.setattr(metrics, "MIN_JUDGED_SHOTS", 0)
     g = gsax_fits["fits"]["whoscored"]
     t = gsax.placement_bands(g).filter(pl.col("judged") & ~pl.col("within"))
     assert t.height  # precondition: the fixture has a failing band once every band is judged
@@ -596,11 +595,10 @@ def test_band_lines_failing(gsax_fits: dict[str, Any], monkeypatch: pytest.Monke
     no adjective ("noise")."""
     from types import MappingProxyType
 
-    from football_shot_models import xgot
     from football_shot_models.cards import signed
 
     gsax, cards = _gsax(), _cards()
-    monkeypatch.setattr(xgot, "MIN_BAND_SHOTS", 0)
+    monkeypatch.setattr(metrics, "MIN_JUDGED_SHOTS", 0)
     g = gsax_fits["fits"]["whoscored"]
     bad = gsax.placement_bands(g).filter(pl.col("judged") & ~pl.col("within"))
     assert bad.height >= 1  # precondition: a failing band once every band is judged
@@ -613,11 +611,13 @@ def test_band_lines_failing(gsax_fits: dict[str, Any], monkeypatch: pytest.Monke
         for i, (r, seg) in enumerate(zip(bad.iter_rows(named=True), segs, strict=True)):
             z = r["gap"] / r["sd"]
             for part in (f"{r['shots']:,}", f"{r['goals']:,}", signed(r["gap"]),
-                         f"{r['sd']:.1f}", f"z {z:+.2f}"):  # fmt: skip
+                         f"{r['sd']:.1f}", f"z {z:+.2f}".replace("-", "−")):  # fmt: skip
                 assert part in seg, (part, seg)
             marked = "escalated" in seg.lower() and "not escalated" not in seg.lower()
             assert marked == (i == 0 and bool(pinned)), seg
         assert "noise" not in "".join(segs).lower()
+        assert "escalated to the PM" not in "".join(segs)  # E1 (a) is ruled (run7)
+        assert not re.search(r"z -\d", "".join(segs))  # true minus signs (run7 architect 7)
 
 
 def test_disclosure_branches(gsax_fits: dict[str, Any]) -> None:

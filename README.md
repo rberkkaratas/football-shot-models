@@ -81,7 +81,7 @@ WhoScored xG v2 (PR1: v1 plus pre-shot context, [card](docs/models/xg-v2.md)):
 | xG v1 (Monotone GBM + Platt) | 0.2724 | 0.2771 | 0.7702 | 0.9786 | -1.01% |
 | **xG v2** (Monotone GBM + Platt, context v2) | 0.2720 | 0.2760 | 0.7729 | 0.9867 | -0.88% |
 
-Test gain of v2 over v1: +0.0010 [+0.0004, +0.0017], an interval that lies above 0. Share of the big-chance ablation gap closed on test: 6.5%. PR1 checks met: 6 of 6. v1 stays the WhoScored xG of record and the xGOT input; test goal rate 9.99%.
+Test gain of v2 over v1: +0.0010 [+0.0004, +0.0017], an interval that lies above 0. The design probe that chose `prev_action` and `rebound` scored its candidates on the test season, so the test gain over xG v1 carries selection optimism; the CV gain over xG v1 on the training season, which the probe never scored, is +0.0004 [+0.0001, +0.0006], an interval that lies above 0. Share of the big-chance ablation gap closed on test: 6.5%. PR1 checks met: 6 of 6. v1 stays the WhoScored xG of record and the xGOT input; test goal rate 9.99%.
 <!-- v2:summary:end -->
 
 ### Results (MS5, MS6: xGOT of on-target shots, both providers)

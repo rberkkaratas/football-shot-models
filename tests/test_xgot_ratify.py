@@ -22,7 +22,7 @@ import polars as pl
 import pytest
 import xgot_cases as xg
 
-from football_shot_models import cards
+from football_shot_models import cards, metrics
 
 # |y| of two shots per band (sign alternating), the last pair outside the frame + 0.15 m
 AY = [0.5, 0.6, 1.5, 1.4, 2.5, 2.6, 3.1, 3.2, 3.4, 3.5, 3.7, 3.8, 5.0, 9.0]
@@ -73,7 +73,7 @@ def test_band_limit_non_headline_only(monkeypatch: pytest.MonkeyPatch) -> None:
     head = mc.fake_eval(xg.gbm_spec(), oof=P_IN)
     # PM band minimum: the failing band has 2 shots (< 100), so it is not judged and not listed
     assert xgot_cards.band_limit(lr, head, dev) is None
-    monkeypatch.setattr(xgot, "MIN_BAND_SHOTS", 0)  # judge every band: the rule itself
+    monkeypatch.setattr(metrics, "MIN_JUDGED_SHOTS", 0)  # judge every band: the rule itself
     assert xgot_cards.band_limit(lr, head, dev) == LIMIT
     assert xgot_cards.band_limit(lr, lr, dev) is None  # the headline: never flagged
     within = mc.fake_eval(xg.lr_spec(), oof=P_IN)
@@ -87,9 +87,9 @@ def test_band_limit_on_rendered_cards(
     ``band_limit`` bullet exactly when it is not None, and the headline card never carries one.
     Precondition: at least one fixture card carries it. The fixture bands hold fewer than the
     PM's 100 shots, so every band is judged here (minimum 0)."""
-    from football_shot_models import xgot, xgot_cards
+    from football_shot_models import xgot_cards
 
-    monkeypatch.setattr(xgot, "MIN_BAND_SHOTS", 0)
+    monkeypatch.setattr(metrics, "MIN_JUDGED_SHOTS", 0)
 
     carried = 0
     for f in xgot_fits["fits"].values():
@@ -121,9 +121,8 @@ def test_check_row_true_minus(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ratify 4: check row 12's ``measured`` prints the gap through ``cards.signed``: a true
     minus (U+2212) for a negative gap, a plus for a positive one, one decimal. Every band is
     judged (minimum 0): the 50 stand-in shots cannot reach the PM's 100-shot minimum."""
-    from football_shot_models import xgot
 
-    monkeypatch.setattr(xgot, "MIN_BAND_SHOTS", 0)
+    monkeypatch.setattr(metrics, "MIN_JUDGED_SHOTS", 0)
     assert cards.signed(-39.44) == "−39.4" and cards.signed(1.0) == "+1.0"
     assert cards.signed(-0.04) == "−0.0"
     # [2, 3): 10 shots p 0.2, 6 goals: gap −4.0, sd √1.6 = 1.26 (the worst); [0, 1): 30 at 0.5,
@@ -148,7 +147,7 @@ def test_band_lines_empty_band_cells(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ratify 5: an empty band prints rate, mean xGOT and Σ xGOT − goals as ``n/a``, SD ``0.0``
     and, under the PM's band minimum, ``not judged (n < 100)`` (``yes`` when every band is
     judged); a non-empty band's gap column keeps MS5's ASCII ``+.1f`` (ratify 4)."""
-    from football_shot_models import xgot, xgot_cards
+    from football_shot_models import xgot_cards
 
     keep = [i for i in range(14) if i not in (6, 7)]  # empty the [3, 3.3) band
     dev = _dev([AY[i] for i in keep], [GOAL[i] for i in keep])
@@ -157,7 +156,7 @@ def test_band_lines_empty_band_cells(monkeypatch: pytest.MonkeyPatch) -> None:
     small = "not judged (n < 100)"
     assert _cells(lines, "[3, 3.3)") == ["[3, 3.3)", "0", "0", "n/a", "n/a", "n/a", "0.0", small]
     assert _cells(lines, "outside the frame + 0.15 m")[-1] == small
-    monkeypatch.setattr(xgot, "MIN_BAND_SHOTS", 0)
+    monkeypatch.setattr(metrics, "MIN_JUDGED_SHOTS", 0)
     lines = xgot_cards.band_lines(ev, dev)
     assert _cells(lines, "[3, 3.3)") == ["[3, 3.3)", "0", "0", "n/a", "n/a", "n/a", "0.0", "yes"]
     out = _cells(lines, "outside the frame + 0.15 m")
@@ -218,7 +217,7 @@ def test_held_band_table_on_gbm_card(
     f = xgot_fits["fits"][p]
     gbm, lr = f.evaluations[4], f.evaluations[3]
     head = f"### Calibration by placement band, {f.setup.split}"
-    monkeypatch.setattr(xgot, "MIN_BAND_SHOTS", 0)
+    monkeypatch.setattr(metrics, "MIN_JUDGED_SHOTS", 0)
     written = xgot_cards.render(f)
     assert head not in written[lr.spec.name]
     lines = written[gbm.spec.name].splitlines()

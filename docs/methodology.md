@@ -41,12 +41,15 @@ so. The hold-out gain is printed next to it and does not decide.
 
 **Hold-out level (PR1, `level`).** The pooled GBM over-predicted the StatsBomb hold-out. The
 xG GBM card decomposes the gap by segment (Σ xG − goals with z = gap / √Σ p(1 − p)) and tests
-at most two pre-registered fixes, one refit each (`models.LEVEL_FIXES`): a team-selected
+at most two candidate fixes, chosen after a hold-out probe, one refit each
+(`models.LEVEL_FIXES`): a team-selected
 indicator set to 0 at prediction, and training without team-selected seasons
 (`ModelSpec.train_exclude`; held predictions never read the family). A fix is adopted iff its
 hold-out Σ xG is within 2 SD of goals and every MS3 check the pooled GBM meets stays met; the
 adopted fix is the headline GBM (`models.ADOPTED`). The hold-out chose it, so the card says its
-hold-out level is no longer an independent check.
+hold-out level is no longer an independent check. The 2-SD band is `metrics.BAND_SDS`, the one
+rule of the xGOT and GSAx band tables too. Beside the largest remaining segment the card prints
+StatsBomb's own xG on the same shots, a computed counterfactual, not a causal claim.
 
 **WhoScored xG v2 (PR1, `v2`).** v1's inputs plus the pre-shot context of the previous play
 event, written by football-core's WhoScored loader (schema 1.3): `prev_action` (the shooting
@@ -56,7 +59,9 @@ previous shot of the period at most 3 s earlier). Opta big chance (q214) and eve
 that grades the chance or is known only after the shot stay out (an ablation only); the card's
 census classes every Opta qualifier on a population shot. v1 stays the WhoScored xG of record
 and the xGOT input, because `prev_action` and `rebound` read the keeper's previous event
-(`features.KEEPER_DERIVED`, refused by the xGOT guards, PM MS6 E5 and PR1 E4 (a)).
+(`features.KEEPER_DERIVED`, refused by the xGOT guards, PM MS6 E5 and PR1 E4 (a)). The design
+probe chose the two columns on the test season, so the test gain carries selection optimism; the
+card names the CV gain over v1 (training season only) as the evidence the test did not choose.
 
 **Penalties (M1.5):** in-game penalties (periods 1-4) are one pooled Beta-binomial with the
 Jeffreys prior: P(goal) is the posterior mean, with its 95% equal-tailed interval. Shoot-out
@@ -121,7 +126,7 @@ recorded outside the frame + 0.15 m (`mouth_out`) marks them. A StatsBomb save s
 front of the shot projects far outside the frame; it is clipped and flagged, never read as a
 ball in the corner. The cards print calibration by |y| band, which the reliability table (binned
 by prediction) cannot show: a band is judged by the 2-SD rule (|Σ xGOT − goals| ≤ 2 √Σ p(1 − p))
-only with at least 100 shots (`xgot.MIN_BAND_SHOTS`); smaller bands are printed with their counts
+only with at least 100 shots (`metrics.MIN_JUDGED_SHOTS`); smaller bands are printed with their counts
 as "not judged (n < 100)" (PM, 2026-10-28). The rule judges the headline xGOT (the GBM), which
 GSAx reads; the LR cards keep the table and name their failing bands as a limitation (PM E1). Near / far post is the ball's side against the shot's side; a shot within 0.5 m of the
 centre line has no near or far post (`far_side = 0`). StatsBomb saves stopped short of the line

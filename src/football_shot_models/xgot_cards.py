@@ -37,6 +37,7 @@ from football_shot_models import (
     data,
     evaluation,
     features,
+    level,
     metrics,
     models,
     xgot,
@@ -45,7 +46,6 @@ from football_shot_models.cards import CardContext, CardText, fmt, gain_cell, si
 from football_shot_models.evaluation import Evaluation, labels
 from football_shot_models.metrics import SplitHalf
 from football_shot_models.xgot import (
-    BAND_SDS,
     ECE_MAX,
     FLOOR_REPS,
     LR_FEATURES,
@@ -180,8 +180,40 @@ CHANGELOG: Final[tuple[str, ...]] = (
     "placement features carry no monotone constraint (chosen by the band rule); the band table "
     "prints the SD; the band rule is a check.",
     f"v4 (MS6, GSAx): matches recorded on the coarse (1 yd) grid leave the xGOT fit (PM E1); a "
-    f"band is judged by the band rule only with at least {xgot.MIN_BAND_SHOTS} shots.",
+    f"band is judged by the band rule only with at least {metrics.MIN_JUDGED_SHOTS} shots.",
 )
+
+
+def input_changelog(xg_input: Evaluation) -> tuple[str, ...]:
+    """``CHANGELOG`` of the open-play xGOT cards, plus PR1's line when the xG input is trained
+    without some families (StatsBomb's league-trained headline); the WhoScored input is not.
+
+    Examples
+    --------
+    >>> input_changelog(ws_fit.xg_input) == CHANGELOG  # doctest: +SKIP
+    True
+    """
+    if not (exclude := level.head_exclude(xg_input)):
+        return CHANGELOG
+    return (
+        *CHANGELOG,
+        f"v{len(CHANGELOG) + 1} (PR1): the xG input is the headline xG refitted on "
+        f"{level.fit_population(exclude)} (`xg-gbm` v3, the hold-out level fix), so every number "
+        "moved; the Validation design names the population of the xG input's dev fit.",
+    )
+
+
+def input_validation(validation: str, xg_input: Evaluation) -> str:
+    """The provider's Validation design with the xG input's dev fit named by its population
+    (``xgot.XG_INPUT_FIT`` when the input has no ``train_exclude``).
+
+    Examples
+    --------
+    >>> input_validation(xgot.XGOT_CROSS_FIT, sb_fit.xg_input)[:30]  # doctest: +SKIP
+    'The open-play xGOT reads the xG'
+    """
+    exclude = level.head_exclude(xg_input)
+    return validation.replace(xgot.XG_INPUT_FIT, f"the fit on {level.fit_population(exclude)}")
 
 
 def _lr_model(ev: Evaluation, c: CardContext) -> list[str]:
@@ -243,9 +275,9 @@ def band_lines(ev: Evaluation, dev: pl.DataFrame) -> list[str]:
     >>> band_lines(head, inp.on_dev)[0]  # doctest: +SKIP
     '### Calibration by placement band'
     """
-    least = xgot.MIN_BAND_SHOTS  # read when called, like ``xgot.judged``
+    least = metrics.MIN_JUDGED_SHOTS  # read when called, like ``xgot.judged``
     rows = _band_rows(band_table(ev.oof, dev))
-    chance = math.erfc(BAND_SDS / math.sqrt(2))
+    chance = math.erfc(metrics.BAND_SDS / math.sqrt(2))
     return [
         "### Calibration by placement band",
         "",
@@ -253,7 +285,7 @@ def band_lines(ev: Evaluation, dev: pl.DataFrame) -> list[str]:
         f"after rounding); a ball beyond {features.INNER_Y:g} m touches the post. The "
         "reliability table bins by prediction, so it cannot show a placement the model "
         f"misprices. SD is √Σ p(1 − p), the spread of the goal count if xGOT is calibrated; "
-        f"*Within {BAND_SDS:g} SD* is the PM's screening rule (MS6), not a proof of "
+        f"*Within {metrics.BAND_SDS:g} SD* is the PM's screening rule (MS6), not a proof of "
         f"calibration: a calibrated model leaves a band outside it by chance in about "
         f"{chance:.1%} of cases. The rule is a normal approximation, so a band with fewer than "
         f"{least} shots is printed but not judged (PM, MS6).",
@@ -265,7 +297,7 @@ def band_lines(ev: Evaluation, dev: pl.DataFrame) -> list[str]:
 
 def _band_rows(table: pl.DataFrame) -> list[str]:
     """The header and rows of a :func:`xgot.band_table`, judged by the PM's rule."""
-    least, out = xgot.MIN_BAND_SHOTS, []
+    least, out = metrics.MIN_JUDGED_SHOTS, []
     for r, ok in zip(table.iter_rows(named=True), judged(table), strict=True):
         gap = f"{r['gap']:+.1f}" if r["shots"] else "n/a"
         within = ("yes" if r["within"] else "no") if ok else f"not judged (n < {least})"
@@ -275,7 +307,7 @@ def _band_rows(table: pl.DataFrame) -> list[str]:
         )
     return [
         f"| abs(y) band (m) | Shots | Goals | Goal rate | Mean xGOT | Σ xGOT − goals | SD | "
-        f"Within {BAND_SDS:g} SD |",
+        f"Within {metrics.BAND_SDS:g} SD |",
         "|---|---|---|---|---|---|---|---|",
         *out,
     ]
@@ -298,7 +330,7 @@ def held_band_lines(ev: Evaluation, held: pl.DataFrame, split: str) -> list[str]
         f"### Calibration by placement band, {split}",
         "",
         f"The same table on the {n:,} on-target shots of the {split} (the fit on all of dev), "
-        f"with the same rule and the same {xgot.MIN_BAND_SHOTS}-shot minimum; printed beside "
+        f"with the same rule and the same {metrics.MIN_JUDGED_SHOTS}-shot minimum; printed beside "
         "check row 12, which judges dev out of fold.",
         "",
         *_band_rows(band_table(ev.holdout_p, held)),
@@ -328,8 +360,8 @@ def band_limit(ev: Evaluation, head: Evaluation, dev: pl.DataFrame) -> str | Non
     )
     return (
         f"Calibration by placement band: {bad.height} of {table.height} bands are outside "
-        f"{BAND_SDS:g} SD on dev out of fold ({listed}). This model's placement terms misprice "
-        f"them; the headline is {head.spec.title}, which the band rule judges (PM E1)."
+        f"{metrics.BAND_SDS:g} SD on dev out of fold ({listed}). This model's placement terms "
+        f"misprice them; the headline is {head.spec.title}, which the band rule judges (PM E1)."
     )
 
 
@@ -380,11 +412,11 @@ def _level(ev: Evaluation, split: str) -> str:
 
 def _text(
     role: str, feats: tuple[str, ...], model: Callable[[Evaluation, CardContext], Sequence[str]],
-    limits: tuple[str, ...], *, task: str = TASK,
+    limits: tuple[str, ...], *, task: str = TASK, changelog: tuple[str, ...] = CHANGELOG,
 ) -> CardText:  # fmt: skip
     return CardText(
         role=role, intended_use=INTENDED_USE, features=feats, model=model, limitations=limits,
-        changelog=CHANGELOG, task=task, target=TARGET, best_label="xGOT model",
+        changelog=changelog, task=task, target=TARGET, best_label="xGOT model",
         checks_title=xgot.CHECKS_TITLE,
         checks_note="Bounds from the PM brief (MS5) and the band rule from the PM brief (MS6); "
         "AUC >= 0.80 reads \"about 0.80 or better\" strictly. ECE is judged on the CV fold mean "
@@ -598,6 +630,7 @@ def render(fit: XgotFit) -> Mapping[str, str]:
     limits = _limits(p, pl.concat([on_dev, on_held]))
     lead = (f"xG input: {fit.xg_input.spec.title}, cross-fitted; provider headline xG: "
             f"{fit.xg_headline.spec.title}.", "")  # fmt: skip
+    log = input_changelog(fit.xg_input)
     lr_limits = (*limits, _level(evs[3], p.split))
     if (lr_band := band_limit(evs[3], head, on_dev)) is not None:
         lr_limits = (*lr_limits, lr_band)
@@ -608,18 +641,19 @@ def render(fit: XgotFit) -> Mapping[str, str]:
         _text("P2.3: logistic regression of the goal on the logit of the cross-fitted xG, "
               "placement splines, the width past the post's inner edge, angle × placement and "
               "the near / far post.",
-              (*lead, *_feature_table(LR_FEATURES)), _lr_model, lr_limits),
+              (*lead, *_feature_table(LR_FEATURES)), _lr_model, lr_limits, changelog=log),
         _text("P2.4: gradient boosting on the xG input (monotone), placement, side and angle, "
               "tuned and Platt-calibrated inside each fit by grouped CV.",
               (*lead, *models.gbm_features(evs[4], FEATURE_ROWS, XGOT_MONOTONE_REASONS,
                                            XGOT_MONOTONE_NOTE)),
-              models.gbm_model, gbm_limits),
+              models.gbm_model, gbm_limits, changelog=log),
     )  # fmt: skip
     ctx = xgot_context(fit.xg, on_dev, on_held, fit.recon, holdout=fit.holdout)
     written = {
         ev.spec.name: cards.render_card(
             ev, text, evaluations=evs, benchmark=None, dev=on_dev, context=ctx, provider=p.text,
-            validation=p.validation, thresholds=(), comparisons=(gain,),
+            validation=input_validation(p.validation, fit.xg_input), thresholds=(),
+            comparisons=(gain,),
             verdict=models.verdict(ev, head, fit.gbm_gain, split=p.split),
             checks=fit.checks if ev is head else (),
             extra=[*ece_lines(ev, y_dev, y_held, split=p.split), *band_lines(ev, on_dev),

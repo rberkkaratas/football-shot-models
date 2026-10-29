@@ -3,8 +3,8 @@
 
 ``band_table(p, dev)`` gives per ``Y_BANDS`` band of rounded |y| (then the points outside the
 frame) the shots, goals, goal rate, mean xGOT, gap = Σp − goals, sd = √Σp(1−p) and ``within`` =
-|gap| ≤ ``BAND_SDS`` · sd. Check row 12 of ``xgot.checks`` is met iff every band is within, and
-names the worst band by |gap| / sd. Every expected number is worked out by hand in the comments.
+|gap| ≤ ``metrics.BAND_SDS`` · sd. Check row 12 of ``xgot.checks`` is met iff every band is within,
+and names the worst band by |gap| / sd. Every expected number is worked out by hand in the comments.
 Frames are typed column by column in goal-frame metres (``goal_y = 34 − y``).
 """
 
@@ -23,13 +23,15 @@ import pytest
 import xgot_cases as xg
 from hypothesis import given, settings
 
+from football_shot_models import metrics
+
 BANDS = ("[0, 1)", "[1, 2)", "[2, 3)", "[3, 3.3)", "[3.3, 3.55)", ">= 3.55",
          "outside the frame + 0.15 m")  # fmt: skip
 TABLE_SCHEMA = pl.Schema({
     "band": pl.String(), "shots": pl.Int64(), "goals": pl.Int64(), "goal_rate": pl.Float64(),
     "mean_xgot": pl.Float64(), "gap": pl.Float64(), "sd": pl.Float64(), "within": pl.Boolean(),
 })  # fmt: skip
-# PM band minimum (MS6 gsax): only bands of at least ``MIN_BAND_SHOTS`` shots are judged
+# PM band minimum (MS6 gsax): only bands of at least ``metrics.MIN_JUDGED_SHOTS`` shots are judged
 TARGET = ("Σ xGOT − goals within 2 SD (√Σp(1−p)) in every placement band of at least {least} "
           "shots, dev out of fold")  # fmt: skip
 # one representative |y| per band (goal-frame metres; the last is beyond the frame + 0.15 m)
@@ -103,7 +105,7 @@ def test_band_table_values() -> None:
     assert 0 < sum(near) - 2.0 * math.sqrt(sum(q * (1 - q) for q in near)) <= 2e-9
     table = xgot.band_table(p, _dev(ys, gs))
     assert table.schema == TABLE_SCHEMA
-    assert xgot.BAND_SDS == 2.0
+    assert metrics.BAND_SDS == 2.0
     assert table["band"].to_list() == list(BANDS)
     for got, want in zip(table.rows(), WANT, strict=True):
         band, n, g, rate, mean, gap, sd, within = want
@@ -212,7 +214,7 @@ def _measured(text: str, band: str, gap: str, sd: str, judged: int = 7) -> bool:
 def judge_all(monkeypatch: pytest.MonkeyPatch) -> None:
     """The 50-shot stand-in inputs cannot reach the PM's 100-shot band minimum: judge every band
     (minimum 0) so the 2-SD rule itself is tested; ``test_band_minimum`` tests the minimum."""
-    monkeypatch.setattr(_xgot(), "MIN_BAND_SHOTS", 0)
+    monkeypatch.setattr(metrics, "MIN_JUDGED_SHOTS", 0)
 
 
 def test_band_check_row(judge_all: None) -> None:
@@ -263,11 +265,11 @@ def test_band_check_row_empty_band(judge_all: None) -> None:
 
 def test_band_minimum(monkeypatch: pytest.MonkeyPatch) -> None:
     """PM band minimum (MS6 gsax): a band is judged by the 2-SD rule only with at least
-    ``MIN_BAND_SHOTS`` (100) shots; a smaller band out of 2 SD is printed with its counts as
-    "not judged (n < 100)" and cannot miss check row 12. Boundary: 99 not judged, 100 judged."""
+    ``metrics.MIN_JUDGED_SHOTS`` (100) shots; a smaller band out of 2 SD is printed with its counts
+    as "not judged (n < 100)" and cannot miss check row 12. Boundary: 99 not judged, 100 judged."""
     from football_shot_models import xgot, xgot_cards
 
-    assert xgot.MIN_BAND_SHOTS == 100
+    assert metrics.MIN_JUDGED_SHOTS == 100
     table = pl.DataFrame({"shots": pl.Series([0, 99, 100, 101], dtype=pl.Int64())})
     assert xgot.judged(table).to_list() == [False, False, True, True]
     # [2, 3): 10 shots p 0.2, 6 goals, gap −4.0, sd 1.26: out of 2 SD, the rest within
@@ -279,10 +281,10 @@ def test_band_minimum(monkeypatch: pytest.MonkeyPatch) -> None:
     lines = xgot_cards.band_lines(mc.fake_eval(xg.lr_spec(), oof=np.array(ps)), dev)
     out = next(x for x in lines if x.startswith("| [2, 3) "))
     assert out.rstrip(" |").endswith("| not judged (n < 100)"), out
-    monkeypatch.setattr(xgot, "MIN_BAND_SHOTS", 10)  # [2, 3) at exactly the minimum: judged
+    monkeypatch.setattr(metrics, "MIN_JUDGED_SHOTS", 10)  # [2, 3) at exactly the minimum: judged
     row = _band_row(ys, gs, ps)
     assert row.result == "missed"
     assert _measured(row.measured, "[2, 3)", "-4.0", "1.3", judged=2), row.measured
-    monkeypatch.setattr(xgot, "MIN_BAND_SHOTS", 11)  # one shot short: not judged, met
+    monkeypatch.setattr(metrics, "MIN_JUDGED_SHOTS", 11)  # one shot short: not judged, met
     row = _band_row(ys, gs, ps)
     assert row.result == "met" and _measured(row.measured, "[0, 1)", "0.0", "3.2", judged=1)

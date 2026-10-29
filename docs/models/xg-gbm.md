@@ -1,7 +1,7 @@
 # Model card: Monotone GBM + Platt, trained without team-selected seasons
 
 ## Overview
-- **Name / version:** `xg-gbm` v2
+- **Name / version:** `xg-gbm` v3
 - **Task:** binary classification: P(goal | shot) for non-penalty shots in periods 1–4 (extra time included; direct free kicks and corners from open play or set pieces included; direct corners, own goals and shoot-outs excluded)
 - **Status:** experimental
 - M1.4: monotone gradient boosting on S3's inputs without spline terms, tuned and Platt-calibrated inside each fit by grouped CV. This is the headline model: its CV log-loss gain over LR splines + context + freeze frames is +0.0032 [+0.0025, +0.0040], a 95% interval that lies above 0; on the hold-out it is +0.0015 [-0.0007, +0.0035], an interval that includes 0. Against StatsBomb xG: CV gain +0.0018 [+0.0008, +0.0029], an interval that lies above 0; hold-out gain -0.0013 [-0.0041, +0.0017], an interval that includes 0. On the hold-out it predicts 963 goals for 913 scored (+5.45%); StatsBomb xG predicts 900 (-1.41%).
@@ -63,7 +63,7 @@ Tuning inside each fit: 4-fold `GroupKFold` by match on its training rows, `max_
 
 Tuning and calibration see only the rows of the fit they belong to; each outer test fold is scored by a model that never saw it.
 
-Settings of the fit on all of dev:
+Settings of the fit on dev without team-selected seasons:
 
 | Setting | Value |
 |---|---|
@@ -75,7 +75,7 @@ Settings of the fit on all of dev:
 Calibration is close to identity (Platt slope 0.999, intercept +0.002): the boosted model is already calibrated and Platt is a safeguard.
 
 ## Validation design
-Grouped 5-fold cross-validation by `match_id` on dev (`GroupKFold`, no shuffle): no match has shots in two folds, and every model uses the same folds. **Validation** is the mean over the out-of-fold test sets (Σ xG and goals are pooled). **Train** is the fit on all of dev, scored in-sample. **Test** is the hold-out, scored by that fit. The hold-out is one of the four 2015/16 men's league seasons in the data, with the other three in dev. It tests transfer to an unseen league in the same season and data spec, not across time or gender.
+Grouped 5-fold cross-validation by `match_id` on dev (`GroupKFold`, no shuffle): no match has shots in two folds, and every model uses the same folds. **Validation** is the mean over the out-of-fold test sets (Σ xG and goals are pooled). **Train** is the fit on dev without team-selected seasons, scored on all of dev: 17,769 of the 89,897 dev shots are outside that fit. **Test** is the hold-out, scored by that fit. The hold-out is one of the four 2015/16 men's league seasons in the data, with the other three in dev. It tests transfer to an unseen league in the same season and data spec, not across time or gender.
 
 ## Metrics
 | Metric | Train | Validation | Test |
@@ -201,9 +201,9 @@ At most two candidate fixes, one refit each. A fix is adopted iff its hold-out �
 | Monotone GBM + Platt, trained without team-selected seasons (adopted) | 962.7 | 913 | +49.7 | 26.7 | +1.86 | yes | 10 of 10 | 0.2641 | 0.2533 | 1.92% | 3.84% |
 
 - Adopted: Monotone GBM + Platt, trained without team-selected seasons. The hold-out chose it, so its hold-out level is no longer an independent check. It removes 19% of the pooled hold-out excess (+61.8 → +49.7).
-- Largest headline hold-out segment gap (segments of 100+ shots): distance = <= 6 m, +34.7 on 411 shots (z +3.90).
-- Dev out of fold, league or tournament: pooled +91.2 (+2.5% of 3,634 goals; Σ xG 3725.2); headline +43.8 (+1.2% of 3,634 goals; Σ xG 3677.8); this is support the hold-out did not choose.
-- Dev out of fold, team-selected, under pooled training: −100.2 (−4.7% of 2,115 goals; Σ xG 2014.8).
+- Largest headline hold-out segment gap (segments of 100+ shots): distance = <= 6 m, +34.7 on 411 shots (z +3.90). StatsBomb xG on the same shots: Σ 151.9 for 134 goals (+17.9, +13.4%); on the whole hold-out −1.4% (a computed counterfactual, not a causal claim).
+- Dev out of fold, league or tournament: pooled +91.2 (+2.5% of 3,634 goals; Σ xG 3725.2); headline +43.8 (+1.2% of 3,634 goals; Σ xG 3677.8, z +0.84); this is support the hold-out did not choose.
+- Dev out of fold, team-selected, under pooled training: −100.2 (−4.7% of 2,115 goals; Σ xG 2014.8); under the headline: −124.1 (−5.9% of 2,115 goals; Σ xG 1990.9, z −3.30).
 - The LR steps are trained on all of dev (pooled) and the headline on dev without team-selected seasons, so the GBM-over-LR gain mixes training population with model class.
 
 ## Benchmarks
@@ -222,7 +222,7 @@ StatsBomb xG is a reference ceiling, not a like-for-like out-of-sample competito
 
 ## Limitations & known biases
 - The hold-out gain over LR splines + context + freeze frames is +0.0015 [-0.0007, +0.0035], an interval that includes 0; the headline rule is decided on CV, and the hold-out (Premier League 2015/2016, 380 matches) is a smaller test.
-- The CV population mixes women's and team-selected seasons that convert more than a men's league (dev goal rate 9.51% league, 11.90% team-selected, 10.48% women; hold-out 9.30%). The hold-out over-prediction (+5.45%) and the CV gain over StatsBomb not carrying over are reported, not explained: this card does not test whether the mix causes them.
+- The CV population mixes women's and team-selected seasons that convert more than a men's league (dev goal rate 9.51% league, 11.90% team-selected, 10.48% women; hold-out 9.30%). The hold-out over-prediction (+5.45%) and the CV gain over StatsBomb not carrying over are decomposed by segment in the Hold-out level section, not explained: its training-population fixes are the only test of the mix this card makes, and StatsBomb xG on the largest segment is printed there as a counterfactual, not a cause.
 - Wide direct free kicks (y < 13.84 or > 54.16, n 378 in dev): goal rate 0.074, this model's mean xG 0.053, StatsBomb 0.008. They are logged as shots mostly when they threaten goal and join `phase = free_kick`, so the model rates them low.
 - Freeze frames hold the players the broadcast camera shows, so the counts depend on the camera; the features are local to the shot (cone, nearest opponent, keeper) rather than whole-frame counts.
 - Keeper distances are capped at 20 m, where few shots are (a keeper far out of goal); `gk_absent` marks a frame without the opponent keeper.
@@ -240,3 +240,4 @@ Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Ne
 ## Changelog
 - v1 (MS3, M1.4): first version.
 - v2 (MS3 assessment): the benchmark sentence names the benchmark; the training-mix line makes no causal claim; the hold-out women's line is computed.
+- v3 (PR1): trained without team-selected seasons, the fix the hold-out level rule adopted (Hold-out level section), so every number moved; the Train column and the settings name that training population; the training-mix line points to the decomposition, with StatsBomb xG on its largest segment.

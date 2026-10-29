@@ -19,9 +19,10 @@ pure `fit` (MS6); the cards are rendered by [`xgot_cards`](xgot_cards.md).
   goal mouth only through the placement features and refuses keeper position.
 - **Checks.** `checks` returns the eleven MS5 rows (AUC, ECE, calibration slope, the GBM
   headline rule, reconciliation, and the two guard-backed rows) and the MS6 band rule (row 12):
-  every band of `band_table` of the headline's out-of-fold xGOT with at least `MIN_BAND_SHOTS`
-  shots (`judged`) is within `BAND_SDS` Poisson-binomial SDs (`within`, the one rule the GSAx
-  band table reuses). `ece_stats` is the one ECE rule behind checks, cards and README.
+  every band of `band_table` of the headline's out-of-fold xGOT with at least
+  `metrics.MIN_JUDGED_SHOTS` shots (`judged`) is within `metrics.BAND_SDS` Poisson-binomial SDs
+  (`within`, a reader of `metrics.within`, the one rule the GSAx band table and the xG hold-out
+  level reuse). `ece_stats` is the one ECE rule behind checks, cards and README.
 - **Shooting goals added (P2.5).** `predictions` holds one row per shot of the population with
   the xG input and the out-of-sample xGOT (built in memory, never written). `sga` gives
   xGOT − xG and goals − xG per shot; `metrics.split_half(by=, value=, unit="match")` gives the

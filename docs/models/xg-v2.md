@@ -4,7 +4,7 @@
 - **Name / version:** `ws-gbm-v2` v1
 - **Task:** binary classification: P(goal | shot) for non-penalty shots in periods 1–4 (extra time included; direct free kicks and corners from open play or set pieces included; direct corners, own goals and shoot-outs excluded)
 - **Status:** experimental
-- PR1: WhoScored xG with the pre-shot context of the previous play event (v1's inputs plus `prev_action` and `rebound`), beside xG v1. This is the headline model: its CV log-loss gain over LR splines + context v2 is +0.0008 [+0.0003, +0.0012], a 95% interval that lies above 0; on the test it is +0.0014 [+0.0005, +0.0024], an interval that lies above 0.
+- PR1: WhoScored xG with the pre-shot context of the previous play event (v1's inputs plus `prev_action` and `rebound`), beside xG v1. The design probe that chose `prev_action` and `rebound` scored its candidates on the test season, so the test gain over xG v1 carries selection optimism; the CV gain over xG v1 on the training season, which the probe never scored, is +0.0004 [+0.0001, +0.0006], an interval that lies above 0. This is the headline model: its CV log-loss gain over LR splines + context v2 is +0.0008 [+0.0003, +0.0012], a 95% interval that lies above 0; on the test it is +0.0014 [+0.0005, +0.0024], an interval that lies above 0.
 
 ## Intended use
 The context-model result beside xG v1 for WhoScored / Opta shot events. xG v1's card stays the record, and v1's keeper-neutral headline stays the WhoScored xGOT input (PM PR1 E4 (a); `prev_action` and `rebound` read the keeper's previous event, so they are refused in the xGOT input chain, PM MS6 E5). Not for penalties, not for other providers' data without re-fitting.
@@ -57,7 +57,7 @@ Settings of the fit on all of dev:
 Calibration is close to identity (Platt slope 0.974, intercept -0.048): the boosted model is already calibrated and Platt is a safeguard.
 
 ## Validation design
-Train: season(s) 2025/2026, 2026; test: 2026/2027, the population and split of xG v1. Grouped 5-fold CV by `match_id` on train only (**Validation**); **Train** is the fit on all of train, scored in-sample; **Hold-out** below is the test season, scored once by that fit and never used to choose.
+Train: season(s) 2025/2026, 2026; test: 2026/2027, the population and split of xG v1. Every train match precedes every test match (checked). Grouped 5-fold CV by `match_id` on train only (**Validation**); **Train** is the fit on all of train, scored in-sample; **Hold-out** below is the test season, scored by that fit. The design probe that chose `prev_action` and `rebound` scored its candidates on the test season, so the test gain over xG v1 carries selection optimism: the evidence the test season did not choose is the CV gain over xG v1 (training season only), in the gain table.
 
 ## Metrics
 | Metric | Train | Validation | Test |

@@ -229,12 +229,17 @@ def _rating_lines(g: GsaxFit) -> list[str]:
     return lines
 
 
+def _z(z: float) -> str:
+    return f"{z:+.2f}".replace("-", "−")  # a true minus, as ``cards.signed``
+
+
 def _band_lines(g: GsaxFit) -> list[str]:
     """The rated q by placement band (``gsax.placement_bands``) and its failing judged bands,
-    each with its counts, gap, SD and z and whether it is in ``gsax.ESCALATED_BANDS`` (PM PR1
-    E1 (a)); the keeper-level effect of the season-out refit against the match out-of-fold
+    each with its counts, gap, SD and z (true minus signs) and whether it is in
+    ``gsax.ESCALATED_BANDS`` (escalated and ruled a listed limitation, PM PR1 E1 (a)); the
+    keeper-level effect of the season-out refit against the match out-of-fold
     xGOT."""
-    t, least = gsax.placement_bands(g), xgot.MIN_BAND_SHOTS
+    t, least = gsax.placement_bands(g), metrics.MIN_JUDGED_SHOTS
     rows = [
         f"| {r['feature']} | {r['band']} | {r['source']} | {r['shots']:,} | {r['goals']:,} | "
         + (f"{signed(r['gap'])} | {r['sd']:.1f} | " if r["shots"] else "n/a | 0.0 | ")
@@ -246,10 +251,11 @@ def _band_lines(g: GsaxFit) -> list[str]:
     pinned = gsax.ESCALATED_BANDS.get(g.xgot.provider, frozenset())
     listed = "; ".join(
         f"{r['feature']} {r['band']} ({r['source']}): {r['shots']:,} shots, {r['goals']:,} "
-        f"goals, Σ q − goals {signed(r['gap'])} (SD {r['sd']:.1f}, z {r['gap'] / r['sd']:+.2f}; "
+        f"goals, Σ q − goals {signed(r['gap'])} (SD {r['sd']:.1f}, z "
+        f"{_z(r['gap'] / r['sd'])}; "
         f"match out of fold {signed(r['gap_oof'])}), "
-        + ("escalated to the PM" if (r["feature"], r["band"], r["source"]) in pinned
-           else "not escalated")
+        + ("escalated, ruled a listed limitation (PM PR1 E1 (a))"
+           if (r["feature"], r["band"], r["source"]) in pinned else "not escalated")
         for r in bad.iter_rows(named=True)
     )  # fmt: skip
     lines = [
@@ -257,18 +263,20 @@ def _band_lines(g: GsaxFit) -> list[str]:
         "",
         f"Open play; `mouth_y_abs` and `mouth_z` (m) as on the xGOT card, `angle_rad` the "
         f"opening angle; source `{gsax.POOLED}` pools the rows. A band is judged with at least "
-        f"{least} shots, within {xgot.BAND_SDS:g} SD (√Σ q(1 − q)). The last column rates the same "
-        "rows from the xGOT card's match out-of-fold xGOT (diagnostic: it saw the rated season).",
+        f"{least} shots, within {metrics.BAND_SDS:g} SD (√Σ q(1 − q)). The last column rates the "
+        "same rows from the xGOT card's match out-of-fold xGOT (diagnostic: it saw the rated "
+        "season).",
         "",
         "| Feature | Band | Source | Shots | Goals | Σ q − goals | SD | Within "
-        f"{xgot.BAND_SDS:g} SD | Match out of fold: Σ q − goals (SD) |",
+        f"{metrics.BAND_SDS:g} SD | Match out of fold: Σ q − goals (SD) |",
         "|---|---|---|---|---|---|---|---|---|",
         *rows,
         "",
         f"Limitation: {bad.height:,} of {int(t['judged'].sum()):,} judged bands are outside "
-        f"{xgot.BAND_SDS:g} SD" + (f" ({listed}); the league shift removes a season's level gap, "
-                                   "not a misprice of shape, so a keeper whose shots lean to "
-                                   "these bands is charged or credited for it." if listed else "."),
+        f"{metrics.BAND_SDS:g} SD" + (f" ({listed}); the league shift removes a season's level "
+                                      "gap, not a misprice of shape, so a keeper whose shots "
+                                      "lean to these bands is charged or credited for it."
+                                      if listed else "."),
     ]  # fmt: skip
     oof = gsax.keeper_table(gsax.variant(gsax.oof_rated(g), WITHOUT)).select(
         *KEEPER_SEASON, oof=pl.col("gsax")

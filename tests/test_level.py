@@ -41,18 +41,18 @@ def _level() -> Any:
 @pytest.mark.parametrize(("goal", "z"), [(False, 2.0), (True, -2.0)])
 def test_level_z_boundary(goal: bool, z: float) -> None:
     """§3.3: (Σp − Σy, √Σp(1 − p), z), exactly ±2 in float on the boundary (within: |z| ≤
-    ``LEVEL_SD``, equality within); 0.01 more expected goals is outside."""
+    ``metrics.BAND_SDS``, equality within); 0.01 more expected goals is outside."""
     level = _level()
-    assert level.LEVEL_SD == 2.0
+    assert metrics.BAND_SDS == 2.0
     y, p = np.full(4, goal), np.full(4, 0.5)
     assert level.level_z(y, p) == (z, 1.0, z)
-    assert abs(level.level_z(y, p)[2]) <= level.LEVEL_SD
+    assert abs(level.level_z(y, p)[2]) <= metrics.BAND_SDS
     y2, p2 = np.append(y, False), np.append(p, 0.01)
     diff, sd, z2 = level.level_z(y2, p2)
     assert diff == pytest.approx(2.01 if not goal else -1.99)
     assert sd == pytest.approx(math.sqrt(1.0 + 0.01 * 0.99))
     if not goal:
-        assert z2 > level.LEVEL_SD  # precondition of the near miss: 2.000124...
+        assert z2 > metrics.BAND_SDS  # precondition of the near miss: 2.000124...
 
 
 @pytest.mark.parametrize(
@@ -174,7 +174,6 @@ def test_probe_rows(probe: dict[str, Any], frames: tuple[pl.DataFrame, ...]) -> 
     hold-out predictions (recomputed here), ``within`` two-sided with equality within (the
     indicator sits exactly on z = 2), judged = the non-n/a check rows, and the evaluation's CV /
     hold-out log loss and fold Σ xG mean / max."""
-    level = _level()
     _, held, _ = frames
     y = held["is_goal"].to_numpy()
     p = probe["probe"]
@@ -192,7 +191,7 @@ def test_probe_rows(probe: dict[str, Any], frames: tuple[pl.DataFrame, ...]) -> 
     assert by_title[probe["indicator"].spec.title].z == 2.0  # in float, on the boundary
     assert by_title[probe["indicator"].spec.title].within is True
     assert by_title[probe["pooled"].spec.title].within is False
-    assert level.LEVEL_SD == 2.0
+    assert metrics.BAND_SDS == 2.0
 
 
 def _keys(seg: pl.DataFrame) -> list[str]:
@@ -283,11 +282,33 @@ def test_level_lines(probe: dict[str, Any]) -> None:
 
 
 def test_min_judged_shots_is_one_rule() -> None:
-    """§3.3: ``metrics.MIN_JUDGED_SHOTS`` = 100 (PM MS6) and ``xgot.MIN_BAND_SHOTS`` is it."""
+    """§3.3: ``metrics.MIN_JUDGED_SHOTS`` = 100 (PM MS6); xgot keeps no copy of it."""
     from football_shot_models import xgot
 
     assert metrics.MIN_JUDGED_SHOTS == 100
-    assert xgot.MIN_BAND_SHOTS == metrics.MIN_JUDGED_SHOTS
+    assert not hasattr(xgot, "MIN_BAND_SHOTS") and not hasattr(xgot, "BAND_SDS")
+
+
+def test_band_rule_is_one_expression(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run7 assessment (architect 4): the 2-SD rule and its SD are ``metrics.BAND_SDS``,
+    ``metrics.poisson_binomial`` and ``metrics.within``, read when called by the xGOT band rule,
+    the GSAx band table and the xG hold-out level rule alike: a gap of exactly 3 SD is within
+    for all three at ``BAND_SDS`` 3 (equality within), for none at 2; the minimum moves
+    ``xgot.judged`` too."""
+    from football_shot_models import xgot
+
+    level = _level()
+    y, p = np.arange(25) < 5, np.full(25, 0.5)  # Σp 12.5, 5 goals, SD √6.25: exact in float
+    gap, sd = metrics.poisson_binomial(y, p)
+    assert (gap, sd) == (7.5, 2.5) and level.level_z(y, p) == (7.5, 2.5, 3.0)
+    for sds, inside in ((2.0, False), (3.0, True)):
+        monkeypatch.setattr(metrics, "BAND_SDS", sds)
+        assert metrics.within(gap, sd) is inside
+        assert xgot.within(gap, sd) is inside
+        assert level.within(gap / sd) is inside
+    table = pl.DataFrame({"shots": [99, 100]})
+    monkeypatch.setattr(metrics, "MIN_JUDGED_SHOTS", 99)
+    assert xgot.judged(table).to_list() == [True, True]
 
 
 def test_refused_sentence_is_computed(
@@ -313,3 +334,38 @@ def test_refused_sentence_is_computed(
     text = "\n".join(level.level_lines(p, steps_train_exclude=()))
     assert f"{head.spec.title} met the MS3 rule but an xGOT / GSAx check refused it." in text
     assert f"{ind.spec.title} met the MS3 rule" not in text
+
+
+def test_worst_segment_prints_the_benchmark(
+    probe: dict[str, Any], frames: tuple[pl.DataFrame, ...], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run7 assessment (football 4, A15): ``xg_bench`` is Σ of StatsBomb's own xG per segment
+    (each hold-out kind sums to Σ ``provider_xg``, recomputed here); the worst-segment line
+    prints it for the named segment and the whole hold-out's signed share beside it; A3: with a
+    fix adopted, the team-selected dev line also gives the headline's gap and z."""
+    level = _level()
+    dev, held, _ = frames
+    p = probe["probe"]
+    seg = p.segments.filter(pl.col("split") == "hold-out")
+    total, goals = float(held["provider_xg"].sum()), int(held["is_goal"].sum())
+    for _, part in seg.group_by("kind"):
+        assert part["xg_bench"].sum() == pytest.approx(total)
+    head_title = probe["head"].spec.title
+    one = dataclasses.replace(
+        p, rows=tuple(dataclasses.replace(r, adopted=r.title == head_title) for r in p.rows)
+    )
+    monkeypatch.setattr(metrics, "MIN_JUDGED_SHOTS", 1)  # the fixture hold-out has 20 shots
+    lines = level.level_lines(one, steps_train_exclude=())
+    (worst,) = [x for x in lines if x.startswith("- Largest headline hold-out segment")]
+    named = worst.split(": ", 1)[1].split(",", 1)[0]  # "<kind> = <level>"
+    kind, lvl = named.split(" = ")
+    row = seg.filter((pl.col("kind") == kind) & (pl.col("level") == lvl)).row(0, named=True)
+    assert f"StatsBomb xG on the same shots: Σ {row['xg_bench']:.1f} for {row['goals']:,}" in worst
+    share = f"{(total - goals) / goals:+.1%}".replace("-", "−")
+    assert f"on the whole hold-out {share}" in worst, worst
+    (team,) = [x for x in lines if x.startswith("- Dev out of fold, team-selected")]
+    assert "; under the headline: " in team and ", z " in team.split("under the headline")[1]
+    none = dataclasses.replace(p, rows=tuple(dataclasses.replace(r, adopted=False) for r in p.rows))
+    assert not any(
+        "under the headline" in x for x in level.level_lines(none, steps_train_exclude=())
+    )

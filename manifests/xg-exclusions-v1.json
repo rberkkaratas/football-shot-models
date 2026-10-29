@@ -511,7 +511,7 @@
     "pandera": "0.34.1",
     "numpy": "2.5.4",
     "football_core": "0.1.0",
-    "football_core_git": "50626c4c41df2526f64f9a81b95cd4d0363b5683",
+    "football_core_git": "bbfc287d3b8eaa21f110a4ba0a53c941a94dafa2",
     "football_core_dirty": false
   }
 }

@@ -113,3 +113,25 @@ def test_render_gbm_headline(v2_fit: dict[str, Any], card: str) -> None:
     assert "`HistGradientBoostingClassifier(" in text and "Platt scaling" in text
     assert "| Term | Standardised | Natural units |" not in text
     assert gbm_ev.spec.title in text and "`rebound`" in text
+
+
+def test_card_says_the_test_season_chose(v2_fit: dict[str, Any], card: str) -> None:
+    """Run7 assessment (football 1, QA 1, football 6): the design probe chose the context set on
+    the test season, so the card and the README block name the CV gain over v1 (recomputed cell)
+    as the evidence the test did not choose, and never say the test was "never used to choose";
+    the split sentence says every train match precedes every test match (checked)."""
+    from football_shot_models import cards
+
+    fit = v2_fit["fit"]
+    cv = cards.gain_cell(fit.gain_over_v1.cv)
+    block = _cards().summary_block(fit)
+    for text in (card, block):
+        assert "scored its candidates on the test season" in text
+        assert (
+            f"the CV gain over xG v1 on the training season, which the probe never scored, is {cv}"
+            in text
+        )
+        assert "never used to choose" not in text
+    overview = card.split("## Intended use")[0]
+    assert cv in overview
+    assert "Every train match precedes every test match (checked)." in card

@@ -11,9 +11,10 @@ the scored rows reconcile with C3.
 **The xG input.** Every open-play model reads ``xg_logit``, the logit of the provider's headline
 xG (``models.select_headline``) refitted without the keeper-position features (PM X1; a
 WhoScored headline reads none, so it is used as it is). It is cross-fitted (:func:`xg_input`):
-a dev shot reads its out-of-fold xG, a hold-out shot the xG of the fit on all of dev, and the
-xGOT folds are the xG folds restricted to on-target shots, so no xGOT row sees an xG fitted on
-itself.
+a dev shot reads its out-of-fold xG, a hold-out shot the xG of the fit on dev (the rows its
+spec's ``train_exclude`` keeps: StatsBomb's headline leaves team-selected seasons out, PR1), and
+the xGOT folds are the xG folds restricted to on-target shots, so no xGOT row sees an xG fitted
+on itself.
 
 **Models (P2.3, P2.4).** Every model goes through ``evaluation.evaluate`` with the xGOT guard
 (``features.check_xgot_features``) and registry (``features.XGOT_DERIVED``). The LR reads the
@@ -98,8 +99,8 @@ _IDS: Final = ("shot_id", "match_id", "player_id", "competition_id", "season_id"
 # lower edges of the cards' |y| calibration bands, metres; the last band starts at the post's
 # inner edge, and points recorded outside the frame get a row of their own
 Y_BANDS: Final[tuple[float, ...]] = (0.0, 1.0, 2.0, 3.0, 3.3, features.INNER_Y)
-BAND_SDS: Final[float] = 2.0  # the PM's band rule (MS6): |Σ p − goals| <= BAND_SDS · √Σp(1−p)
-MIN_BAND_SHOTS: Final[int] = metrics.MIN_JUDGED_SHOTS  # PM (MS6 gsax): smaller is not judged
+# the band rule and its minimum are metrics.BAND_SDS / metrics.MIN_JUDGED_SHOTS (PM MS6), read
+# when called, so the xGOT, GSAx and xG hold-out level rules stay one rule
 CHECKS_MILESTONES: Final[str] = "MS5, MS6"
 CHECKS_TITLE: Final[str] = f"Milestone checks ({CHECKS_MILESTONES})"
 
@@ -502,10 +503,12 @@ class Provider:
     mouth_note: str | None = None
 
 
+# the xG input's dev fit as XGOT_CROSS_FIT names it; xgot_cards names a train_exclude there
+XG_INPUT_FIT: Final[str] = "the fit on all of dev"
 XGOT_CROSS_FIT: Final[str] = (
     "The open-play xGOT reads the xG input cross-fitted on these folds: an on-target shot in "
     "test fold k reads the xG of the fit that never saw fold k, and a hold-out (test) shot the "
-    "xG of the fit on all of dev (train), so no xGOT row sees an xG fitted on itself. The xGOT "
+    f"xG of {XG_INPUT_FIT} (train), so no xGOT row sees an xG fitted on itself. The xGOT "
     "training rows of fold k read xG from fits that did see fold k: the standard cross-fitting "
     "dependence, accepted."
 )
@@ -759,8 +762,9 @@ def band_table(p: FloatArray, dev: pl.DataFrame) -> pl.DataFrame:
     The reliability table bins by prediction, so it cannot show a placement the model
     misprices; this table bins by ``mouth_y_abs`` (after rounding, ``Y_BANDS``) with the points
     recorded outside the frame (``mouth_out``) in a row of their own. A band is ``within`` when
-    ``|Σ p − goals| <= BAND_SDS · sd``, ``sd = √Σ p(1 − p)`` (the Poisson-binomial SD of the
-    goal count if ``p`` is calibrated): the PM's screening rule, not a proof of calibration.
+    ``|Σ p − goals| <= metrics.BAND_SDS · sd``, ``sd = √Σ p(1 − p)`` (the Poisson-binomial SD
+    of the goal count if ``p`` is calibrated): the PM's screening rule, not a proof of
+    calibration.
 
     Parameters
     ----------
@@ -808,7 +812,7 @@ def band_table(p: FloatArray, dev: pl.DataFrame) -> pl.DataFrame:
     rows = []
     for band, m in masks:
         n, goals = int(m.sum()), int(y[m].sum())
-        gap, sd = float(p[m].sum()) - goals, math.sqrt(float((p[m] * (1 - p[m])).sum()))
+        gap, sd = metrics.poisson_binomial(y[m], p[m])
         rate, mean = (goals / n, float(p[m].mean())) if n else (None, None)
         rows.append((band, n, goals, rate, mean, gap, sd, within(gap, sd)))
     schema = {
@@ -825,31 +829,32 @@ def band_table(p: FloatArray, dev: pl.DataFrame) -> pl.DataFrame:
 
 
 def within(gap: float, sd: float) -> bool:
-    """The band rule (PM, MS6): ``|gap| <= BAND_SDS · sd``, ``BAND_SDS`` read when called.
+    """The band rule (PM, MS6): :func:`metrics.within` (``|gap| <= metrics.BAND_SDS · sd``).
 
-    The one expression behind :func:`band_table` and ``gsax.band_table``; a band is judged by
-    it only when :func:`judged`.
+    A thin reader of the one expression behind :func:`band_table`, ``gsax.band_table`` and the
+    xG hold-out level rule; a band is judged by it only when :func:`judged`.
 
     Examples
     --------
     >>> within(-2.0, 1.0), within(2.0001, 1.0), within(0.0, 0.0)
     (True, False, True)
     """
-    return abs(gap) <= BAND_SDS * sd
+    return metrics.within(gap, sd)
 
 
 def judged(table: pl.DataFrame) -> pl.Series:
-    """Per band of :func:`band_table`: judged by the band rule, i.e. ``shots >= MIN_BAND_SHOTS``.
+    """Per band of :func:`band_table`: judged by the band rule, i.e. ``shots >=
+    metrics.MIN_JUDGED_SHOTS`` (read when called).
 
     PM (MS6 gsax): the 2-SD rule is a normal approximation, so a band under
-    ``MIN_BAND_SHOTS`` shots is printed with its counts and marked not judged.
+    ``metrics.MIN_JUDGED_SHOTS`` shots is printed with its counts and marked not judged.
 
     Examples
     --------
     >>> judged(pl.DataFrame({"shots": [99, 100]})).to_list()
     [False, True]
     """
-    return (table["shots"] >= MIN_BAND_SHOTS).alias("judged")
+    return (table["shots"] >= metrics.MIN_JUDGED_SHOTS).alias("judged")
 
 
 def _band_check(table: pl.DataFrame) -> Check:
@@ -863,8 +868,8 @@ def _band_check(table: pl.DataFrame) -> Check:
     band, gap, sd = table["band"][i], table["gap"][i], table["sd"][i]
     worst = f"{band}: {signed(gap)} (SD {sd:.1f})" if ok[i] else "no band judged"
     return _check(
-        f"Σ xGOT − goals within {BAND_SDS:g} SD (√Σp(1−p)) in every placement band of at least "
-        f"{MIN_BAND_SHOTS} shots, dev out of fold",
+        f"Σ xGOT − goals within {metrics.BAND_SDS:g} SD (√Σp(1−p)) in every placement band of "
+        f"at least {metrics.MIN_JUDGED_SHOTS} shots, dev out of fold",
         f"{worst}; {sum(ok)} of {table.height} bands judged",
         bool((table["within"] | ~judged(table)).all()),
     )
@@ -887,8 +892,8 @@ def checks(
     shots and goals. Rows 10-11 record guards that raise rather than miss: the xG input is
     keeper-neutral and no ablation, and the headline reads no keeper-position feature. Row 12
     (MS6) can be missed: every band of :func:`band_table` of the headline's out-of-fold
-    predictions on ``dev`` with at least ``MIN_BAND_SHOTS`` shots is within ``BAND_SDS`` SD;
-    it names the worst judged band.
+    predictions on ``dev`` with at least ``metrics.MIN_JUDGED_SHOTS`` shots is within
+    ``metrics.BAND_SDS`` SD; it names the worst judged band.
 
     Raises
     ------

@@ -216,11 +216,13 @@ TASK: Final[str] = (
 TARGET: Final[str] = (
     "`is_goal`: the ball went in. Own goals are excluded, so every goal is the shooter's."
 )
+# the Train sentence of VALIDATION; a fit with a train_exclude names its population instead
+TRAIN_IN_SAMPLE: Final[str] = "**Train** is the fit on all of dev, scored in-sample."
 VALIDATION: Final[str] = (
     "Grouped 5-fold cross-validation by `match_id` on dev (`GroupKFold`, no shuffle): no match "
     "has shots in two folds, and every model uses the same folds. **Validation** is the mean "
-    "over the out-of-fold test sets (Σ xG and goals are pooled). **Train** is the fit on all of "
-    "dev, scored in-sample. **Test** is the hold-out, scored by that fit. The hold-out is one "
+    f"over the out-of-fold test sets (Σ xG and goals are pooled). {TRAIN_IN_SAMPLE} "
+    "**Test** is the hold-out, scored by that fit. The hold-out is one "
     "of the four 2015/16 men's league seasons in the data, with the other three in dev. "
     "It tests transfer to an unseen league in the same season and data spec, not across time "
     "or gender."

@@ -548,7 +548,7 @@ def gbm_model(ev: Evaluation, c: CardContext) -> list[str]:
         "Tuning and calibration see only the rows of the fit they belong to; each outer test "
         "fold is scored by a model that never saw it.",
         "",
-        "Settings of the fit on all of dev:",
+        f"Settings of the fit on {level.fit_population(level.head_exclude(ev))}:",
         "",
         "| Setting | Value |",
         "|---|---|",
@@ -576,6 +576,10 @@ CARD: Final[CardText] = CardText(
         "v1 (MS3, M1.4): first version.",
         "v2 (MS3 assessment): the benchmark sentence names the benchmark; the training-mix line "
         "makes no causal claim; the hold-out women's line is computed.",
+        "v3 (PR1): trained without team-selected seasons, the fix the hold-out level rule adopted "
+        "(Hold-out level section), so every number moved; the Train column and the settings "
+        "name that training population; the training-mix line points to the decomposition, "
+        "with StatsBomb xG on its largest segment.",
     ),
     task=cards.TASK,
     target=cards.TARGET,
@@ -586,6 +590,28 @@ CARD: Final[CardText] = CardText(
 def _goal_rate(frame: pl.DataFrame, family: str | None = None) -> float | None:
     y = (frame if family is None else frame.filter(pl.col("family") == family))["is_goal"]
     return float(y.sum()) / y.len() if y.len() else None
+
+
+def gbm_validation(ev: Evaluation, dev: pl.DataFrame) -> str:
+    """``cards.VALIDATION`` with the Train sentence of ``ev``'s training population.
+
+    A spec with a ``train_exclude`` is fitted without those families, but the Train column
+    scores all of dev, so the sentence names the population and counts the dev rows outside the
+    fit; without one it is ``cards.VALIDATION`` itself.
+
+    Examples
+    --------
+    >>> gbm_validation(gbm, dev) == cards.VALIDATION  # doctest: +SKIP
+    False
+    """
+    if not (exclude := level.head_exclude(ev)):
+        return cards.VALIDATION
+    out = int(dev["family"].cast(pl.String).is_in(list(exclude)).sum())
+    train = (
+        f"**Train** is the fit on {level.fit_population(exclude)}, scored on all of dev: "
+        f"{out:,} of the {dev.height:,} dev shots are outside that fit."
+    )
+    return cards.VALIDATION.replace(cards.TRAIN_IN_SAMPLE, train)
 
 
 def gbm_text(
@@ -618,15 +644,18 @@ def gbm_text(
     carry = side(sb_gain.cv) == "lies above 0" and side(sb_gain.holdout) != "lies above 0"
     signed = ev.holdout.xg_signed_error
     # no causal claim: a refit on men's league shots only still over-predicts the hold-out
-    # (run3-ms3 football probes), so the goal rates are reported, not offered as the cause
+    # (run3-ms3 football probes), so the goal rates are reported, not offered as the cause; the
+    # PR1 level section tests the training population and decomposes what is left
     lines.append(
         "The CV population mixes women's and team-selected seasons that "
         f"{'convert more than' if more else 'differ in goal rate from'} a men's league (dev goal "
         f"rate {pct(league)} league, {pct(team)} team-selected, {pct(women)} women; hold-out "
         f"{pct(_goal_rate(held))}). The hold-out {'over' if signed > 0 else 'under'}-prediction "
         f"({signed:+.2%}){' and the CV gain over StatsBomb not carrying over' * carry} "
-        f"{'are' if carry else 'is'} reported, not explained: this card does not test whether "
-        f"the mix causes {'them' if carry else 'it'}."
+        f"{'are' if carry else 'is'} decomposed by segment in the Hold-out level section, not "
+        "explained: its training-population fixes are the only test of the mix this card makes, "
+        "and StatsBomb xG on the largest segment is printed there as a counterfactual, not a "
+        "cause."
     )
     if _settings(ev)["max_leaf_nodes"] == max(gbm_grid(ev)["leaf_grid"]):
         lines.append("The grid's largest leaf count was chosen; a wider grid is a follow-up.")
@@ -830,7 +859,7 @@ def run(
     )
     cards[gbm.spec.name] = render_card(
         gbm, text, evaluations=evaluations, benchmark=sb, dev=dev, context=context,
-        provider=STATSBOMB_TEXT, thresholds=(),
+        provider=STATSBOMB_TEXT, thresholds=(), validation=gbm_validation(gbm, dev),
         comparisons=gbm_rows, checks=checks if head is gbm else (),
         verdict=f"{verdicts[gbm.spec.name]} {benchmark_sentence(gbm, gbm_rows[2], sb)}",
         extra=level.level_lines(probe, steps_train_exclude=level.head_exclude(best_lr)),

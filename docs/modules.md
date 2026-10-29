@@ -53,7 +53,7 @@ src/football_shot_models/
 |---|---|---|
 | `data` | ✅ Done | M1.0 / M1.1, MS3 (matches join, direct corners, freeze frames, penalties) |
 | `features` | ✅ Done | M1.0, M1.2 / M1.3 (derived features), MS5 (xGOT guard, placement), PR1 (`KEEPER_DERIVED` refused by the xGOT guards) |
-| `metrics` | ✅ Done | M1.1, MS3 (bootstrap gain, Beta interval, checks), MS5 (ECE, public `logit`), MS6 (`spearman_brown`, empty `split_half`), PR1 (`MIN_JUDGED_SHOTS`) |
+| `metrics` | ✅ Done | M1.1, MS3 (bootstrap gain, Beta interval, checks), MS5 (ECE, public `logit`), MS6 (`spearman_brown`, empty `split_half`), PR1 (`MIN_JUDGED_SHOTS`; `BAND_SDS`, `poisson_binomial`, `within`: the one band rule) |
 | `evaluation` | ✅ Done | M1.1, MS3 (`compare`, `DesignFit`), MS5 (`ModelSpec.derived` / `xg_input`, `restrict_folds`), MS6 (`season_folds`), PR1 (`ModelSpec.train_exclude` / `train_indicator`) |
 | `cards` | ✅ Done | M1.1, MS3 (gain table, checks, slope columns), MS5 (`ProviderText`, quantity, optional benchmark) |
 | `baselines` | ✅ Done | M1.1 |

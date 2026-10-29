@@ -14,7 +14,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from football_shot_models import xgot
+from football_shot_models import metrics, xgot
 
 
 def _gsax() -> Any:
@@ -120,13 +120,13 @@ def test_band_table_counts_rule_and_outside() -> None:
 
 
 def test_band_table_minimum_read_when_called(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The minimum is ``xgot.MIN_BAND_SHOTS`` read when called: at 99 the 99-shot band is
+    """The minimum is ``metrics.MIN_JUDGED_SHOTS`` read when called: at 99 the 99-shot band is
     judged, at 101 the 100-shot band is not."""
     gsax = _gsax()
     rated, geo = _frames()
-    monkeypatch.setattr(xgot, "MIN_BAND_SHOTS", 99)
+    monkeypatch.setattr(metrics, "MIN_JUDGED_SHOTS", 99)
     assert _row(gsax.band_table(rated, geo), "mouth_y_abs", "[3, 3.3)", "holdout_fit")["judged"]
-    monkeypatch.setattr(xgot, "MIN_BAND_SHOTS", 101)
+    monkeypatch.setattr(metrics, "MIN_JUDGED_SHOTS", 101)
     t = gsax.band_table(rated, geo)
     assert not _row(t, "mouth_y_abs", "[0, 1)", "swapped_fit")["judged"]
 
@@ -212,8 +212,8 @@ def test_team_selected_split() -> None:
 
 def test_band_table_rule_between_two_and_three_sd(monkeypatch: pytest.MonkeyPatch) -> None:
     """Run6-ms6 (QA 8, architect A5): a judged band at 2.6 SD (100 shots, q 0.5, 37 goals: gap
-    +13, SD 5) is outside the 2-SD rule; the rule is ``xgot.within`` read when called, so at
-    ``BAND_SDS`` 3 the same band is within (one rule for the xGOT and GSAx band tables)."""
+    +13, SD 5) is outside the 2-SD rule; the rule is ``metrics.within`` read when called, so at
+    ``metrics.BAND_SDS`` 3 the same band is within (one rule for the xGOT and GSAx band tables)."""
     gsax = _gsax()
     n = 100
     ids = [f"sb:r{i:03d}" for i in range(n)]
@@ -229,6 +229,6 @@ def test_band_table_rule_between_two_and_three_sd(monkeypatch: pytest.MonkeyPatc
     assert (row["shots"], row["judged"]) == (100, True)
     assert math.isclose(row["gap"], 13.0) and math.isclose(row["sd"], 5.0)
     assert row["within"] is False and xgot.within(row["gap"], row["sd"]) is False
-    monkeypatch.setattr(xgot, "BAND_SDS", 3.0)
+    monkeypatch.setattr(metrics, "BAND_SDS", 3.0)
     row = _row(gsax.band_table(rated, geo), "mouth_y_abs", "[0, 1)", "season_folds")
     assert row["within"] is True and xgot.within(13.0, 5.0) is True

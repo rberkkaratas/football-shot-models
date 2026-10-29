@@ -107,7 +107,7 @@ RATING_GROUPS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
 ZERO_FAMILIES: Final[tuple[str, ...]] = (TEAM_SELECTED,)  # rated at δ = 0, flagged (PM 2026-10-28)
 # every row at δ = 0 by rule: an E2-small season, a zero-family season, an E2-small penalty pool
 AT_ZERO: Final = pl.col("small") | pl.col("zero_family") | pl.col("pool_small")
-# judged GSAx bands outside BAND_SDS, listed on the card as a limitation (PM PR1 E1 (a))
+# judged GSAx bands outside metrics.BAND_SDS, listed on the card as a limitation (PM PR1 E1 (a))
 ESCALATED_BANDS: Final[Mapping[str, frozenset[tuple[str, str, str]]]] = MappingProxyType({
     "statsbomb": frozenset(),
     "whoscored": frozenset({("mouth_y_abs", "[0, 1)", "holdout_fit"),
@@ -587,7 +587,7 @@ def band_table(rated: pl.DataFrame, geometry: pl.DataFrame) -> pl.DataFrame:
     ``features.placement``'s ``mouth_y_abs`` / ``mouth_z`` and on ``angle_rad``; the points
     recorded outside the frame are a ``|y|`` row of their own (``OUTSIDE``), as on the xGOT
     card. ``gap`` = Σ q − goals, ``sd`` = √Σ q(1 − q); ``judged`` and ``within`` are the
-    xGOT card's rule (``xgot.judged``, ``xgot.within``, read when called).
+    xGOT card's rule (``xgot.judged``, ``metrics.within``, read when called).
 
     Parameters
     ----------
@@ -648,8 +648,8 @@ def band_table(rated: pl.DataFrame, geometry: pl.DataFrame) -> pl.DataFrame:
             for i, band in enumerate(bands):
                 m = (idx == i) & ((src == s) | (s == POOLED))
                 n, goals = int(m.sum()), int(y[m].sum())
-                gap, sd = float(q[m].sum()) - goals, math.sqrt(float((q[m] * (1 - q[m])).sum()))
-                records.append((feature, band, s, n, goals, gap, sd, xgot.within(gap, sd)))
+                gap, sd = metrics.poisson_binomial(y[m], q[m])
+                records.append((feature, band, s, n, goals, gap, sd, metrics.within(gap, sd)))
     schema = {
         "feature": pl.String,
         "band": pl.String,

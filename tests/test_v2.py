@@ -174,6 +174,13 @@ def test_fit_evaluations(v2_fit: dict[str, Any]) -> None:
     assert fit.v1_head.spec.name == "ws-gbm"
     assert fit.v1_ablation.spec.name.endswith("-big-chance")
     assert "big_chance" in fit.v1_ablation.spec.features
+    # run7 architect 5: v1's ablation is picked among v1's candidates by name, not by position
+    from football_shot_models import baselines
+
+    v1_names = {s.name for s in (*baselines.BASELINES, *v1.STEPS)}
+    v1_lrs = [e for e in c.lrs if e.spec.name in v1_names]
+    assert len(v1_lrs) == len(c.lrs) - 1  # precondition: only the context-v2 LR is not v1's
+    assert fit.v1_ablation.spec == v1.ablation_spec(evaluation.best(v1_lrs).spec)
     y = evaluation.labels(fit.held)
     g = metrics.bootstrap_gain(
         y, fit.v1_head.holdout_p, fit.head.holdout_p, fit.held["match_id"].to_numpy()
@@ -205,7 +212,7 @@ CENSUS_FRAME = pl.DataFrame(
     {
         "raw_qualifiers": [_q(20, 22, 214), _q(72, 22), _q(20, 23, 214, 328), _q(15, 25),
                            _q(20, 22, 214), _q(72, 22, 99_999)],
-        "is_goal": [True, False, True, False, False, True],
+        "is_goal": [True, False, True, False, True, True],
         "prev_action": ["opp_keeper", "pass", "opp_block", "pass", "opp_keeper", "shot"],
         "rebound": [True, False, False, False, True, False],
     },
@@ -227,9 +234,12 @@ def test_census_counts() -> None:
     keeper-derived, train shots, train goals, test shots), counted by hand here; an id the spec
     does not class gets no class."""
     v2 = _v2()
+    # precondition (run7 QA 2): test row 4 is a q214 goal, so a test goal counted as a train
+    # goal would move train_goals
+    assert CENSUS_FRAME["is_goal"][4] and not CENSUS_TRAIN[4]
     census = v2.census(CENSUS_FRAME, CENSUS_TRAIN)
     q = census.qualifiers
-    assert _row(q, 214)[-3:] == (2, 2, 1)  # train rows 0, 2 (both goals); test row 4
+    assert _row(q, 214)[-3:] == (2, 2, 1)  # train rows 0, 2 (both goals); test row 4 (a goal)
     assert "grading" in _row(q, 214)
     assert _row(q, 22)[-3:] == (3, 2, 1)
     assert _row(q, 15)[-3:] == (0, 0, 1)
@@ -357,21 +367,30 @@ def test_checks_driven_to_missed(v2_fit: dict[str, Any], row: int,
     assert base[row - 1] == "met" or row in (1, 2, 3)  # fixture-dependent rows may start missed
 
 
-@pytest.mark.parametrize("feature", ["big_chance", "gender", "prev_action-refused"])
+@pytest.mark.parametrize(
+    "feature", ["big_chance", "gender", "prev_action-refused", "prev_action-unclassified"]
+)
 def test_check4_refused(v2_fit: dict[str, Any], feature: str,
                         monkeypatch: pytest.MonkeyPatch) -> None:  # fmt: skip
     """§3.4 row 4: missed when a headline feature is ablation-only (big chance), is not in
-    ``FEATURE_QUALIFIERS``, or reads an id whose class is refused (q94 re-classed "grading")."""
+    ``FEATURE_QUALIFIERS``, or reads an id whose class is refused (q94 re-classed "grading") or
+    that has no class (q94 left out of ``QUALIFIER_CLASS``, run7 QA 3: "unclassified")."""
     v2 = _v2()
     fit = v2_fit["fit"]
     head = fit.head
     assert results(call_checks(fit))[3] == "met"  # precondition
-    if feature == "prev_action-refused":
-        monkeypatch.setattr(v2, "QUALIFIER_CLASS", {**v2.QUALIFIER_CLASS, 94: "grading"})
+    if feature.startswith("prev_action-"):
+        classes = {**v2.QUALIFIER_CLASS, 94: "grading"}
+        if feature == "prev_action-unclassified":
+            classes = {q: c for q, c in v2.QUALIFIER_CLASS.items() if q != 94}
+        monkeypatch.setattr(v2, "QUALIFIER_CLASS", classes)
         if "prev_action" not in head.spec.features:  # an LR headline without it: add it
             head = dataclasses.replace(head, spec=dataclasses.replace(
                 head.spec, features=(*head.spec.features, "prev_action")))  # fmt: skip
     else:
         head = dataclasses.replace(head, spec=dataclasses.replace(
             head.spec, features=(*head.spec.features, feature)))  # fmt: skip
-    assert results(call_checks(fit, head=head))[3] == "missed"
+    row = call_checks(fit, head=head)[3]
+    assert row.result == "missed"
+    if feature == "prev_action-unclassified":
+        assert "unclassified" in row.measured, row.measured
