@@ -4,13 +4,13 @@
 - **Name / version:** `xgot-gbm` v4
 - **Task:** binary classification: P(goal | on-target shot) for the on-target shots of the non-penalty xG population (a goal or a keeper save; own goals are never on target)
 - **Status:** experimental
-- P2.4: gradient boosting on the xG input (monotone), placement, side and angle, tuned and Platt-calibrated inside each fit by grouped CV. This is the headline model: its CV log-loss gain over LR xG + placement is +0.0096 [+0.0077, +0.0115], a 95% interval that lies above 0; on the hold-out it is +0.0095 [+0.0036, +0.0156], an interval that lies above 0.
+- P2.4: gradient boosting on the xG input (monotone), placement, side and angle, tuned and Platt-calibrated inside each fit by grouped CV. This is the headline model: its CV log-loss gain over LR xG + placement is +0.0097 [+0.0078, +0.0116], a 95% interval that lies above 0; on the hold-out it is +0.0083 [+0.0022, +0.0142], an interval that lies above 0.
 
 ## Intended use
 xGOT (post-shot xG) for on-target shots: P(goal) of a shot that reached the goal frame, from where it crossed the line and its pre-shot xG. Keeper-neutral (no keeper position), so goals saved against it credit the keeper's positioning too. For research and as the input of the MS6 goalkeeper models; not a rating of finishers, and not for other providers' data without re-fitting.
 
 ## Data
-- **Source(s):** StatsBomb open data, revision `4b73468fc5b0f1950f9f66fada70ad3a4f9327cb`; snapshot `statsbomb-open-v1`, data digest `067ddf5342cfd608045a15189a0b43008664d23f4c5ac4fab5ac403468e57ee5`
+- **Source(s):** StatsBomb open data, revision `4b73468fc5b0f1950f9f66fada70ad3a4f9327cb`; snapshot `statsbomb-open-v1`, data digest `a10b7542f2dc13c3b1f46191c8af3e52b9b6f9281543cc7a436f9797b881209e`
 - **Competitions & seasons:** 70 competition-seasons; hold-out Premier League 2015/2016
 - **Rows:** train and validation (dev) 29,349 shots in 3,386 matches / test (hold-out) 3,134 shots in 380 matches; men 21,832 shots, women 10,651
 - **Families (segments):** women; team-selected, where one team plays in at least half of a competition-season's matches (56 competition-seasons, 30 of them with one or two matches, mostly single finals, where both teams qualify trivially); league or tournament, the rest
@@ -31,7 +31,7 @@ xGOT (post-shot xG) for on-target shots: P(goal) of a shot that reached the goal
 `is_goal` of an on-target shot: the ball went in rather than being saved. Blocked shots (clearances off the line included), woodwork and misses are not on target (C3 `on_target`), so they are not in the population.
 
 ## Features
-xG input: Monotone GBM + Platt without keeper position, cross-fitted; provider headline xG: Monotone GBM + Platt.
+xG input: Monotone GBM + Platt, trained without team-selected seasons without keeper position, cross-fitted; provider headline xG: Monotone GBM + Platt, trained without team-selected seasons.
 
 | Feature | Definition | Source field(s) |
 |---|---|---|
@@ -61,10 +61,10 @@ Settings of the fit on all of dev:
 |---|---|
 | max_leaf_nodes | 16 |
 | iterations | 150 |
-| Platt intercept | -0.0038 |
-| Platt slope | 0.9927 |
+| Platt intercept | -0.0044 |
+| Platt slope | 0.9911 |
 
-Calibration is close to identity (Platt slope 0.993, intercept -0.004): the boosted model is already calibrated and Platt is a safeguard.
+Calibration is close to identity (Platt slope 0.991, intercept -0.004): the boosted model is already calibrated and Platt is a safeguard.
 
 ## Validation design
 Grouped 5-fold cross-validation by `match_id` (`GroupKFold`, no shuffle), the folds of the xG run restricted to on-target shots: every shot keeps its fold, so no match has shots in two folds and every model uses the same folds. **Validation** is the mean over the out-of-fold test sets. **Train** is the fit on all on-target dev shots, scored in-sample. **Test** is the hold-out competition-season named under Data, scored once by that fit. The open-play xGOT reads the xG input cross-fitted on these folds: an on-target shot in test fold k reads the xG of the fit that never saw fold k, and a hold-out (test) shot the xG of the fit on all of dev (train), so no xGOT row sees an xG fitted on itself. The xGOT training rows of fold k read xG from fits that did see fold k: the standard cross-fitting dependence, accepted.
@@ -72,17 +72,17 @@ Grouped 5-fold cross-validation by `match_id` (`GroupKFold`, no shuffle), the fo
 ## Metrics
 | Metric | Train | Validation | Test |
 |---|---|---|---|
-| Log loss | 0.3941 | 0.4085 ± 0.0076 | 0.3997 |
-| Brier score | 0.1257 | 0.1307 ± 0.0035 | 0.1284 |
-| ROC AUC | 0.8773 | 0.8674 ± 0.0049 | 0.8708 |
-| Log-loss skill | 0.3550 | 0.3314 | 0.3378 |
-| Brier skill | 0.4017 | 0.3778 | 0.3781 |
-| Calibration intercept | -0.0001 | -0.0006 | 0.0375 |
-| Calibration slope | 1.0676 | 1.0098 | 1.0064 |
-| Σ xGOT | 8808.2182 | 8811.2301 | 898.0649 |
+| Log loss | 0.3944 | 0.4087 ± 0.0073 | 0.4030 |
+| Brier score | 0.1258 | 0.1308 ± 0.0033 | 0.1295 |
+| ROC AUC | 0.8771 | 0.8672 ± 0.0046 | 0.8685 |
+| Log-loss skill | 0.3545 | 0.3311 | 0.3323 |
+| Brier skill | 0.4011 | 0.3773 | 0.3730 |
+| Calibration intercept | -0.0006 | 0.0005 | 0.0458 |
+| Calibration slope | 1.0701 | 1.0112 | 0.9945 |
+| Σ xGOT | 8810.4000 | 8806.7534 | 894.7417 |
 | Goals | 8,808 | 8,808 | 913 |
-| abs(Σ xGOT − goals) / goals | 0.00% | 0.04% | 1.64% |
-| abs(Σ xGOT − goals) / goals, fold mean (max) | n/a | 2.42% (max 5.13%) | n/a |
+| abs(Σ xGOT − goals) / goals | 0.03% | 0.01% | 2.00% |
+| abs(Σ xGOT − goals) / goals, fold mean (max) | n/a | 2.38% (max 4.83%) | n/a |
 
 Skill is `1 − metric / base-rate metric` on the same shots and column.
 
@@ -92,7 +92,7 @@ Gain = log loss of the reference minus this model, pooled out of fold over all d
 
 | Comparison | CV gain [95% CI] | Hold-out gain [95% CI] |
 |---|---|---|
-| over LR xG + placement | +0.0096 [+0.0077, +0.0115] | +0.0095 [+0.0036, +0.0156] |
+| over LR xG + placement | +0.0097 [+0.0078, +0.0116] | +0.0083 [+0.0022, +0.0142] |
 
 ### Milestone checks (MS5, MS6)
 
@@ -100,18 +100,18 @@ Bounds from the PM brief (MS5) and the band rule from the PM brief (MS6); AUC >=
 
 | Target | Measured | Result |
 |---|---|---|
-| ROC AUC >= 0.80, CV fold mean | 0.8674 | met |
-| ROC AUC >= 0.80, hold-out | 0.8708 | met |
-| ECE < 0.02, CV fold mean | 0.0166 (max 0.0229, pooled 0.0057) | met |
-| ECE < 0.02, hold-out | 0.0148 (noise floor 0.0152) | met |
-| Calibration slope in [0.9, 1.1], CV fold mean | 1.0098 | met |
-| Calibration slope in [0.9, 1.1], hold-out | 1.0064 | met |
-| GBM headline iff its CV gain over LR xG + placement has a 95% interval above 0 | CV +0.0096 [+0.0077, +0.0115]; headline Monotone GBM + Platt | met |
+| ROC AUC >= 0.80, CV fold mean | 0.8672 | met |
+| ROC AUC >= 0.80, hold-out | 0.8685 | met |
+| ECE < 0.02, CV fold mean | 0.0155 (max 0.0194, pooled 0.0060) | met |
+| ECE < 0.02, hold-out | 0.0160 (noise floor 0.0153) | met |
+| Calibration slope in [0.9, 1.1], CV fold mean | 1.0112 | met |
+| Calibration slope in [0.9, 1.1], hold-out | 0.9945 | met |
+| GBM headline iff its CV gain over LR xG + placement has a 95% interval above 0 | CV +0.0097 [+0.0078, +0.0116]; headline Monotone GBM + Platt | met |
 | On-target shots scored reconcile with C3 (less PM-ruled exclusions) within 1% (two-sided) | 33,749 of 35,632 less 1,855 coarse-grid (PM E1) (-0.083%); unscored 0 | met |
 | On-target goals scored reconcile with C3 (less PM-ruled exclusions) within 1% (two-sided) | 10,730 of 11,328 less 580 coarse-grid (-0.167%) | met |
-| xG input Monotone GBM + Platt without keeper position: cross-fitted on the same folds, keeper-neutral, not an ablation (the run raises otherwise) | guards ran | met |
+| xG input Monotone GBM + Platt, trained without team-selected seasons without keeper position: cross-fitted on the same folds, keeper-neutral, not an ablation (the run raises otherwise) | guards ran | met |
 | No keeper-position feature in the headline xGOT (the xGOT guard raises otherwise) | xg_logit, mouth_y_abs, mouth_out, mouth_z, far_side, angle_rad | met |
-| Σ xGOT − goals within 2 SD (√Σp(1−p)) in every placement band of at least 100 shots, dev out of fold | [3, 3.3): −34.5 (SD 23.6); 6 of 7 bands judged | met |
+| Σ xGOT − goals within 2 SD (√Σp(1−p)) in every placement band of at least 100 shots, dev out of fold | [3, 3.3): −36.3 (SD 23.7); 6 of 7 bands judged | met |
 
 ### Reliability
 
@@ -119,16 +119,16 @@ Ten equal-count bins of the out-of-fold predictions.
 
 | Bin | Shots | Mean xGOT | Goal rate |
 |---|---|---|---|
-| 0 | 2,935 | 1.85% | 1.57% |
-| 1 | 2,935 | 3.41% | 3.41% |
-| 2 | 2,935 | 5.80% | 5.11% |
-| 3 | 2,935 | 9.65% | 10.77% |
-| 4 | 2,935 | 15.44% | 14.34% |
-| 5 | 2,935 | 23.80% | 23.75% |
-| 6 | 2,935 | 35.13% | 36.56% |
-| 7 | 2,935 | 50.73% | 50.49% |
-| 8 | 2,935 | 68.77% | 68.25% |
-| 9 | 2,934 | 85.66% | 85.89% |
+| 0 | 2,935 | 1.86% | 1.70% |
+| 1 | 2,935 | 3.43% | 3.27% |
+| 2 | 2,935 | 5.78% | 5.32% |
+| 3 | 2,935 | 9.65% | 9.98% |
+| 4 | 2,935 | 15.47% | 14.31% |
+| 5 | 2,935 | 23.89% | 24.97% |
+| 6 | 2,935 | 35.12% | 36.35% |
+| 7 | 2,935 | 50.67% | 50.12% |
+| 8 | 2,935 | 68.53% | 68.04% |
+| 9 | 2,934 | 85.68% | 86.06% |
 
 This table stands in for a reliability plot until a reliability chart is added to `viz` (F1).
 
@@ -138,14 +138,14 @@ Pooled out of fold. Log-loss skill is `1 − log loss / log loss of a constant a
 
 | Segment | Shots | Goals | Goal rate | Σ xGOT | Σ xGOT / goals | Log loss | Brier | Log-loss skill | Cal. slope (pooled OOF) |
 |---|---|---|---|---|---|---|---|---|---|
-| family = league or tournament | 12,031 | 3,499 | 29.08% | 3408.8586 | 0.9742 | 0.3947 | 0.1259 | 0.3454 | 1.0300 |
-| family = team-selected | 6,667 | 2,090 | 31.35% | 2114.0052 | 1.0115 | 0.4265 | 0.1372 | 0.3142 | 0.9828 |
-| gender = female | 10,651 | 3,219 | 30.22% | 3288.3664 | 1.0215 | 0.4128 | 0.1320 | 0.3263 | 1.0003 |
-| gender = male | 18,698 | 5,589 | 29.89% | 5522.8637 | 0.9882 | 0.4060 | 0.1299 | 0.3344 | 1.0113 |
-| body_part = right_foot | 15,585 | 4,511 | 28.94% | 4463.4704 | 0.9895 | 0.4006 | 0.1277 | 0.3342 | 0.9987 |
-| body_part = left_foot | 9,314 | 2,707 | 29.06% | 2663.7336 | 0.9840 | 0.4001 | 0.1278 | 0.3362 | 1.0232 |
-| body_part = head | 4,321 | 1,512 | 34.99% | 1600.0512 | 1.0582 | 0.4492 | 0.1454 | 0.3062 | 1.0449 |
-| body_part = other | 129 | 78 | 60.47% | 83.9749 | 1.0766 | 0.6080 | 0.2086 | 0.0940 | 0.6970 |
+| family = league or tournament | 12,031 | 3,499 | 29.08% | 3408.8287 | 0.9742 | 0.3945 | 0.1259 | 0.3456 | 1.0328 |
+| family = team-selected | 6,667 | 2,090 | 31.35% | 2111.3994 | 1.0102 | 0.4260 | 0.1371 | 0.3150 | 0.9856 |
+| gender = female | 10,651 | 3,219 | 30.22% | 3286.5252 | 1.0210 | 0.4138 | 0.1324 | 0.3246 | 0.9989 |
+| gender = male | 18,698 | 5,589 | 29.89% | 5520.2281 | 0.9877 | 0.4057 | 0.1299 | 0.3348 | 1.0142 |
+| body_part = right_foot | 15,585 | 4,511 | 28.94% | 4452.8830 | 0.9871 | 0.4002 | 0.1276 | 0.3349 | 1.0012 |
+| body_part = left_foot | 9,314 | 2,707 | 29.06% | 2646.7182 | 0.9777 | 0.4000 | 0.1278 | 0.3363 | 1.0276 |
+| body_part = head | 4,321 | 1,512 | 34.99% | 1624.0517 | 1.0741 | 0.4523 | 0.1466 | 0.3014 | 1.0448 |
+| body_part = other | 129 | 78 | 60.47% | 83.1005 | 1.0654 | 0.5966 | 0.2053 | 0.1110 | 0.7293 |
 
 ### Expected calibration error
 
@@ -153,7 +153,7 @@ ECE (10 equal-count bins): the shot-weighted mean of |mean prediction − goal r
 
 | CV fold mean | CV max | CV pooled | Hold-out | Hold-out floor |
 |---|---|---|---|---|
-| 0.0166 | 0.0229 | 0.0057 | 0.0148 | 0.0152 |
+| 0.0155 | 0.0194 | 0.0060 | 0.0160 | 0.0153 |
 
 ### Calibration by placement band
 
@@ -161,13 +161,13 @@ Dev out-of-fold xGOT by the ball's distance from the goal centre (`mouth_y_abs`,
 
 | abs(y) band (m) | Shots | Goals | Goal rate | Mean xGOT | Σ xGOT − goals | SD | Within 2 SD |
 |---|---|---|---|---|---|---|---|
-| [0, 1) | 8,079 | 1,212 | 0.1500 | 0.1519 | +15.2 | 27.1 | yes |
-| [1, 2) | 8,186 | 1,692 | 0.2067 | 0.2086 | +15.2 | 30.5 | yes |
-| [2, 3) | 8,969 | 3,429 | 0.3823 | 0.3823 | -0.5 | 37.9 | yes |
-| [3, 3.3) | 3,072 | 1,915 | 0.6234 | 0.6121 | -34.5 | 23.6 | yes |
-| [3.3, 3.55) | 866 | 505 | 0.5831 | 0.5855 | +2.0 | 12.6 | yes |
-| >= 3.55 | 147 | 52 | 0.3537 | 0.3435 | -1.5 | 5.2 | yes |
-| outside the frame + 0.15 m | 30 | 3 | 0.1000 | 0.3449 | +7.3 | 2.4 | not judged (n < 100) |
+| [0, 1) | 8,079 | 1,212 | 0.1500 | 0.1516 | +13.1 | 27.1 | yes |
+| [1, 2) | 8,186 | 1,692 | 0.2067 | 0.2085 | +15.1 | 30.5 | yes |
+| [2, 3) | 8,969 | 3,429 | 0.3823 | 0.3821 | -2.2 | 37.9 | yes |
+| [3, 3.3) | 3,072 | 1,915 | 0.6234 | 0.6116 | -36.3 | 23.7 | yes |
+| [3.3, 3.55) | 866 | 505 | 0.5831 | 0.5870 | +3.3 | 12.6 | yes |
+| >= 3.55 | 147 | 52 | 0.3537 | 0.3437 | -1.5 | 5.2 | yes |
+| outside the frame + 0.15 m | 30 | 3 | 0.1000 | 0.3431 | +7.3 | 2.3 | not judged (n < 100) |
 
 ### Calibration by placement band, hold-out
 
@@ -175,13 +175,13 @@ The same table on the 3,134 on-target shots of the hold-out (the fit on all of d
 
 | abs(y) band (m) | Shots | Goals | Goal rate | Mean xGOT | Σ xGOT − goals | SD | Within 2 SD |
 |---|---|---|---|---|---|---|---|
-| [0, 1) | 916 | 119 | 0.1299 | 0.1400 | +9.3 | 8.9 | yes |
-| [1, 2) | 867 | 158 | 0.1822 | 0.1869 | +4.0 | 9.5 | yes |
-| [2, 3) | 921 | 376 | 0.4083 | 0.3861 | -20.4 | 12.2 | yes |
-| [3, 3.3) | 310 | 190 | 0.6129 | 0.5882 | -7.7 | 7.6 | yes |
-| [3.3, 3.55) | 104 | 67 | 0.6442 | 0.6149 | -3.0 | 4.4 | yes |
-| >= 3.55 | 12 | 3 | 0.2500 | 0.3992 | +1.8 | 1.6 | not judged (n < 100) |
-| outside the frame + 0.15 m | 4 | 0 | 0.0000 | 0.2713 | +1.1 | 0.8 | not judged (n < 100) |
+| [0, 1) | 916 | 119 | 0.1299 | 0.1401 | +9.3 | 8.9 | yes |
+| [1, 2) | 867 | 158 | 0.1822 | 0.1870 | +4.1 | 9.5 | yes |
+| [2, 3) | 921 | 376 | 0.4083 | 0.3822 | -24.0 | 12.1 | yes |
+| [3, 3.3) | 310 | 190 | 0.6129 | 0.5892 | -7.3 | 7.5 | yes |
+| [3.3, 3.55) | 104 | 67 | 0.6442 | 0.6132 | -3.2 | 4.4 | yes |
+| >= 3.55 | 12 | 3 | 0.2500 | 0.4039 | +1.8 | 1.6 | not judged (n < 100) |
+| outside the frame + 0.15 m | 4 | 0 | 0.0000 | 0.2701 | +1.1 | 0.8 | not judged (n < 100) |
 
 ### Reconciliation with C3
 
@@ -202,12 +202,12 @@ Shooting goals added (SGA) is xGOT − xG per shot, next to goals − xG; both s
 
 | Min shots | Blocked shots | Players | SGA per shot: r [95% CI] | Goals − xG per shot: r [95% CI] |
 |---|---|---|---|---|
-| 20 | in | 1,368 | +0.034 [-0.019, +0.087] | -0.024 [-0.077, +0.029] |
-| 20 | left out | 1,001 | +0.041 [-0.021, +0.103] | -0.029 [-0.091, +0.033] |
-| 40 | in | 597 | +0.096 [+0.016, +0.175] | +0.053 [-0.027, +0.133] |
-| 40 | left out | 362 | +0.070 [-0.034, +0.171] | +0.008 [-0.096, +0.111] |
-| 80 | in | 153 | -0.001 [-0.159, +0.158] | +0.043 [-0.116, +0.201] |
-| 80 | left out | 71 | +0.016 [-0.218, +0.248] | -0.026 [-0.258, +0.208] |
+| 20 | in | 1,368 | +0.041 [-0.012, +0.094] | -0.024 [-0.077, +0.029] |
+| 20 | left out | 1,001 | +0.046 [-0.016, +0.107] | -0.028 [-0.089, +0.034] |
+| 40 | in | 597 | +0.103 [+0.023, +0.181] | +0.056 [-0.024, +0.136] |
+| 40 | left out | 362 | +0.066 [-0.037, +0.168] | +0.008 [-0.095, +0.111] |
+| 80 | in | 153 | +0.004 [-0.155, +0.163] | +0.056 [-0.103, +0.213] |
+| 80 | left out | 71 | +0.006 [-0.228, +0.239] | -0.021 [-0.253, +0.213] |
 
 ### Coarse-grid matches left out
 
@@ -232,16 +232,16 @@ Matches whose shot locations are all whole yards were recorded on the coarse (1 
 | Model | CV log loss | CV Brier | CV AUC | CV cal. slope | Hold-out log loss | Hold-out Brier | Hold-out AUC | Hold-out cal. slope |
 |---|---|---|---|---|---|---|---|---|
 | Base rate (on target) | 0.6110 | 0.2101 | 0.5000 | n/a | 0.6035 | 0.2065 | 0.5000 | n/a |
-| LR xG only | 0.5164 | 0.1712 | 0.7618 | 1.0014 | 0.5185 | 0.1720 | 0.7512 | 0.9630 |
-| LR xG + placement, no near / far | 0.4286 | 0.1378 | 0.8547 | 1.0003 | 0.4167 | 0.1341 | 0.8604 | 1.0237 |
-| LR xG + placement | 0.4181 | 0.1339 | 0.8620 | 1.0000 | 0.4092 | 0.1312 | 0.8652 | 0.9984 |
-| Monotone GBM + Platt | 0.4085 | 0.1307 | 0.8674 | 1.0098 | 0.3997 | 0.1284 | 0.8708 | 1.0064 |
+| LR xG only | 0.5168 | 0.1713 | 0.7611 | 1.0010 | 0.5201 | 0.1726 | 0.7493 | 0.9490 |
+| LR xG + placement, no near / far | 0.4290 | 0.1380 | 0.8544 | 1.0002 | 0.4187 | 0.1347 | 0.8588 | 1.0128 |
+| LR xG + placement | 0.4185 | 0.1341 | 0.8616 | 0.9999 | 0.4113 | 0.1318 | 0.8637 | 0.9883 |
+| Monotone GBM + Platt | 0.4087 | 0.1308 | 0.8672 | 1.0112 | 0.4030 | 0.1295 | 0.8685 | 0.9945 |
 
 ## Limitations & known biases
 - 34 of 32,483 on-target shots (hold-out included) are recorded beyond the frame + 0.15 m and are clipped to its edge and flagged by `mouth_out`, since where they would have crossed the line is not known; 1,381 are struck within 0.5 m of the centre line, so they have no near or far post.
 - `provider_psxg` is null on 32,483 of 32,483 on-target shots, so there is no provider xGOT benchmark.
 - StatsBomb records a save where the keeper stopped the ball: its `goal_z` is that height, not the height at the goal line, and a save stopped short of the line has its `goal_y` projected along the line from the shot location and snapped to the 0.1 yd goal-mouth lattice of recorded points (797 of the on-target saves were deflected, so their projection starts at the shot, not at the deflection).
-- On the hold-out, Σ xGOT is 898.1 against 913 goals (-1.64%; calibration intercept 0.0375). A level gap moves every keeper's goals saved against this xGOT the same way, so a season's keepers read better or worse as a group.
+- On the hold-out, Σ xGOT is 894.7 against 913 goals (-2.00%; calibration intercept 0.0458). A level gap moves every keeper's goals saved against this xGOT the same way, so a season's keepers read better or worse as a group.
 
 ## Data licensing
 Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Never committed or redistributed; this card holds aggregates only.

@@ -65,6 +65,7 @@ nav:
       - "Monotone GBM + Platt": models/xg-gbm.md
       - "Penalty conversion (Beta-binomial)": models/xg-penalty.md
       - "xG v1 (WhoScored / Opta events)": models/xg-v1.md
+      - "xG v2, pre-shot context (WhoScored / Opta)": models/xg-v2.md
       - "xGOT LR (StatsBomb)": models/xgot-lr.md
       - "xGOT monotone GBM (StatsBomb)": models/xgot-gbm.md
       - "Penalty xGOT (StatsBomb)": models/xgot-penalty.md
@@ -85,13 +86,17 @@ nav:
       - baselines: api/baselines.md
       - ablation: api/ablation.md
       - models: api/models.md
+      - level: api/level.md
       - gbm: api/gbm.md
       - penalties: api/penalties.md
       - cache: api/cache.md
       - legacy: api/legacy.md
       - v1: api/v1.md
       - release: api/release.md
+      - v2: api/v2.md
+      - v2_cards: api/v2_cards.md
       - xgot: api/xgot.md
       - xgot_cards: api/xgot_cards.md
+      - season_out: api/season_out.md
       - gsax: api/gsax.md
       - gsax_cards: api/gsax_cards.md

@@ -70,6 +70,7 @@ N_BOOT: Final[int] = 2000
 SEED: Final[int] = 0
 ECE_BINS: Final[int] = 10
 GAIN_LEVEL: Final[float] = 0.95  # the level of bootstrap_gain's percentile interval
+MIN_JUDGED_SHOTS: Final = 100  # PM (MS6): the normal-approximation minimum of a judged group
 _LOGIT_EPS: Final[float] = float(np.log(EPS) - np.log1p(-EPS))
 
 

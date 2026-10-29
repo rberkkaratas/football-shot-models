@@ -53,7 +53,7 @@ from sklearn.metrics import log_loss
 from sklearn.model_selection import GroupKFold
 from sklearn.pipeline import Pipeline
 
-from football_shot_models import features
+from football_shot_models import data, features
 from football_shot_models.cache import PredictionCache, Predictions, column_digest
 from football_shot_models.cache import identity as cache_identity
 from football_shot_models.features import DerivedFeature, Guard, design_matrix
@@ -151,6 +151,29 @@ class ModelSpec:
     xg_input : str, optional
         The name of the xG spec whose cross-fitted predictions fill ``xg_logit``; required
         when ``xg_logit`` is a feature, and part of the cache identity.
+    train_exclude : tuple of str, default ()
+        ``data.FAMILIES`` levels whose rows leave every training set (fold fits, the fit on
+        all of dev, every refit); predictions still cover every row.
+    train_indicator : tuple of str, default ()
+        ``data.FAMILIES`` levels that get a 0/1 design column ``train_<level>`` when fitting
+        and 0 at prediction, so a prediction never reads the row's family (a fit-time
+        nuisance term).
+
+    Raises
+    ------
+    TypeError
+        ``train_exclude`` or ``train_indicator`` is a bare str.
+    ValueError
+        A level outside ``data.FAMILIES``, a repeated level, or a level in both fields.
+
+    Examples
+    --------
+    >>> ModelSpec("m", "M", (), BaseRate, train_exclude=("team-selected",)).train_exclude
+    ('team-selected',)
+    >>> ModelSpec("m", "M", (), BaseRate, train_indicator=("club",))  # doctest: +ELLIPSIS
+    Traceback (most recent call last):
+    ...
+    ValueError: m: train_indicator level 'club' is not a family; allowed: ...
     """
 
     name: str
@@ -161,6 +184,31 @@ class ModelSpec:
     guard: Guard | None = None
     derived: Mapping[str, DerivedFeature] | None = None
     xg_input: str | None = None
+    train_exclude: tuple[str, ...] = ()
+    train_indicator: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for field in ("train_exclude", "train_indicator"):
+            levels = getattr(self, field)
+            if isinstance(levels, str):
+                raise TypeError(f"{self.name}: {field} must be a tuple of family levels, not a str")
+            allowed = ", ".join(repr(f) for f in data.FAMILIES)
+            for level in levels:
+                if level not in data.FAMILIES:
+                    raise ValueError(
+                        f"{self.name}: {field} level {level!r} is not a family; allowed: {allowed}"
+                    )
+            if len(set(levels)) != len(levels):
+                raise ValueError(f"{self.name}: {field} repeats a level: {tuple(levels)}")
+        if both := sorted(set(self.train_exclude) & set(self.train_indicator)):
+            raise ValueError(
+                f"{self.name}: level(s) {both} in both train_exclude and train_indicator"
+            )
+
+    @property
+    def trains_by_family(self) -> bool:
+        """Whether the training rows depend on ``family`` (either field is set)."""
+        return bool(self.train_exclude or self.train_indicator)
 
 
 @dataclass(frozen=True)
@@ -239,19 +287,48 @@ def _registry(spec: ModelSpec) -> Mapping[str, DerivedFeature]:
     return features.DERIVED if spec.derived is None else spec.derived
 
 
+def _indicator_name(level: str) -> str:
+    return "train_" + level.replace("-", "_").replace(" ", "_")
+
+
 def _design(
-    spec: ModelSpec, shots: pl.DataFrame, freeze_frames: pl.DataFrame | None
+    spec: ModelSpec, shots: pl.DataFrame, freeze_frames: pl.DataFrame | None, *, fitting: bool
 ) -> tuple[FloatArray, tuple[str, ...]]:
-    return design_matrix(
+    x, names = design_matrix(
         shots, spec.features, derived=_registry(spec), freeze_frames=freeze_frames,
         guard=spec.guard,
     )  # fmt: skip
+    if not spec.train_indicator:
+        return x, names
+    # the held rows' family is never read: every indicator is 0 at prediction
+    cols = [
+        (shots["family"].cast(pl.String) == level).cast(pl.Float64).to_numpy()
+        if fitting
+        else np.zeros(shots.height)
+        for level in spec.train_indicator
+    ]
+    out: FloatArray = np.column_stack([x, *cols]) if cols else x
+    return out, (*names, *(_indicator_name(level) for level in spec.train_indicator))
+
+
+def _family_rows(spec: ModelSpec, train: pl.DataFrame) -> pl.DataFrame:
+    """The training rows of ``spec``: ``train`` without its ``train_exclude`` families."""
+    if not spec.trains_by_family:
+        return train
+    if "family" not in train.columns:
+        raise ValueError(f"{spec.name}: train_exclude / train_indicator need a family column")
+    if nulls := train["family"].null_count():
+        raise ValueError(f"{spec.name}: family has {nulls} null value(s) in the training rows")
+    if not spec.train_exclude:
+        return train
+    return train.filter(~pl.col("family").cast(pl.String).is_in(list(spec.train_exclude)))
 
 
 def _fit(spec: ModelSpec, train: pl.DataFrame, freeze_frames: pl.DataFrame | None) -> Estimator:
+    train = _family_rows(spec, train)
     if train.height == 0:
         raise ValueError(f"{spec.name}: empty training set")
-    x, names = _design(spec, train, freeze_frames)
+    x, names = _design(spec, train, freeze_frames, fitting=True)
     model = spec.make()
     if isinstance(model, DesignFit) and (nulls := train["match_id"].null_count()):
         raise ValueError(f"{spec.name}: match_id has {nulls} null value(s) in the training rows")
@@ -283,7 +360,7 @@ def _fit(spec: ModelSpec, train: pl.DataFrame, freeze_frames: pl.DataFrame | Non
 def _predict(
     model: Estimator, spec: ModelSpec, shots: pl.DataFrame, freeze_frames: pl.DataFrame | None
 ) -> FloatArray:
-    x, _ = _design(spec, shots, freeze_frames)
+    x, _ = _design(spec, shots, freeze_frames, fitting=False)
     p: FloatArray = np.ascontiguousarray(model.predict_proba(x)[:, 1], dtype=np.float64)
     return p
 
@@ -499,6 +576,32 @@ def _evaluation(
     )
 
 
+def _inputs(spec: ModelSpec, dev: pl.DataFrame, held: pl.DataFrame) -> str:
+    """The cache identity's inputs text; with both family fields empty, the text before them."""
+    parts = []
+    if features.XG_INPUT in spec.features:
+        parts.append(f"{spec.xg_input} {column_digest(dev, held, features.XG_INPUT)}")
+    for field, levels in (
+        ("train_exclude", spec.train_exclude),
+        ("train_indicator", spec.train_indicator),
+    ):
+        if levels:
+            parts.append(f"{field}=" + ",".join(levels))
+    if spec.trains_by_family:
+        # the training rows' families only (the held rows' family is never read); as codes in
+        # data.FAMILIES order, so an Enum and a String column hash alike
+        if "family" not in dev.columns:
+            raise ValueError(f"{spec.name}: train_exclude / train_indicator need a family column")
+        codes = dev.select(
+            pl.col("family").cast(pl.String).replace_strict(
+                list(data.FAMILIES), [float(i) for i in range(len(data.FAMILIES))], default=None,
+                return_dtype=pl.Float64,
+            )
+        )  # fmt: skip
+        parts.append("family=" + column_digest(codes, codes.head(0), "family"))
+    return "|".join(parts)
+
+
 def _cached(
     spec: ModelSpec,
     dev: pl.DataFrame,
@@ -511,11 +614,9 @@ def _cached(
     for side, frame in (("dev", dev), ("held", held)):
         if "shot_id" not in frame.columns:
             raise ValueError(f"{spec.name}: the prediction cache needs shot_id in {side}")
-    reads_xg = features.XG_INPUT in spec.features
-    inputs = f"{spec.xg_input} {column_digest(dev, held, features.XG_INPUT)}" if reads_xg else ""
     key = cache_identity(
         spec.name, spec.features, spec.make().get_params(), dev["shot_id"], held["shot_id"],
-        inputs=inputs,
+        inputs=_inputs(spec, dev, held),
     )  # fmt: skip
     hit = cache.load(spec.name, key, folds)
     if hit is None:
@@ -570,7 +671,7 @@ def evaluate(
     model = _fit(spec, dev, ff)
     coefficients: Coefficients = ()
     if spec.coefficients is not None:
-        _, names = _design(spec, dev.head(0), ff)
+        _, names = _design(spec, dev.head(0), ff, fitting=False)
         coefficients = spec.coefficients(model, names)
     p_train, p_held = _predict(model, spec, dev, ff), _predict(model, spec, held, ff)
     ev = _evaluation(spec, dev, held, fold_p, folds, p_train, p_held, coefficients)

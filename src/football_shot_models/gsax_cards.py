@@ -37,7 +37,7 @@ from football_core.io import snapshot, statsbomb
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 
-from football_shot_models import gsax, metrics, xgot, xgot_cards
+from football_shot_models import gsax, metrics, season_out, xgot, xgot_cards
 from football_shot_models.cards import fmt, signed
 from football_shot_models.gsax import (
     CI_LEVEL,
@@ -63,7 +63,13 @@ CHART_PATH: StrPath = CHART_FILE  # where run_from writes it, read when called (
 # the open-data cache holding the lineups; this repo's own by default (core's loader default),
 # so src assumes no sibling checkout: the Makefile passes football-core's (STATSBOMB_RAW)
 STATSBOMB_RAW: Final[str] = statsbomb.DEFAULT_CACHE
-CHANGELOG: Final[str] = "v1 (MS6, P3.1-P3.3): first version."
+VERSION: Final[str] = "v2"
+CHANGELOG: Final[tuple[str, ...]] = (
+    "v1 (MS6, P3.1-P3.3): first version.",
+    "v2 (PR1): WhoScored season-out from competition-season folds; one penalty δ per season-out "
+    "source; team-selected competition-seasons at δ = 0 (flagged); goal_z sensitivity "
+    "(StatsBomb).",
+)
 SALT: Final[str] = "gsax-keepers"  # svg.hashsalt: the SVG's element ids, so its bytes repeat
 FLAG: Final[str] = "†"  # marks a team-selected keeper-season in the table and the chart
 
@@ -123,11 +129,12 @@ def next_season_sentence(ns: NextSeason, no_team: NextSeason | None = None) -> s
         if ns.gain.low > 0
         else "Shrunken estimates do not predict next season better than raw GSAx"
     )
-    second = (
-        f"and improve log loss by {ns.gain_none.gain:.5f} over xGOT alone"
-        if ns.gain_none.low > 0
-        else "and predict next season no better than xGOT alone (the league average)"
-    )
+    if ns.gain_none.low > 0:
+        second = f"and improve log loss by {ns.gain_none.gain:.5f} over xGOT alone"
+    elif ns.gain_none.high >= 0:
+        second = "and are not distinguishable from xGOT alone (the league average)"
+    else:
+        second = "and predict next season worse than xGOT alone (the league average)"
     out = f"{first}, {second}."
     if no_team is None:
         return out
@@ -182,30 +189,51 @@ def _source_rows(g: GsaxFit) -> list[str]:
 
 
 def _rating_lines(g: GsaxFit) -> list[str]:
-    groups = g.rated.group_by(*SEASON_KEY, "kind").agg(
-        delta=pl.col("delta").first(), small=pl.col("small").any(), shots=pl.len()
-    )
-    lines = []
-    for kind in gsax.RATED_KINDS:
-        k = groups.filter((pl.col("kind").cast(pl.String) == kind) & ~pl.col("small"))
-        fin = k.filter(pl.col("delta").is_finite())["delta"].to_numpy()
-        deg = k.filter(pl.col("delta").is_infinite())
-        rng = (f"from {fin.min():+.2f} to {fin.max():+.2f} (median {float(np.median(fin)):+.2f})"
-               if fin.size else "none finite")  # fmt: skip
-        n = k["shots"].to_numpy()
-        per = f"min {n.min():,}, median {float(np.median(n)):,.1f}" if n.size else "none"
-        lines.append(
-            f"- {kind.replace('_', ' ')}: δ {rng} over {fin.size:,} competition-seasons; "
-            f"{deg.height:,} with every shot scored or none ({int(deg['shots'].sum()):,} shots), "
-            f"where every keeper gets 0 and δ is infinite; shots per δ: {per}"
+    """One line per kind from ``gsax.rating_groups``: the fitted δ and the groups at δ = 0."""
+    groups = gsax.rating_groups(g.rated)
+    fitted = groups.filter(~gsax.AT_ZERO)
+    zero = groups.filter(gsax.AT_ZERO)
+    op = fitted.filter(pl.col("kind") == "open_play")
+    fin = op.filter(pl.col("delta").is_finite())["delta"].to_numpy()
+    deg = op.filter(pl.col("delta").is_infinite())
+    rng = (f"from {fin.min():+.2f} to {fin.max():+.2f} (median {float(np.median(fin)):+.2f})"
+           if fin.size else "none finite")  # fmt: skip
+    n = op["rows"].to_numpy()
+    per = f"min {n.min():,}, median {float(np.median(n)):,.1f}" if n.size else "none"
+    lines = [
+        f"- open play: δ {rng} over {fin.size:,} competition-seasons; {deg.height:,} with every "
+        f"shot scored or none ({int(deg['rows'].sum()):,} shots), where every keeper gets 0 and "
+        f"δ is infinite; shots per δ: {per}; "
+        f"{zero.filter(pl.col('kind') == 'open_play').height:,} competition-seasons at δ = 0",
+    ]
+    pens = g.rated.filter(pl.col("kind").cast(pl.String) == "penalty")
+    for r in fitted.filter(pl.col("kind") == "penalty").iter_rows(named=True):
+        fam = (
+            pens.filter(pl.col("group") == r["group"])
+            .group_by(f=pl.col("family").cast(pl.String))
+            .len()
+            .sort("f")
         )
+        mix = ", ".join(f"{k} {v:,}" for k, v in fam.iter_rows())
+        lines.append(
+            f"- penalty, δ per source: {r['group']} {_num(r['delta'])} on {r['rows']:,} kicks "
+            f"({r['keepers']:,} keepers; {mix})"
+        )
+    pz = zero.filter(pl.col("kind") == "penalty")
+    lines.append(
+        f"- penalty at δ = 0: {int(pz.filter(~pl.col('pool_small'))['rows'].sum()):,} kicks of "
+        f"competition-seasons at δ = 0; {pz.filter(pl.col('pool_small')).height:,} source "
+        f"pool(s) failing E2's minimum ({int(pz.filter(pl.col('pool_small'))['rows'].sum()):,} "
+        "kicks)"
+    )
     return lines
 
 
 def _band_lines(g: GsaxFit) -> list[str]:
-    """The rated q by placement band (``gsax.placement_bands``), its failing judged bands and,
-    with a swapped fit, what it was trained on; the keeper-level effect of the season-out
-    refit against the match out-of-fold xGOT."""
+    """The rated q by placement band (``gsax.placement_bands``) and its failing judged bands,
+    each with its counts, gap, SD and z and whether it is in ``gsax.ESCALATED_BANDS`` (PM PR1
+    E1 (a)); the keeper-level effect of the season-out refit against the match out-of-fold
+    xGOT."""
     t, least = gsax.placement_bands(g), xgot.MIN_BAND_SHOTS
     rows = [
         f"| {r['feature']} | {r['band']} | {r['source']} | {r['shots']:,} | {r['goals']:,} | "
@@ -215,11 +243,15 @@ def _band_lines(g: GsaxFit) -> list[str]:
         for r in t.iter_rows(named=True)
     ]
     bad = t.filter(pl.col("judged") & ~pl.col("within"))
+    pinned = gsax.ESCALATED_BANDS.get(g.xgot.provider, frozenset())
     listed = "; ".join(
-        f"{r['feature']} {r['band']} ({r['source']}): {r['shots']:,} shots, Σ q − goals "
-        f"{signed(r['gap'])} (SD {r['sd']:.1f}; match out of fold {signed(r['gap_oof'])})"
+        f"{r['feature']} {r['band']} ({r['source']}): {r['shots']:,} shots, {r['goals']:,} "
+        f"goals, Σ q − goals {signed(r['gap'])} (SD {r['sd']:.1f}, z {r['gap'] / r['sd']:+.2f}; "
+        f"match out of fold {signed(r['gap_oof'])}), "
+        + ("escalated to the PM" if (r["feature"], r["band"], r["source"]) in pinned
+           else "not escalated")
         for r in bad.iter_rows(named=True)
-    )
+    )  # fmt: skip
     lines = [
         "### Calibration of the rated q by placement band",
         "",
@@ -238,16 +270,6 @@ def _band_lines(g: GsaxFit) -> list[str]:
                                    "not a misprice of shape, so a keeper whose shots lean to "
                                    "these bands is charged or credited for it." if listed else "."),
     ]  # fmt: skip
-    src = g.rated["source"].cast(pl.String)
-    if (swap := int((src == "swapped_fit").sum())) > 0:
-        held = int((src == "holdout_fit").sum())
-        lines += [
-            "",
-            f"Swapped fit: the `swapped_fit` rows ({swap:,}, {swap / g.rated.height:.0%} of the "
-            f"rated rows) are rated from an xGOT fitted on the test season's {held:,} rated rows "
-            "(`holdout_fit`) alone; a larger training set waits for the full test season or the "
-            "polish round's rolling fit (PM E4).",
-        ]
     oof = gsax.keeper_table(gsax.variant(gsax.oof_rated(g), WITHOUT)).select(
         *KEEPER_SEASON, oof=pl.col("gsax")
     )
@@ -265,31 +287,80 @@ def _band_lines(g: GsaxFit) -> list[str]:
     return [*lines, ""]
 
 
+def _abs(v: float | None) -> str:
+    return "n/a" if v is None else f"{v:.2f}"
+
+
+def _line_lines(g: GsaxFit) -> list[str]:
+    """The goal_z sensitivities (``gsax.line_summary``, ``gsax.shift_summary`` of
+    ``gsax_noz``): summaries only, no per-keeper column; none without them (WhoScored)."""
+    line, noz = gsax.line_summary(g), gsax.shift_summary(g, "gsax_noz")
+    if line is None:
+        return []
+    kept = line.saves - line.far
+    share = f"{line.far / line.saves:.1%}" if line.saves else "n/a"
+    out = [
+        "### goal_z sensitivity",
+        "",
+        "A projected save's `goal_z` is where the keeper met the ball, not its height at the "
+        f"line. Re-rated on the goals and the saves stopped within {gsax.LINE_YD:g} yd of the "
+        f"line (`end_x` >= {gsax.LINE_X:.4f} m; δ and E2's minimum re-fitted on that subset): "
+        f"{kept:,} of {line.saves:,} open-play saves are kept and {line.far:,} ({share}) left "
+        f"out; only saves are left out, every goal stays. Over the {line.keeper_seasons:,} "
+        f"keeper-seasons with >= {gsax.TABLE_MIN_SHOTS} shots in competition-seasons with a δ "
+        f"fitted on that subset, GSAx moves by a median of "
+        f"{_abs(line.median_abs)} goals (90th percentile {_abs(line.p90_abs)}, max "
+        f"{_abs(line.max_abs)}; their mean SD {_abs(line.mean_sd)}); Spearman with the headline "
+        f"{_num(line.rank_r)}. The shift tracks the share of saves stopped off the line "
+        f"(Spearman {_num(line.far_share_r)} with each keeper-season's far saves per shot). "
+        "Open play only; a sensitivity beside the headline, not a rating.",
+        "",
+        f"Left out of both summaries: {line.at_zero:,} keeper-seasons with >= "
+        f"{gsax.TABLE_MIN_SHOTS} shots in competition-seasons at δ = 0 on the subset "
+        f"(team-selected, or E2-small there; median |shift| {_abs(line.at_zero_median_abs)}). "
+        "A δ = 0 season cannot re-level a subset selected on the outcome, so their shift is "
+        "that selection, not `goal_z`.",
+        "",
+    ]
+    if noz is not None:
+        out += [
+            f"Without `{'`, `'.join(gsax.NOZ_FEATURES)}`: the headline xGOT refitted season-out "
+            "without it (no selection on the outcome; open play only, the penalty xGOT reads it "
+            f"too) moves the same {noz.keeper_seasons:,} keeper-seasons by a median of "
+            f"{_abs(noz.median_abs)} goals (90th percentile {_abs(noz.p90_abs)}, max "
+            f"{_abs(noz.max_abs)}; their mean SD {_abs(noz.mean_sd)}); Spearman with the "
+            f"headline {_num(noz.rank_r)}, and its shift with the far-save share "
+            f"{_num(noz.far_share_r)}. A sensitivity, not the headline.",
+            "",
+        ]
+    return out
+
+
 def _team_lines(g: GsaxFit) -> list[str]:
-    """The team-selected limitation (``gsax.team_selected_split``); none without such rows."""
-    split = gsax.team_selected_split(g.keepers[WITHOUT])
+    """The team-selected competition-seasons with a fitted δ before PR1 (team-selected, not
+    E2-small) by side (``gsax.team_selected_split``), counts only; none without such rows."""
+    groups = gsax.rating_groups(gsax.variant(g.rated, WITHOUT))
+    seasons = groups.filter(pl.col("zero_family") & ~pl.col("small"))
+    keys = (
+        gsax.variant(g.rated, WITHOUT)
+        .filter(pl.col("group").is_in(seasons["group"].implode()))
+        .select(SEASON_KEY)
+        .unique()
+    )
+    split = gsax.team_selected_split(g.keepers[WITHOUT].join(keys, on=SEASON_KEY, how="semi"))
     if split.height == 0:
         return []
-    rows = gsax.keeper_rows(g)
-    flagged = rows.filter(pl.col("family").cast(pl.String) == TEAM_SELECTED).height
     sides = "; ".join(
-        f"{r['side']}: {r['keeper_seasons']:,} keeper-seasons, {r['shots']:,} shots, GSAx raw "
-        f"{signed(r['gsax_raw'])}, rated {signed(r['gsax'])} (SD {r['sd']:.1f})"
+        f"{r['side']}: {r['keeper_seasons']:,} keeper-seasons, {r['shots']:,} shots, GSAx "
+        f"{signed(r['gsax'])} (SD {r['sd']:.1f})"
         for r in split.iter_rows(named=True)
     )
-    sel = int(split.filter(pl.col("side") == "selected side")["shots"].sum())
-    share = sel / int(split["shots"].sum())
     return [
-        f"Limitation ({FLAG} {TEAM_SELECTED}): {flagged:,} of the {rows.height:,} keeper-seasons "
-        f"with >= {gsax.TABLE_MIN_SHOTS} shots are in team-selected competition-seasons, marked "
-        f"{FLAG} where named. One δ per competition-season rates the selected side's keeper and "
-        "its opponents' keepers against one league sum, and xGOT has no finisher term: the "
-        "opponents' keepers are charged or credited for the selected side's finishing, and the "
-        f"selected side's keepers face {share:.0%} of the team-selected rated shots, so δ "
-        "absorbs part of their own record (the reason for PM E2 (b)). Team-selected "
-        f"keeper-seasons by side (the selected side's keeper faces at least "
-        f"{gsax.SELECTED_SIDE} shots), raw (before δ) and rated: {sides}. A team- or "
-        "shooter-strength term is a polish-round item.",
+        f"Team-selected competition-seasons ({FLAG}) not E2-small: {seasons.height:,}, at δ = 0 "
+        f"(PM 2026-10-28). By side (the selected side's keeper faces at least "
+        f"{gsax.SELECTED_SIDE} shots that season): {sides}; the seasons' Σ (q − goal) "
+        f"{signed(float(seasons['gap'].sum()))}. δ = 0 removes the league-sum coupling, not the "
+        "gap between the sides.",
         "",
     ]
 
@@ -313,7 +384,7 @@ def _overview(g: GsaxFit, name: str, task: str) -> list[str]:
     f = g.xgot
     m = f.xg.manifest
     return [
-        f"- **Name / version:** `{name}` v1",
+        f"- **Name / version:** `{name}` {VERSION}",
         f"- **Task:** {task}",
         "- **Status:** experimental",
         f"- **Source(s):** {f.setup.text.source}; snapshot `{m.name}`, data digest "
@@ -332,6 +403,12 @@ def _population(g: GsaxFit) -> list[str]:
     lg = g.leagues[WITHOUT]
     small = lg.filter(pl.col("small"))
     small_ks = g.keepers[WITHOUT].join(small.select(SEASON_KEY), on=SEASON_KEY, how="semi")
+    team = (
+        open_.group_by(SEASON_KEY)
+        .agg(pl.col("small", "zero_family").first())
+        .filter(pl.col("zero_family"))
+    )
+    team_ks = g.keepers[WITHOUT].join(team.select(SEASON_KEY), on=SEASON_KEY, how="semi")
     pens = g.rated.filter(pl.col("kind").cast(pl.String) == "penalty")
     lines = [
         f"- **Rated rows:** {open_.height:,} on-target open-play shots "
@@ -351,6 +428,12 @@ def _population(g: GsaxFit) -> list[str]:
         f"{lg.filter(pl.col('keepers') <= 2).height:,} competition-seasons have at most 2 "
         "keepers.",
     ]  # fmt: skip
+    if team.height:
+        lines.append(
+            f"- **Team-selected competition-seasons:** {team.height:,} rated at δ = 0 and flagged "
+            f"(PM 2026-10-28), {team.filter(pl.col('small')).height:,} also E2-small, with "
+            f"{team_ks.height:,} keeper-seasons."
+        )
     if recon["coarse_grid"][0]:
         lines.append(
             f"- **Coarse-grid matches:** {recon['coarse_grid'][0]:,} on-target shots of matches "
@@ -458,7 +541,7 @@ def _gsax_card(g: GsaxFit, names: pl.DataFrame | None, name: str, chart_sha256: 
         "",
         "## Overview",
         *_overview(g, name, "a keeper's record of on-target shots faced: Σ q − goals, q the "
-                   "xGOT rated against its competition-season (P3.1)"),
+                   "xGOT rated against the league sum (P3.1)"),
         "## Intended use",
         "A record of shots faced, rated against the league, not a skill rating: GSAx says how "
         "many fewer goals a keeper conceded than a league-average keeper facing the same "
@@ -472,18 +555,23 @@ def _gsax_card(g: GsaxFit, names: pl.DataFrame | None, name: str, chart_sha256: 
         "## Method",
         "",
         "Every row's xGOT comes from fits (xG input and xGOT) that never saw its season "
-        f"(`xgot.season_out`, source `{xgot.SEASON_OUT[f.provider]}`); the match out-of-fold "
-        "xGOT of the xGOT card is beside it on the same rows.",
+        f"(`season_out.season_out`, source `{season_out.SEASON_OUT[f.provider]}`: folds grouped "
+        "by competition-season, the test season from the refit's dev fit, `holdout_fit`); the "
+        "match out-of-fold xGOT of the xGOT card is beside it on the same rows.",
         "",
         *_source_rows(g),
-        "Rating against the season's league sum: one logit shift δ per competition-season and "
-        "kind makes Σ q = goals, q = expit(logit xGOT + δ), so the xGOT level gap of a season is "
-        "not charged to its keepers (PM after MS5). Penalties have their own δ, so GSAx with "
-        "penalties minus without is exactly the keeper's penalty GSAx.",
+        "Rating against the league sum: one logit shift δ per rating group makes Σ q = goals, "
+        "q = expit(logit xGOT + δ), so the xGOT level gap is not charged to keepers (PM after "
+        "MS5). Open play has one δ per competition-season, penalties one δ per season-out source "
+        f"(PM 2026-10-28 (a)); a group with at most {_small_text()} is at δ = 0 (E2's "
+        "minimum, every grouping), and so are team-selected competition-seasons. "
+        "Each row is rated once, so GSAx with penalties minus without is exactly the keeper's "
+        "penalty GSAx.",
         "",
         *_rating_lines(g),
         "",
         *_band_lines(g),
+        *_line_lines(g),
         "## Checks",
         "",
         *_checks(g.checks),
@@ -507,13 +595,13 @@ def _gsax_card(g: GsaxFit, names: pl.DataFrame | None, name: str, chart_sha256: 
         "- `GSAx raw`: Σ xGOT − goals, before the league rating; `GSAx`: Σ q − goals.",
         f"- `SD`: the null SD √Σ q(1 − q); `{CI_LEVEL:.0%} CI`: the match bootstrap above.",
         "- `family`: women; team-selected (one team in at least half of a competition-season's "
-        "matches); league or tournament.",
+        "matches; rated at δ = 0); league or tournament.",
         "",
         "## Data licensing",
         text.licensing,
         "",
         "## Changelog",
-        f"- {CHANGELOG}",
+        *(f"- {entry}" for entry in CHANGELOG),
         "",
     ]  # fmt: skip
     return "\n".join(lines)
@@ -548,7 +636,20 @@ def _model_card(g: GsaxFit, name: str) -> str:
         for label, ns in rows
         if ns.loo_missing
     ]
-    loo = [*loo, ""] if loo else []
+    loo += [
+        f"Leave-out δ per test season, E2's minimum (at most {_small_text()}: δ = 0) applied "
+        "to the unpaired keepers: "
+        + "; ".join(f"*{label}* {ns.loo_missing:,} left out, {ns.loo_small:,} at δ = 0"
+                    for label, ns in rows) + ".",
+        "",
+    ]  # fmt: skip
+    nt = g.model_no_team
+    no_team = (
+        []
+        if nt is None
+        else [f"| keeper-season without {TEAM_SELECTED} competition-seasons | {nt.tau:.4f} | "
+              f"{'yes' if nt.at_bound else 'no'} | {nt.per_100:.2f} |"]
+    )  # fmt: skip
     lines = [
         "# Model card: Hierarchical keeper model",
         "",
@@ -573,6 +674,7 @@ def _model_card(g: GsaxFit, name: str) -> str:
         "| Grouping | τ̂ (logit) | At a bound | One SD in goals per 100 shots |",
         "|---|---|---|---|",
         f"| keeper-season | {m.tau:.4f} | {'yes' if m.at_bound else 'no'} | {m.per_100:.2f} |",
+        *no_team,
         f"| keeper career | {c.tau:.4f} | {'yes' if c.at_bound else 'no'} | {c.per_100:.2f} |",
         "",
         "## Next-season test",
@@ -597,10 +699,8 @@ def _model_card(g: GsaxFit, name: str) -> str:
         "keeper differences are read from the gain over none.",
         "",
         "Disclosures: (1) the test offsets use the test season's δ, which the paired keepers' "
-        "own goals feed; the leave-out columns show the result without them. (2) The rated "
-        "season's xGOT comes from fits that saw the test season (season-out fits train on later "
-        "seasons too), the same for all three predictors; a rolling xGOT is a later item "
-        "(PM E4).",
+        "own goals feed; the leave-out columns show the result without them. (2) "
+        + _saw_test_text(g.saw_test),
         "",
         "## Checks",
         "",
@@ -609,10 +709,32 @@ def _model_card(g: GsaxFit, name: str) -> str:
         f.setup.text.licensing,
         "",
         "## Changelog",
-        f"- {CHANGELOG}",
+        *(f"- {entry}" for entry in CHANGELOG),
         "",
     ]  # fmt: skip
     return "\n".join(lines)
+
+
+def _saw_test_text(saw: tuple[int, int, int]) -> str:
+    """Disclosure (2) from ``GsaxFit.saw_test`` (S, P, L), computed (PM E4).
+
+    Examples
+    --------
+    >>> _saw_test_text((0, 4, 1))
+    "No pair's rated-season xGOT was fitted on its test season (4 pairs scored, 1 left out)."
+    """
+    seen, pairs, left = saw
+    if seen == 0:
+        return (
+            f"No pair's rated-season xGOT was fitted on its test season ({pairs:,} pairs scored, "
+            f"{left:,} left out)."
+        )
+    return (
+        f"For {seen:,} of the {pairs:,} pairs the test scores, the rated season's xGOT comes from "
+        "fits that trained on the test season (season-out folds train on later seasons too), the "
+        "same for all three predictors; a rolling xGOT is a later item (PM E4); "
+        f"{left:,} more pairs are left out by the test (infinite raw estimate)."
+    )
 
 
 def render(
@@ -701,8 +823,8 @@ def chart(table: pl.DataFrame, *, names: pl.DataFrame, logo: StrPath) -> str:
         ax.set_ylim(-1, n)
         ax.legend(loc="lower right", fontsize=7, frameon=False)
     ax.axvline(0.0, color=viz.INK, lw=0.6)
-    note = (f"\n{FLAG} {TEAM_SELECTED}: one league shift for the selected side and its "
-            "opponents (see the card's limitation)"
+    note = (f"\n{FLAG} {TEAM_SELECTED}: rated at δ = 0, no league shift (PM 2026-10-28; see "
+            "the card)"
             if (rows["family"] == TEAM_SELECTED).any() else "")  # fmt: skip
     ax.set_xlabel(f"Goals saved above expected ({WITHOUT}; {CI_LEVEL:.0%} match-bootstrap CI)"
                   + note, fontsize=8)  # fmt: skip

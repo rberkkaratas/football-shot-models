@@ -43,11 +43,21 @@ def test_source_hash_ignores_render_only(fsm_cache: ModuleType, tmp_path: Path) 
     """Editing, adding or deleting ``football_shot_models/xgot_cards.py``, ``gsax_cards.py``
     (render-only), ``gsax.py`` (orchestration-only, gsax §3.3) or ``football_core/viz.py`` keeps
     the hash; editing a fit-side file, or a same-named file in a sub-folder, changes it."""
-    assert frozenset(
-        {"football_shot_models/xgot_cards.py", "football_shot_models/gsax_cards.py",
-         "football_core/viz.py"}
-    ) == fsm_cache.RENDER_ONLY  # fmt: skip
-    assert frozenset({"football_shot_models/gsax.py"}) == fsm_cache.ORCHESTRATION_ONLY
+    assert (
+        frozenset(
+            {
+                "football_shot_models/xgot_cards.py",
+                "football_shot_models/gsax_cards.py",
+                "football_core/viz.py",
+                "football_shot_models/v2_cards.py",
+            }
+        )
+        == fsm_cache.RENDER_ONLY
+    )  # PR1.xg-context §3.4: + v2_cards
+    assert (
+        frozenset({"football_shot_models/gsax.py", "football_shot_models/level.py"})
+        == fsm_cache.ORCHESTRATION_ONLY
+    )  # PR1.xg-context §3.3: + level.py
     shot, core = _roots(tmp_path)
     roots = [shot, core]
     first = fsm_cache.source_hash(roots)
@@ -100,8 +110,11 @@ def test_render_only_import_one_way(fsm_cache: ModuleType) -> None:
     any absolute or relative form). The detector is checked on hand-written imports first."""
     render = {k.removesuffix(".py").replace("/", ".") for k in fsm_cache.RENDER_ONLY}
     assert render == {
-        "football_shot_models.xgot_cards", "football_shot_models.gsax_cards", "football_core.viz"
-    }  # fmt: skip
+        "football_shot_models.xgot_cards",
+        "football_shot_models.gsax_cards",
+        "football_core.viz",
+        "football_shot_models.v2_cards",
+    }  # PR1.xg-context §3.4: + v2_cards
     for src, mod in (
         ("from football_core import viz", "football_core.goalmouth"),
         ("import football_core.viz as v", "football_core.goalmouth"),
@@ -172,7 +185,9 @@ def test_orchestration_only_rules(fsm_cache: ModuleType) -> None:
         "s = ModelSpec('a')",
     ):  # fmt: skip
         assert barred(src), src
-    assert not barred("from football_shot_models import metrics, xgot\nxgot.season_out(f)")
+    assert not barred(
+        "from football_shot_models import metrics, season_out\nseason_out.season_out(f)"
+    )
     source = (pkg / "gsax.py").read_text(encoding="utf-8")
     assert barred(source) == []
     for path in sorted(pkg.rglob("*.py")):
@@ -182,3 +197,67 @@ def test_orchestration_only_rules(fsm_cache: ModuleType) -> None:
         assert "football_shot_models.gsax_cards" not in mods, rel
         if rel != "gsax_cards.py":
             assert "football_shot_models.gsax" not in mods, rel
+
+
+def test_season_out_hashed(fsm_cache: ModuleType, tmp_path: Path) -> None:
+    """PR1 keeper-fixes §2 (PM 2026-10-28: "a hashed season_out.py"): the real package holds
+    ``season_out.py``, which is neither render-only nor orchestration-only, so editing a file of
+    that name under a package root changes ``source_hash``."""
+    pkg = next(Path(r) for r in fsm_cache.ROOTS if Path(r).name == "football_shot_models")
+    assert (pkg / "season_out.py").is_file()
+    key = "football_shot_models/season_out.py"
+    assert key not in fsm_cache.RENDER_ONLY and key not in fsm_cache.ORCHESTRATION_ONLY
+    shot, core = _roots(tmp_path)
+    (shot / "season_out.py").write_text("REFIT = 1\n")
+    first = fsm_cache.source_hash([shot, core])
+    (shot / "season_out.py").write_text("REFIT = 2\n")
+    assert fsm_cache.source_hash([shot, core]) != first
+
+
+LEVEL_BARRED_MODULES = ("football_shot_models.cache", "football_shot_models.gbm", "sklearn")
+LEVEL_BARRED_NAMES = ("evaluate", "fit_predict", "evaluate_candidates", "evaluate_benchmark")
+
+
+def test_pr1_level_and_v2_cards(fsm_cache: ModuleType, tmp_path: Path) -> None:
+    """PR1.xg-context §3.3, §3.4: ``level.py`` is orchestration-only (it fits nothing: no import of
+    ``cache``, ``gbm`` or ``sklearn``, no ``evaluate`` / ``fit_predict`` / ``evaluate_candidates``
+    / ``evaluate_benchmark`` by any route, no ``ModelSpec(`` call), ``v2_cards.py`` is render-only
+    and ``v2.py`` is hashed: editing the first two keeps ``source_hash``, editing ``v2.py``
+    changes it. The detector is checked on hand-written sources first."""
+    pkg = next(Path(r) for r in fsm_cache.ROOTS if Path(r).name == "football_shot_models")
+    for name in ("level.py", "v2.py", "v2_cards.py"):
+        assert (pkg / name).is_file(), name
+    assert "football_shot_models/v2.py" not in fsm_cache.RENDER_ONLY | fsm_cache.ORCHESTRATION_ONLY
+
+    def barred(source: str) -> list[str]:
+        found = []
+        for mod in _imports(source, "football_shot_models.level", is_package=False):
+            if any(mod == b or mod.startswith(f"{b}.") for b in LEVEL_BARRED_MODULES):
+                found.append(mod)
+            if mod.rpartition(".")[2] in LEVEL_BARRED_NAMES:
+                found.append(mod)
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Attribute) and node.attr in LEVEL_BARRED_NAMES:
+                found.append(f".{node.attr}")
+            if isinstance(node, ast.Call):
+                f = node.func
+                name = f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")
+                if name == "ModelSpec":
+                    found.append("ModelSpec(")
+        return found
+
+    for src in ("from . import cache", "from football_shot_models.evaluation import evaluate",
+                "x = models.evaluate_candidates(a)", "import sklearn", "s = ModelSpec('a')",
+                "from .evaluation import fit_predict"):  # fmt: skip
+        assert barred(src), src
+    assert not barred("from football_shot_models.evaluation import Evaluation\nimport numpy")
+    assert barred((pkg / "level.py").read_text(encoding="utf-8")) == []
+    shot, core = _roots(tmp_path)
+    for name in ("level.py", "v2_cards.py", "v2.py"):
+        (shot / name).write_text("A = 1\n")
+    first = fsm_cache.source_hash([shot, core])
+    (shot / "level.py").write_text("A = 2\n")
+    (shot / "v2_cards.py").write_text("A = 2\n")
+    assert fsm_cache.source_hash([shot, core]) == first
+    (shot / "v2.py").write_text("A = 2\n")
+    assert fsm_cache.source_hash([shot, core]) != first

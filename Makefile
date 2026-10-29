@@ -1,5 +1,5 @@
 .PHONY: check lint format typecheck test docs docs-notebooks docs-serve snapshot xg-baselines xg-models reproduce \
-	reproduce-cold reproduce-public reproduce-public-cold snapshot-whoscored legacy-v0 xg-v1 xgot \
+	reproduce-cold reproduce-public reproduce-public-cold snapshot-whoscored legacy-v0 xg-v1 xg-v2 xgot \
 	statsbomb-logo gsax
 
 ## Run every quality gate (CI runs the same target)
@@ -77,6 +77,11 @@ legacy-v0:
 ## Evaluate the WhoScored xG v1 models against v0; write docs/models/xg-v1.md (about 8-10 min cold)
 xg-v1:
 	uv run python -m football_shot_models.v1
+
+## PR1: WhoScored xG v2 (v1 plus pre-shot context); write docs/models/xg-v2.md. Run after
+## `make xg-v1` (v1's candidates come from the cache); exits 1 when a PR1 check is missed
+xg-v2:
+	uv run python -m football_shot_models.v2_cards
 
 ## Evaluate the M1.1 xG baselines on the snapshot and write docs/models/xg-*.md
 xg-baselines:

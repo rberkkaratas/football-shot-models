@@ -7,6 +7,13 @@ angle never helps, a wider opening never hurts, another outfield body in the con
 and a closer marker never helps. A constraint holds along one column with every other column
 held fixed. The estimator, its tuning and its calibration are in :mod:`football_shot_models.gbm`.
 
+**Hold-out level (PR1).** The pooled GBM (:data:`POOLED`) over-predicted the PL 2015/16
+hold-out (z +2.30). Two candidate fixes (:data:`LEVEL_FIXES`: a team-selected indicator set to 0
+at prediction, and training without team-selected seasons) are each refitted once;
+:mod:`football_shot_models.level` decomposes the gap and applies the adoption rule, and
+:data:`ADOPTED` must equal the rule's pick. The shipped ``xg-gbm`` is the adopted fix, so the
+xGOT input and the season-out refits train on the same population.
+
 **Headline rule.** The GBM is the headline model only if its grouped-CV log-loss gain over the
 best logistic regression has a 95 % match-bootstrap interval that lies above 0
 (:func:`headline`); otherwise the LR stays headline and every card says so (:func:`verdict`).
@@ -28,7 +35,7 @@ import argparse
 import dataclasses
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -38,7 +45,7 @@ import numpy as np
 import polars as pl
 from football_core.io import snapshot
 
-from football_shot_models import ablation, baselines, cards, data, features, gbm, penalties
+from football_shot_models import ablation, baselines, cards, data, features, gbm, level, penalties
 from football_shot_models.cache import PredictionCache
 from football_shot_models.cards import (
     STATSBOMB_TEXT,
@@ -63,6 +70,7 @@ from football_shot_models.evaluation import (
     evaluate_benchmark,
     labels,
 )
+from football_shot_models.level import LevelProbe
 from football_shot_models.metrics import Check, calibration, fold_xg_error
 
 if TYPE_CHECKING:  # the field named `penalties` hides the module inside ModelsRun
@@ -77,9 +85,38 @@ GBM_FEATURES: Final[tuple[str, ...]] = (
     *ablation.CONTEXT,
     *ablation.FRAMES,
 )
-GBM: Final = ModelSpec(
-    "xg-gbm", "Monotone GBM + Platt", GBM_FEATURES, gbm.MonotoneGBM, gbm.gbm_settings
+POOLED: Final = ModelSpec(
+    "xg-gbm-pooled",
+    "Monotone GBM + Platt, pooled training",
+    GBM_FEATURES,
+    gbm.MonotoneGBM,
+    gbm.gbm_settings,
 )
+# PR1 hold-out level: at most two candidate fixes, one refit each (level.py has the rule)
+INDICATOR: Final = dataclasses.replace(
+    POOLED,
+    name="xg-gbm-ts-indicator",
+    title="Monotone GBM + Platt, team-selected indicator (0 at prediction)",
+    train_indicator=("team-selected",),
+)
+LEAGUE: Final = dataclasses.replace(
+    POOLED,
+    name="xg-gbm-league-trained",
+    title="Monotone GBM + Platt, trained without team-selected seasons",
+    train_exclude=("team-selected",),
+)
+LEVEL_FIXES: Final = (INDICATOR, LEAGUE)  # order as in the brief (its example is the indicator)
+ADOPTED: Final[int | None] = 1  # index into LEVEL_FIXES the rule picks (spec §1 F2)
+DOWNSTREAM_MISSED: Final[tuple[str, ...]] = ()  # fix names an xGOT / GSAx check refused
+
+
+def _headline_gbm(adopted: int | None) -> ModelSpec:
+    if adopted is None:
+        return dataclasses.replace(POOLED, name="xg-gbm", title="Monotone GBM + Platt")
+    return dataclasses.replace(LEVEL_FIXES[adopted], name="xg-gbm")
+
+
+GBM: Final = _headline_gbm(ADOPTED)  # the adopted fix carries its title (spec decision 29)
 
 
 def is_gbm(ev: Evaluation) -> bool:
@@ -667,6 +704,9 @@ class ModelsRun:
         :func:`~football_shot_models.penalties.penalty_rows`.
     spread : Spread
         :func:`~football_shot_models.penalties.exchangeability`.
+    level : LevelProbe
+        The hold-out level decomposition and the fixes (:func:`~football_shot_models.level.
+        level_probe`), chart-ready.
     """
 
     evaluations: tuple[Evaluation, ...]
@@ -676,6 +716,27 @@ class ModelsRun:
     checks: tuple[Check, ...]
     penalties: tuple[PenaltyRow, ...]
     spread: Spread
+    level: LevelProbe
+
+
+def level_fixes(
+    gbm_ev: Evaluation, evaluate_spec: Callable[[ModelSpec], Evaluation]
+) -> tuple[Evaluation, tuple[Evaluation, ...]]:
+    """:data:`POOLED` and the fixes of :data:`LEVEL_FIXES`, each evaluated once.
+
+    The adopted fix is the headline GBM itself (``gbm_ev``), never evaluated again under its own
+    name (spec §3.3); POOLED is always evaluated under its own name. Module constants are read
+    when called.
+
+    Examples
+    --------
+    >>> pooled, fixes = level_fixes(gbm, run)  # doctest: +SKIP
+    >>> [ev.spec.name for ev in fixes]  # doctest: +SKIP
+    ['xg-gbm-ts-indicator', 'xg-gbm']
+    """
+    pooled = evaluate_spec(POOLED)
+    fixes = tuple(gbm_ev if i == ADOPTED else evaluate_spec(f) for i, f in enumerate(LEVEL_FIXES))
+    return pooled, fixes
 
 
 def run(
@@ -731,6 +792,31 @@ def run(
     checks = milestone_checks(
         head, sb, s0_gain=s0_gain, sb_gain=sb_gain, gbm_gain=gbm_gain, dev=dev, held=held, s0=s0
     )
+    best_lr = best(c.lrs)
+
+    def checks_of(ev: Evaluation) -> tuple[Check, ...]:
+        g0, gs, gg = (compare(f"over {r.spec.title}", r, ev, dev, held) for r in (s0, sb, best_lr))
+        return milestone_checks(
+            ev, sb, s0_gain=g0, sb_gain=gs, gbm_gain=gg, dev=dev, held=held, s0=s0
+        )
+
+    pooled, fixes = level_fixes(
+        gbm, lambda spec: evaluate(spec, dev, held, folds, freeze_frames=ff, cache=pc)
+    )
+    # the adopted fix is evaluated as xg-gbm: DOWNSTREAM_MISSED names map to the evaluations
+    refused = [ev.spec.name for ev, f in zip(fixes, LEVEL_FIXES, strict=True)
+               if f.name in DOWNSTREAM_MISSED]  # fmt: skip
+    # the probe's head is the GBM after the fix (LevelProbe.head), even when an LR heads the run
+    probe = level.level_probe(
+        pooled, fixes, gbm, checks_of=checks_of, dev=dev, held=held, freeze_frames=ff,
+        skip=refused,
+    )  # fmt: skip
+    if probe.adopted != ADOPTED:
+        picks = "none" if probe.adopted is None else LEVEL_FIXES[probe.adopted].name
+        raise ValueError(
+            f"ADOPTED is out of date: the rule picks {probe.adopted} ({picks}), the constant is "
+            f"{ADOPTED}; set models.ADOPTED and rerun"
+        )
     kicks = penalties.penalty_rows(xg.penalties, holdout=ho)
     spread = penalties.exchangeability(xg.penalties)
     context = card_context(xg, dev, held, ho)
@@ -747,6 +833,7 @@ def run(
         provider=STATSBOMB_TEXT, thresholds=(),
         comparisons=gbm_rows, checks=checks if head is gbm else (),
         verdict=f"{verdicts[gbm.spec.name]} {benchmark_sentence(gbm, gbm_rows[2], sb)}",
+        extra=level.level_lines(probe, steps_train_exclude=level.head_exclude(best_lr)),
     )  # fmt: skip
     cards[penalties.PENALTY_NAME] = penalties.penalty_card(kicks, spread, context)
     out = Path(docs_dir)
@@ -761,11 +848,16 @@ def run(
             print(f"{name} | {g.label}: cv {gain_cell(g.cv)} | hold-out {gain_cell(g.holdout)}")
     print(f"headline: {head.spec.name}")
     print(*(f"check | {c.target} | {c.measured} | {c.result}" for c in checks), sep="\n")
+    for r in probe.rows:
+        print(
+            f"level | {r.name} | hold-out xG {r.xg:.1f} | goals {r.goals} | SD {r.sd:.1f} | z "
+            f"{r.z:+.2f} | within {r.within} | MS3 met {r.met} of {r.judged} | adopted {r.adopted}"
+        )
     print(summary_table(evaluations, (sb,), head, kicks[0], sb_gain), end="")
     print(f"cards: {out}")
     if pc is not None:
         print(f"cache: {pc.dir} ({len(pc.hits)} read, {len(pc.written)} written)")
-    return ModelsRun(evaluations, sb, head, all_rows, checks, kicks, spread)
+    return ModelsRun(evaluations, sb, head, all_rows, checks, kicks, spread, probe)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

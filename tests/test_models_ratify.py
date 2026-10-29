@@ -118,7 +118,8 @@ def test_verdict_gbm_identity() -> None:
     head = mc.fake_eval(models.GBM)
     copy = dataclasses.replace(head)
     assert models.verdict(copy, head, LR_GAIN) == (
-        "Not the headline model; that is Monotone GBM + Platt."
+        "Not the headline model; that is Monotone GBM + Platt, trained without team-selected "
+        "seasons."  # PR1 decision 29
     )
 
 

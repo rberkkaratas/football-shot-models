@@ -189,6 +189,7 @@ def test_gbm_card_monotone_lines(models_run: dict[str, Any], tmp_path: Path) -> 
 
     docs = tmp_path / "models"
     with pytest.MonkeyPatch.context() as mp:
+        mc.patch_level(models, mp)  # PR1.xg-context: fixture-sized level fixes, ADOPTED None
         mp.setattr(models, "GBM", mc.tiny_gbm(models, {"distance_m": -1, "gk_to_shot_m": 1}))
         result = models.run(models_run["manifest"], docs_dir=docs)
     gbm = result.evaluations[-1]
@@ -211,8 +212,9 @@ def test_models_run_deterministic(models_run: dict[str, Any], tmp_path: Path) ->
     code = (
         "import sys\n"
         "import models_cases as mc\n"
+        "import pytest\n"
         "from football_shot_models import models\n"
-        "models.GBM = mc.tiny_gbm(models)\n"
+        "mc.patch_level(models, pytest.MonkeyPatch())\n"
         "models.run(sys.argv[1], docs_dir=sys.argv[2])\n"
     )
     env = {k: v for k, v in os.environ.items() if k != "POLARS_MAX_THREADS"}
@@ -395,7 +397,7 @@ def test_models_run_one_holdout(
         spy(models, "card_context", "holdout")
         spy(penalties, "penalty_rows", "holdout")
         manifest = mc.write_models_snapshot(tmp_path / "fixture")
-        monkeypatch.setattr(models, "GBM", mc.tiny_gbm(models))
+        mc.patch_level(models, monkeypatch)  # PR1.xg-context §3.3
         with contextlib.redirect_stdout(out):
             models.run(manifest, docs_dir=docs)
         expected = {"split_holdout", "card_context", "penalty_rows"}

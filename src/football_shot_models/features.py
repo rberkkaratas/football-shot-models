@@ -119,6 +119,10 @@ KEEPER_POSITION: Final[frozenset[str]] = frozenset(
     {"gk_x", "gk_y", "gk_in_cone", "gk_absent", "gk_to_goal_m", "gk_to_shot_m",
      "gk_off_line_m", "open_goal"}
 )  # fmt: skip
+# Context derived from the keeper's previous event (a save before a rebound, the previous action
+# when it is a keeper's): xG may read it, the xGOT input chain may not (PM MS6 E5). The whole
+# prev_action column is refused, not only its opp_keeper level.
+KEEPER_DERIVED: Final[frozenset[str]] = frozenset({"prev_action", "rebound"})
 
 
 def _check_source(
@@ -802,9 +806,10 @@ def check_xgot_features(
     TypeError
         If ``features`` is a single ``str``.
     ValueError
-        A duplicate; a :data:`KEEPER_POSITION` name; ``goal_y``, ``goal_z`` or ``on_target``
-        named directly; a derived feature with ``reads`` that is not the :data:`XGOT_DERIVED`
-        object of that name; any refusal of :func:`check_xg_features` on the other names.
+        A duplicate; a :data:`KEEPER_POSITION` or :data:`KEEPER_DERIVED` name; ``goal_y``,
+        ``goal_z`` or ``on_target`` named directly; a derived feature with ``reads`` that is
+        not the :data:`XGOT_DERIVED` object of that name; any refusal of
+        :func:`check_xg_features` on the other names.
 
     Examples
     --------
@@ -832,6 +837,11 @@ def check_xgot_features(
                 "placement, shot context and out-of-fold xG only, so goals saved keep the "
                 "keeper's positioning)"
             )
+        if name in KEEPER_DERIVED:
+            raise ValueError(
+                f"{name!r} is keeper-derived context; it may enter xG but never the xGOT input "
+                "chain (PM MS6 E5)"
+            )
         if name in XGOT_DECLARED:
             raise ValueError(
                 f"column {name!r} is not an xGOT feature itself ({XGOT_DECLARED[name]}); read "
@@ -850,14 +860,15 @@ def check_xgot_features(
 
 
 def check_keeper_neutral(features: Sequence[str]) -> tuple[str, ...]:
-    """Refuse any :data:`KEEPER_POSITION` feature: the check run on the xGOT's xG input.
+    """Refuse any :data:`KEEPER_POSITION` or :data:`KEEPER_DERIVED` feature: the check run on
+    the xGOT's xG input (PM E3, X1, MS6 E5).
 
     Raises
     ------
     TypeError
         If ``features`` is a single ``str``.
     ValueError
-        Naming the keeper-position features found.
+        Naming the keeper-position (first) or keeper-derived features found.
 
     Examples
     --------
@@ -867,6 +878,10 @@ def check_keeper_neutral(features: Sequence[str]) -> tuple[str, ...]:
     Traceback (most recent call last):
     ...
     ValueError: the xG input reads keeper-position feature(s) ['open_goal', 'gk_absent']; ...
+    >>> check_keeper_neutral(["distance_m", "rebound"])  # doctest: +ELLIPSIS
+    Traceback (most recent call last):
+    ...
+    ValueError: the xG input reads keeper-derived context ['rebound']; it is refused in ...
     """
     if isinstance(features, str):
         raise TypeError("features must be a sequence of column names, not a single str")
@@ -875,6 +890,11 @@ def check_keeper_neutral(features: Sequence[str]) -> tuple[str, ...]:
         raise ValueError(
             f"the xG input reads keeper-position feature(s) {found}; the xGOT input must be "
             "keeper-neutral (PM E3, X1)"
+        )
+    if found := [n for n in names if n in KEEPER_DERIVED]:
+        raise ValueError(
+            f"the xG input reads keeper-derived context {found}; it is refused in the xGOT "
+            "input chain (PM MS6 E5)"
         )
     return names
 

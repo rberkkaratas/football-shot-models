@@ -19,7 +19,7 @@ xG for WhoScored / Opta shot events: P(goal) of a non-penalty shot from its loca
 - No provider xG benchmark: v0 is the benchmark.
 
 ## Data
-- **Source(s):** private WhoScored / Opta event archive, source revision `84571265636c3c30fcfcf9b9b0b3bd1381f7488fc3d3870893d2539f8d7c3b23`; snapshot `whoscored-v1`, data digest `8033836b08b03fcbaffe2a19cc3a9549f2adb2eebf10f2871fff57f267b79ebb`; v0 file SHA-256 `24c8f23d059b5dca…`
+- **Source(s):** private WhoScored / Opta event archive, source revision `84571265636c3c30fcfcf9b9b0b3bd1381f7488fc3d3870893d2539f8d7c3b23`; snapshot `whoscored-v1`, data digest `c394a94944cdc12ee4d6bdd77594c9156a51aa3731955905b46ec80f648bb63e`; v0 file SHA-256 `24c8f23d059b5dca…`
 - **Competitions & seasons:** 20 competition-seasons; train 2025/2026, 2026, test 2026/2027
 - **Counts:** train 80,664 shots (7,923 goals) in 3,215 matches / test 16,164 shots (1,614 goals) in 587 matches
 - **Filters:** excluded shots, by first matching reason.

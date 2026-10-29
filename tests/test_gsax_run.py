@@ -19,6 +19,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 import pytest
 from conftest import REPO, real_xgot
 
@@ -118,3 +119,24 @@ def test_reproduce_whoscored(gsax_real: dict[str, Any]) -> None:
         assert re.search(r"ws:\d", text) is None
     _checks(ws["run"])
     _warm_refit(ws["fit"])
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("p", ["statsbomb", pytest.param("whoscored", marks=pytest.mark.whoscored)])
+def test_bands_escalated(gsax_real: dict[str, Any], p: str) -> None:
+    """PR1 keeper-fixes §9 / PM E1 (a): on the season-out predictions GSAx reads, every judged
+    band outside 2 SD is in ``ESCALATED_BANDS[provider]`` (WhoScored: the two ``holdout_fit``
+    ``mouth_y_abs`` bands; StatsBomb: none), and the card's band table has one row per
+    ``placement_bands`` row with its counts. The gate quotes this test's exit with E1's ruling."""
+    from football_shot_models import gsax, gsax_cards
+
+    r = _run(gsax_real, p)
+    t = gsax.placement_bands(r["run"])
+    failing = {(f, b, s) for f, b, s in t.filter(pl.col("judged") & ~pl.col("within"))
+               .select("feature", "band", "source").rows()}  # fmt: skip
+    assert failing <= gsax.ESCALATED_BANDS[p], sorted(failing - gsax.ESCALATED_BANDS[p])
+    card = (r["docs"] / f"{gsax_cards.CARD_PREFIX[p]}gsax.md").read_text(encoding="utf-8")
+    for row in t.iter_rows(named=True):
+        assert (f"| {row['feature']} | {row['band']} | {row['source']} | {row['shots']:,} | "
+                f"{row['goals']:,} |") in card, row  # fmt: skip
+    assert gsax_cards.CARD_PREFIX[p] + "gsax" in r["run"].cards

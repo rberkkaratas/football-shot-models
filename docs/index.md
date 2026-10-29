@@ -14,6 +14,9 @@ shot-stopping models, built step by step and documented with model cards.
   [+ freeze frames](models/xg-lr-frames.md) (M1.2 / M1.3);
   [monotone GBM + Platt](models/xg-gbm.md), the headline xG model (M1.4);
   [penalty conversion](models/xg-penalty.md) (M1.5);
-  [xG v1](models/xg-v1.md), the WhoScored / Opta model next to the legacy v0 (M1.6 / M1.7).
+  [xG v1](models/xg-v1.md), the WhoScored / Opta model next to the legacy v0 (M1.6 / M1.7);
+  [xG v2](models/xg-v2.md), v1 plus pre-shot context (PR1);
+  [xGOT](models/xgot-gbm.md) (MS5 / MS6) and the goalkeeper cards, [GSAx](models/gsax.md) and
+  [keeper model](models/gk-model.md) (MS6, PR1), each with its WhoScored / Opta twin.
 - [Model card template](model-card-template.md): filled in for every trained model.
 - [References](references.md)

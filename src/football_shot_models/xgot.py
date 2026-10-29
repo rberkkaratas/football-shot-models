@@ -99,7 +99,7 @@ _IDS: Final = ("shot_id", "match_id", "player_id", "competition_id", "season_id"
 # inner edge, and points recorded outside the frame get a row of their own
 Y_BANDS: Final[tuple[float, ...]] = (0.0, 1.0, 2.0, 3.0, 3.3, features.INNER_Y)
 BAND_SDS: Final[float] = 2.0  # the PM's band rule (MS6): |Σ p − goals| <= BAND_SDS · √Σp(1−p)
-MIN_BAND_SHOTS: Final[int] = 100  # PM (MS6 gsax): a smaller band is printed, not judged
+MIN_BAND_SHOTS: Final[int] = metrics.MIN_JUDGED_SHOTS  # PM (MS6 gsax): smaller is not judged
 CHECKS_MILESTONES: Final[str] = "MS5, MS6"
 CHECKS_TITLE: Final[str] = f"Milestone checks ({CHECKS_MILESTONES})"
 
@@ -1092,8 +1092,8 @@ class XgotFit:
         fit (empty for WhoScored).
     frames : tuple of polars.DataFrame
         The xG population's dev and hold-out shots before :func:`drop_matches`: the frames the
-        xG input is fitted on, coarse-grid matches included (R1); :func:`season_out` refits on
-        them.
+        xG input is fitted on, coarse-grid matches included (R1); ``season_out.season_out``
+        refits on them.
     checks : tuple of Check
     split_half : tuple
         (min shots, blocked shots left in, SGA, goals − xG) rows.
@@ -1213,194 +1213,6 @@ def fit(provider: str, *, cache: StrPath | None) -> XgotFit:
         pen_base, shootouts, recon, grid_counts(c3, coarse, xg.matches), coarse, (dev, held),
         run_checks, halves, pred, pc,
     )  # fmt: skip
-
-
-# ---- MS6: season-out refits for the goalkeeper models ---------------------------------------
-
-SEASON_KEY: Final = ("competition_id", "season_id")
-SOURCE: Final = pl.Enum(("season_folds", "holdout_fit", "swapped_fit"))
-# how each provider's rated rows get xGOT from fits that never saw their season
-SEASON_OUT: Final[Mapping[str, str]] = MappingProxyType(
-    {"statsbomb": "season_folds", "whoscored": "swapped_fit"}
-)
-SUFFIX: Final[Mapping[str, str]] = MappingProxyType(
-    {"season_folds": "-season-out", "swapped_fit": "-swap"}
-)
-
-
-def _renamed(spec: object, suffix: str, xg_name: str | None = None) -> ModelSpec:
-    if not isinstance(spec, ModelSpec):
-        raise ValueError(f"refit: {spec!r} is not a fitted model spec")
-    xg = spec.xg_input if xg_name is None else xg_name
-    return dataclasses.replace(spec, name=f"{spec.name}{suffix}", xg_input=xg)
-
-
-def refit(
-    f: XgotFit,
-    *,
-    dev: pl.DataFrame,
-    held: pl.DataFrame,
-    folds: Folds,
-    kicks_dev: pl.DataFrame,
-    kicks_held: pl.DataFrame,
-    kicks_folds: Folds,
-    drop: pl.Series,
-    suffix: str,
-) -> pl.DataFrame:
-    """The :func:`fit` chain of ``f`` on other frames and folds: xG input, headline, penalty.
-
-    Every spec is ``f``'s, renamed ``name + suffix`` so its cache entry never evicts the match
-    out-of-fold one. As in :func:`fit`, the xG input is refitted on ``dev`` with ``folds`` and
-    cross-fitted into the frames (:func:`xg_input`), and only then are the matches ``drop``
-    left out (:func:`drop_matches`: the coarse-grid ones still feed the xG input, R1); the
-    headline xGOT and the penalty xGOT are refitted on what is left; shoot-out kicks keep
-    ``f``'s scores.
-
-    Returns
-    -------
-    polars.DataFrame
-        :func:`predictions` of the refitted models (``split`` is the refit's own).
-
-    Raises
-    ------
-    ValueError
-        From the fits and the self-checks of :func:`xg_input` and :func:`predictions`.
-
-    Examples
-    --------
-    >>> pred = refit(f, dev=f.frames[0], held=f.frames[1], folds=folds, kicks_dev=f.kicks.dev,
-    ...              kicks_held=f.kicks.held, kicks_folds=k_folds, drop=f.coarse, suffix="-x")
-    ... # doctest: +SKIP
-    """
-    ff = models.freeze_frames_or_none(f.xg.freeze_frames)
-    xg_ev = evaluate(
-        _renamed(f.xg_input.spec, suffix), dev, held, folds, freeze_frames=ff, cache=f.cache
-    )
-    inp = drop_matches(xg_input(xg_ev, dev, held, folds), drop)
-    head = evaluate(
-        _renamed(f.head.spec, suffix, xg_ev.spec.name),
-        inp.on_dev, inp.on_held, inp.folds, cache=f.cache,
-    )  # fmt: skip
-    pen = evaluate(
-        _renamed(f.penalty.spec, suffix), kicks_dev, kicks_held, kicks_folds, cache=f.cache
-    )
-    kicks = dataclasses.replace(f.kicks, dev=kicks_dev, held=kicks_held, ev=pen)
-    return predictions(inp, head, kicks, f.xg.matches)
-
-
-def _seasons(frame: pl.DataFrame) -> set[tuple[str, str]]:
-    return set(frame.select(SEASON_KEY).unique().iter_rows())
-
-
-def _check_season_folds(frame: pl.DataFrame, folds: Folds, what: str) -> None:
-    keys = frame.select(SEASON_KEY)
-    for i, (train, test) in enumerate(folds):
-        if shared := _seasons(keys[test]) & _seasons(keys[train]):
-            raise ValueError(f"season_out: {what} fold {i} trains on {len(shared)} test season(s)")
-
-
-def _disjoint(rated: pl.DataFrame, trained: pl.DataFrame, what: str) -> None:
-    if shared := _seasons(rated) & _seasons(trained):
-        raise ValueError(
-            f"season_out: {len(shared)} {what} season(s) are in the fit that rates them"
-        )
-
-
-def season_out(f: XgotFit) -> pl.DataFrame:
-    """Every on-target open-play and in-game penalty row of ``f``, its xGOT season-out.
-
-    Each row's ``xgot`` comes from fits (xG input and xGOT both) that never saw its season,
-    built by :func:`refit` on ``f``'s own frames (``f.frames``, with ``f.coarse`` dropped after
-    the xG input as in :func:`fit`), so a population ruling made in :func:`fit` (coarse-grid
-    matches out of the xGOT, still in the xG input) carries over. StatsBomb (``SEASON_OUT``:
-    ``season_folds``): dev rows from folds grouped by competition-season, hold-out rows from
-    that refit's dev fit (``holdout_fit``). WhoScored (``swapped_fit``): the test-season rows
-    are ``f.predictions`` as they are (the train-only fit, ``holdout_fit``); the train-season
-    rows are the hold-out rows of a fit on the test season (MS5 O1). Shoot-out kicks are left
-    out. Pure: the cache of ``f`` is the only place it writes.
-
-    Returns
-    -------
-    polars.DataFrame
-        The :func:`predictions` columns (``split`` from ``f.predictions``), plus
-        ``competition_name``, ``season_name`` (String), ``family`` (``data.FAMILY``) and
-        ``source`` (``SOURCE``); none null.
-
-    Raises
-    ------
-    ValueError
-        An unknown ``f.provider``; ids that differ from ``f``'s on-target non-shoot-out rows;
-        a fold whose train rows hold one of its test seasons; a rated season among the
-        training seasons of the fit that scored it; a null added column; a family that is not
-        constant within a competition-season; from the fits.
-
-    Examples
-    --------
-    >>> rows = season_out(xgot.fit("statsbomb", cache="data/cache"))  # doctest: +SKIP
-    >>> rows["source"].unique().sort().to_list()  # doctest: +SKIP
-    ['season_folds', 'holdout_fit']
-    """
-    if f.provider not in SEASON_OUT:
-        raise ValueError(f"season_out: unknown provider {f.provider!r}; {sorted(SEASON_OUT)}")
-    source = SEASON_OUT[f.provider]
-    suffix, rated = SUFFIX[source], pl.col("on_target") & (pl.col("kind") != "shootout")
-    dev, held = f.frames
-    if source == "season_folds":
-        folds = evaluation.season_folds(dev, by=SEASON_KEY)
-        k_folds = evaluation.season_folds(f.kicks.dev, by=SEASON_KEY)
-        _check_season_folds(dev, folds, "open-play")
-        _check_season_folds(f.kicks.dev, k_folds, "kick")
-        _disjoint(pl.concat([held.select(SEASON_KEY), f.kicks.held.select(SEASON_KEY)]),
-                  pl.concat([dev.select(SEASON_KEY), f.kicks.dev.select(SEASON_KEY)]),
-                  "hold-out")  # fmt: skip
-        new = refit(f, dev=dev, held=held, folds=folds, kicks_dev=f.kicks.dev,
-                    kicks_held=f.kicks.held, kicks_folds=k_folds, drop=f.coarse,
-                    suffix=suffix)  # fmt: skip
-        out = new.filter(rated).with_columns(
-            source=pl.when(pl.col("split") == "dev").then(pl.lit(source)).otherwise(
-                pl.lit("holdout_fit")).cast(SOURCE)
-        )  # fmt: skip
-    else:
-        train = pl.concat([dev.select(SEASON_KEY), f.kicks.dev.select(SEASON_KEY)])
-        test = pl.concat([held.select(SEASON_KEY), f.kicks.held.select(SEASON_KEY)])
-        _disjoint(test, train, "test")
-        new = refit(f, dev=held, held=dev, folds=evaluation.cv_folds(held),
-                    kicks_dev=f.kicks.held, kicks_held=f.kicks.dev,
-                    kicks_folds=evaluation.cv_folds(f.kicks.held), drop=f.coarse,
-                    suffix=suffix)  # fmt: skip
-        out = pl.concat([
-            new.filter(rated & (pl.col("split") == "holdout")).with_columns(
-                source=pl.lit(source, dtype=SOURCE)),
-            f.predictions.filter(rated & (pl.col("split") == "holdout")).with_columns(
-                source=pl.lit("holdout_fit", dtype=SOURCE)),
-        ])  # fmt: skip
-    want = f.predictions.filter(rated).select("shot_id", "split")
-    ids = out["shot_id"]
-    if ids.n_unique() != out.height or set(ids) != set(want["shot_id"]):
-        raise ValueError(
-            f"season_out: {out.height} row(s) for the {want.height} rated rows of the fit"
-        )
-    meta = f.xg.matches.select("match_id", "competition_name", "season_name").join(
-        data.match_family(f.xg.matches), on="match_id", how="left"
-    )
-    out = (
-        out.drop("split")
-        .join(want, on="shot_id", how="left", maintain_order="left")
-        .join(meta, on="match_id", how="left", validate="m:1", maintain_order="left")
-        .select(*f.predictions.columns, "competition_name", "season_name", "family", "source")
-        .sort("shot_id")
-    )
-    added = ("split", "competition_name", "season_name", "family", "source")
-    if nulls := out.select(pl.any_horizontal(pl.col(added).is_null())).to_series().sum():
-        raise ValueError(f"season_out: {nulls} row(s) have a null {added} value")
-    if (
-        out.group_by(SEASON_KEY)
-        .agg(pl.col("family").n_unique())
-        .filter(pl.col("family") > 1)
-        .height
-    ):
-        raise ValueError("season_out: a competition-season has two families")
-    return out
 
 
 if __name__ == "__main__":

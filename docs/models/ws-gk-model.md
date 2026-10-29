@@ -1,10 +1,10 @@
 # Model card: Hierarchical keeper model
 
 ## Overview
-- **Name / version:** `ws-gk-model` v1
+- **Name / version:** `ws-gk-model` v2
 - **Task:** goal ~ offset(logit q) + (1 | keeper-season), no fixed intercept: a shrunken GSAx per keeper-season (P3.2)
 - **Status:** experimental
-- **Source(s):** private WhoScored / Opta event archive; snapshot `whoscored-v1`, data digest `8033836b08b03fcbaffe2a19cc3a9549f2adb2eebf10f2871fff57f267b79ebb`; xGOT: the headline Monotone GBM + Platt, refitted season-out
+- **Source(s):** private WhoScored / Opta event archive; snapshot `whoscored-v1`, data digest `c394a94944cdc12ee4d6bdd77594c9156a51aa3731955905b46ec80f648bb63e`; xGOT: the headline Monotone GBM + Platt, refitted season-out
 
 ## Intended use
 Shrinks each keeper-season's GSAx towards the league according to how many shots it rests on, and asks whether that predicts the next season better. For research; the stability section of the GSAx card decides what may be said about keeper skill.
@@ -15,8 +15,8 @@ Each on-target open-play shot's goal is Bernoulli with logit = logit q + u, q th
 
 | Grouping | τ̂ (logit) | At a bound | One SD in goals per 100 shots |
 |---|---|---|---|
-| keeper-season | 0.0770 | no | 1.63 |
-| keeper career | 0.0628 | no | 1.33 |
+| keeper-season | 0.0861 | no | 1.82 |
+| keeper career | 0.0737 | no | 1.56 |
 
 ## Next-season test
 
@@ -24,23 +24,26 @@ Pairs: the same keeper in the same competition in consecutive seasons (by start 
 
 | Model | Pairs | Left out | Test shots / matches | Log loss none | Log loss raw | Log loss shrunk | Gain over raw | Gain over none | Gain over raw (leave-out δ) | Gain over none (leave-out δ) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| Keeper-season effect | 148 | 3 | 3,234 / 475 | 0.4332 | 0.4436 | 0.4332 | +0.01047 [+0.00513, +0.01630] | +0.00001 [-0.00007, +0.00010] | +0.01192 [+0.00529, +0.01915] | +0.00002 [-0.00007, +0.00011] |
-| Career effect (the literal formula) | 148 | 3 | 3,234 / 475 | 0.4332 | 0.4437 | 0.4332 | +0.01050 [+0.00514, +0.01633] | +0.00001 [-0.00007, +0.00010] | +0.01197 [+0.00540, +0.01926] | +0.00002 [-0.00007, +0.00011] |
+| Keeper-season effect | 148 | 3 | 3,234 / 475 | 0.4329 | 0.4432 | 0.4329 | +0.01034 [+0.00502, +0.01619] | +0.00003 [-0.00010, +0.00017] | +0.01155 [+0.00503, +0.01858] | +0.00005 [-0.00010, +0.00020] |
+| Career effect (the literal formula) | 148 | 3 | 3,234 / 475 | 0.4329 | 0.4433 | 0.4329 | +0.01037 [+0.00504, +0.01624] | +0.00003 [-0.00010, +0.00017] | +0.01160 [+0.00511, +0.01859] | +0.00005 [-0.00010, +0.00020] |
 
-Shrunken estimates predict next season better than raw GSAx, because raw GSAx overfits small samples, and predict next season no better than xGOT alone (the league average).
+Leave-out δ per test season, E2's minimum (at most 2 keepers or under 50 shots: δ = 0) applied to the unpaired keepers: *Keeper-season effect* 0 left out, 0 at δ = 0; *Career effect (the literal formula)* 0 left out, 0 at δ = 0.
+
+Shrunken estimates predict next season better than raw GSAx, because raw GSAx overfits small samples, and are not distinguishable from xGOT alone (the league average).
 
 Raw GSAx is the unpooled estimate on small samples, so beating it says raw overfits; keeper differences are read from the gain over none.
 
-Disclosures: (1) the test offsets use the test season's δ, which the paired keepers' own goals feed; the leave-out columns show the result without them. (2) The rated season's xGOT comes from fits that saw the test season (season-out fits train on later seasons too), the same for all three predictors; a rolling xGOT is a later item (PM E4).
+Disclosures: (1) the test offsets use the test season's δ, which the paired keepers' own goals feed; the leave-out columns show the result without them. (2) No pair's rated-season xGOT was fitted on its test season (148 pairs scored, 3 left out).
 
 ## Checks
 
 | Target | Measured | Result |
 |---|---|---|
-| Shrunken estimates predict the next season better than raw GSAx (log-loss gain, 95% match-bootstrap interval above 0; judged on the keeper-season grouping, the career grouping (1 | keeper) beside it) | keeper-season +0.01047 [+0.00513, +0.01630] on 3,234 shots, 148 pairs; career +0.01050 [+0.00514, +0.01633] | met |
+| Shrunken estimates predict the next season better than raw GSAx (log-loss gain, 95% match-bootstrap interval above 0; judged on the keeper-season grouping, the career grouping (1 | keeper) beside it) | keeper-season +0.01034 [+0.00502, +0.01619] on 3,234 shots, 148 pairs; career +0.01037 [+0.00504, +0.01624] | met |
 
 ## Data licensing
 Data: a private WhoScored / Opta archive, never committed or redistributed; this card holds counts and metrics only.
 
 ## Changelog
 - v1 (MS6, P3.1-P3.3): first version.
+- v2 (PR1): WhoScored season-out from competition-season folds; one penalty δ per season-out source; team-selected competition-seasons at δ = 0 (flagged); goal_z sensitivity (StatsBomb).

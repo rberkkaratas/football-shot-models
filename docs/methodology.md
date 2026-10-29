@@ -39,6 +39,25 @@ match-bootstrap interval above 0; drop-one and add-one variants show each column
 has a 95% match-bootstrap interval above 0; otherwise the LR stays headline and the cards say
 so. The hold-out gain is printed next to it and does not decide.
 
+**Hold-out level (PR1, `level`).** The pooled GBM over-predicted the StatsBomb hold-out. The
+xG GBM card decomposes the gap by segment (Σ xG − goals with z = gap / √Σ p(1 − p)) and tests
+at most two pre-registered fixes, one refit each (`models.LEVEL_FIXES`): a team-selected
+indicator set to 0 at prediction, and training without team-selected seasons
+(`ModelSpec.train_exclude`; held predictions never read the family). A fix is adopted iff its
+hold-out Σ xG is within 2 SD of goals and every MS3 check the pooled GBM meets stays met; the
+adopted fix is the headline GBM (`models.ADOPTED`). The hold-out chose it, so the card says its
+hold-out level is no longer an independent check.
+
+**WhoScored xG v2 (PR1, `v2`).** v1's inputs plus the pre-shot context of the previous play
+event, written by football-core's WhoScored loader (schema 1.3): `prev_action` (the shooting
+team's take-on, regain, earlier shot or other action, or the opponent's clearance, outfield
+block, keeper action or other, reference pass; stoppages skipped) and `rebound` (the team's
+previous shot of the period at most 3 s earlier). Opta big chance (q214) and every qualifier
+that grades the chance or is known only after the shot stay out (an ablation only); the card's
+census classes every Opta qualifier on a population shot. v1 stays the WhoScored xG of record
+and the xGOT input, because `prev_action` and `rebound` read the keeper's previous event
+(`features.KEEPER_DERIVED`, refused by the xGOT guards, PM MS6 E5 and PR1 E4 (a)).
+
 **Penalties (M1.5):** in-game penalties (periods 1-4) are one pooled Beta-binomial with the
 Jeffreys prior: P(goal) is the posterior mean, with its 95% equal-tailed interval. Shoot-out
 kicks are reported in their own rows, never pooled. **Match xG** = Σ non-penalty xG (headline
@@ -93,7 +112,7 @@ its 0.1 yd goal-mouth cell (`io.statsbomb.snap_goal_y`, outcome-blind), so every
 the coarse 1 yd grid (football-core's per-match rule, `goalmouth.match_grids`) leave the
 StatsBomb xGOT fit and the goalkeeper models (PM ruling E1 (a), 2026-10-28): a pooled fit nets
 two recording grids, which a placement model cannot tell from placement. They keep feeding the
-xG input fit, in `xgot.fit` and in the goalkeepers' season-out refits alike (they leave after
+xG input fit, in `xgot.fit` and in the goalkeepers' season-out refits (`season_out`) alike (they leave after
 the xG input is cross-fitted); the reconciliation counts them under the reason *coarse recording grid* and
 measures the gap against C3 less these ruled-out rows, and the cards list them by
 competition-season. A ball whose centre is more than 3.55 m (`features.INNER_Y`) from the goal
@@ -149,20 +168,31 @@ written by `gsax_cards` (`make gsax`). Results are in the [GSAx card](models/gsa
 typed here.
 
 **Season-out xGOT.** Each rated shot's xGOT comes from fits (xG input and xGOT) that never saw
-its season (`xgot.season_out`): StatsBomb folds grouped by competition-season, WhoScored the
-train-only fit for the test season and a swapped fit (trained on the test season) for the train
-season. The rated season's xGOT still comes from fits that saw later seasons (PM E4, disclosed).
+its season (`season_out.season_out`): on both providers the dev rows read the fold that left
+their competition-season out, and the hold-out (StatsBomb) or test-season (WhoScored) rows the
+refit's dev fit (PM 2026-10-28; PR1 replaced WhoScored's year swap, whose fit trained on the
+partial test season mispriced placement). The rated season's xGOT can still come from fits that
+saw later seasons (PM E4, disclosed with the count of next-season pairs it touches).
 
 **GSAx (P3.1).** GSAx = Σ q − goals over a keeper's on-target shots, with q = expit(logit xGOT +
 δ) and one δ per competition-season and kind chosen so that Σ q = goals: each season's keepers
 are rated against that season's league sum, so the xGOT level gap is not charged to them (PM
 after MS5). Competition-seasons with at most 2 keepers or under 50 open-play shots are rated at
 δ = 0 and flagged (`gsax.SMALL_LEAGUE`, PM E2 (b)), because a league offset from two keepers
-absorbs their own performance. Penalties have their own δ, so GSAx with penalties minus GSAx
-without is exactly the keeper's penalty GSAx; shoot-outs are not rated. Keeper totals sum to the
+absorbs their own performance; team-selected competition-seasons are rated at δ = 0 too (PM
+2026-10-28), because their league sum is one team's keeper against its opponents. Penalties have
+one δ per season-out source (PM 2026-10-28 (a)), since per-season groups hold a handful of kicks;
+E2's minimum applies to every league-level offset (PM E3), not to a keeper's own shift. GSAx
+with penalties minus GSAx without is the keeper's penalty GSAx; shoot-outs are not rated. Keeper totals sum to the
 league sum exactly; each keeper-season has the analytic SD √Σ q(1 − q) and a 90% match-bootstrap
 interval. Team-selected seasons (one club's matches) rate the selected keeper against the
 opponents' finishing, so the StatsBomb table and chart flag them (†).
+
+**goal_z sensitivity (StatsBomb, PR1).** A projected save's `goal_z` is where the keeper met the
+ball, not its height at the line. The GSAx card prints two sensitivities beside the headline,
+never instead of it (PM E2 (c)): GSAx re-rated on the goals and the saves stopped within 1 yd of
+the line (δ re-fitted on that subset, judged only where the subset's season has a fitted δ), and
+GSAx from a season-out refit of the open-play headline xGOT without `mouth_z`.
 
 **Hierarchical keeper model (P3.2).** goal ~ offset(logit q) + (1 | keeper-season), and the
 literal per-keeper (career) grouping beside it, fitted by a Laplace approximation of the marginal

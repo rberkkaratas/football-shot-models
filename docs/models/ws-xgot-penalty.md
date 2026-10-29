@@ -10,7 +10,7 @@
 Penalty xGOT: P(goal) of an on-target penalty from where it crossed the line, kept apart from the open-play xGOT. For research and as the penalty input of the MS6 goalkeeper models; not a rating of takers or keepers on its own.
 
 ## Data
-- **Source(s):** private WhoScored / Opta event archive, revision `84571265636c3c30fcfcf9b9b0b3bd1381f7488fc3d3870893d2539f8d7c3b23`; snapshot `whoscored-v1`, data digest `8033836b08b03fcbaffe2a19cc3a9549f2adb2eebf10f2871fff57f267b79ebb`
+- **Source(s):** private WhoScored / Opta event archive, revision `84571265636c3c30fcfcf9b9b0b3bd1381f7488fc3d3870893d2539f8d7c3b23`; snapshot `whoscored-v1`, data digest `c394a94944cdc12ee4d6bdd77594c9156a51aa3731955905b46ec80f648bb63e`
 - **Competitions & seasons:** 20 competition-seasons; hold-out 2026/2027
 - **Rows:** train and validation (dev) 856 shots in 739 matches / test (hold-out) 137 shots in 119 matches
 - **Filters:** excluded shots, by first matching reason. C3 on-target shots by first matching reason; penalty and shoot-out rows are scored by the penalty xGOT, modelled rows by the LR and GBM.

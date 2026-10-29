@@ -144,7 +144,8 @@ def test_band_table_errors() -> None:
 
 def test_placement_bands_and_oof_rated(gsax_fits: dict[str, Any]) -> None:
     """``oof_rated`` rates the xGOT card's match out-of-fold xGOT per row (same rows, same
-    order), each non-small competition-season and kind summing to its goals;
+    order), each rating group not at δ = 0 by rule summing to its goals (PR1: per source for
+    penalties);
     ``placement_bands`` is the season-out band table plus that diagnostic's gap and SD, the
     pooled rows covering every open-play rated row once per feature."""
     gsax = _gsax()
@@ -153,9 +154,9 @@ def test_placement_bands_and_oof_rated(gsax_fits: dict[str, Any]) -> None:
         assert alt["shot_id"].to_list() == g.predictions["shot_id"].to_list(), p
         want = dict(g.xgot.predictions.select("shot_id", "xgot").iter_rows())
         assert np.allclose(alt["xgot"].to_numpy(), [want[s] for s in alt["shot_id"]]), p
-        sums = (
-            alt.filter(~pl.col("small") & pl.col("delta").is_finite())
-            .group_by(*gsax.SEASON_KEY, "kind")
+        sums = (  # PR1: per rating group (penalties per source), δ = 0 groups aside
+            alt.filter(~gsax.AT_ZERO & pl.col("delta").is_finite())
+            .group_by("kind", "group")
             .agg(s=(pl.col("q") - pl.col("is_goal").cast(pl.Float64)).sum())
         )
         assert sums.height and float(sums["s"].abs().max()) < 1e-6, p  # type: ignore[arg-type]

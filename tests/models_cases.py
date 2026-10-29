@@ -259,8 +259,64 @@ _RUN_KICKS = (
 )
 
 
+# PR1.xg-context integration census: a team-selected competition-season in dev (``TS_TEAM`` in
+# every match), copied shot for shot from three men's-league matches, so the level fixes'
+# ``train_exclude`` / ``train_indicator`` act on rows in ``models.run`` (with only league and
+# women in dev they would be fitted on the pooled population and the wiring tested vacuously).
+TS_SEASON = ("sb:16", "sb:1", "Fixture Cup", "2018/2019")
+TS_COPIES = {"sb:m10": "sb:m24", "sb:m11": "sb:m25", "sb:m12": "sb:m26"}
+TS_TEAM = "sb:t90"
+TS_360 = "sb:m24"
+
+
+def _team_selected(
+    shots: pl.DataFrame, frames: pl.DataFrame, matches: pl.DataFrame
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    comp, season, cname, sname = TS_SEASON
+    src = list(TS_COPIES)
+    new_match = pl.col("match_id").replace_strict(TS_COPIES, default=None)
+    new_shot = pl.concat_str(
+        pl.lit("sb:s-"), new_match.str.slice(3), pl.col("shot_id").str.slice(8)
+    )
+    copied = shots.filter(pl.col("match_id").is_in(src))
+    ids = copied.select("shot_id", new_shot.alias("new_id"))
+    away = {m: f"sb:t{91 + i}" for i, m in enumerate(src)}
+    s = copied.with_columns(
+        new_shot.alias("shot_id"), new_match.alias("match_id"),
+        pl.lit(comp).alias("competition_id"), pl.lit(season).alias("season_id"),
+        pl.when(pl.col("is_home")).then(pl.lit(TS_TEAM))
+        .otherwise(pl.col("match_id").replace_strict(away)).alias("team_id"),
+        pl.when(pl.col("is_home")).then(pl.col("match_id").replace_strict(away))
+        .otherwise(pl.lit(TS_TEAM)).alias("opponent_team_id"),
+    )  # fmt: skip
+    # a 360 visible area on the first copy only, so the dev 360-frame segment has two levels
+    area = pl.lit([[100.0, 30.0], [105.0, 30.0], [105.0, 38.0]], dtype=shots.schema["visible_area"])
+    s = s.with_columns(
+        pl.when(pl.col("match_id") == TS_360).then(area).otherwise(pl.col("visible_area"))
+        .alias("visible_area")
+    )  # fmt: skip
+    f = (
+        frames.join(ids, on="shot_id", how="inner")
+        .with_columns(pl.col("new_id").alias("shot_id"))
+        .select(frames.columns)
+    )
+    m = matches.filter(pl.col("match_id").is_in(src)).with_columns(
+        pl.lit(TS_TEAM).alias("home_team_id"),
+        pl.col("match_id").replace_strict(away).alias("away_team_id"),
+        new_match.alias("match_id"), pl.lit(comp).alias("competition_id"),
+        pl.lit(season).alias("season_id"), pl.lit(cname).alias("competition_name"),
+        pl.lit(sname).alias("season_name"),
+    )  # fmt: skip
+    m = m.with_columns((pl.col("match_id") == TS_360).alias("has_360"))
+    return (
+        pl.concat([shots, s.select(shots.columns).cast(shots.schema)]),
+        pl.concat([frames, f.cast(frames.schema)]),
+        pl.concat([matches, m.select(matches.columns).cast(matches.schema)]).sort("match_id"),
+    )
+
+
 def models_tables() -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    shots, frames, matches = ac.ablation_tables()
+    shots, frames, matches = _team_selected(*ac.ablation_tables())
     by_id = {r["match_id"]: r for r in matches.iter_rows(named=True)}
     extra = []
     for suffix, match_id, period, goal in _RUN_KICKS:
@@ -302,3 +358,41 @@ def tiny_gbm(models: Any, monotone: dict[str, int] | None = None) -> evaluation.
     make = functools.partial(gbm.MonotoneGBM, *args, **TINY)
     spec: evaluation.ModelSpec = dataclasses.replace(models.GBM, make=make)
     return spec
+
+
+def patch_level(models: Any, mp: Any, *, adopted: int | None = None,
+                downstream: tuple[str, ...] | None = None) -> None:  # fmt: skip
+    """PR1.xg-context §3.3: ``models.POOLED``, ``LEVEL_FIXES`` and ``GBM`` with the fixture-sized
+    grid, ``ADOPTED`` set to ``adopted`` and ``GBM`` rebuilt from it as the spec writes it.
+    ``downstream`` defaults to every fix name when ``adopted`` is None (the rule then picks None
+    on any data: the run's ADOPTED check agrees) and to ``()`` otherwise. Before the build lands
+    (no ``LEVEL_FIXES``) only ``GBM`` is patched, as before."""
+    import dataclasses
+    import functools
+
+    from football_shot_models import gbm
+
+    if not hasattr(models, "LEVEL_FIXES"):
+        mp.setattr(models, "GBM", tiny_gbm(models))
+        return
+
+    def tiny(spec: evaluation.ModelSpec) -> evaluation.ModelSpec:
+        out: evaluation.ModelSpec = dataclasses.replace(
+            spec, make=functools.partial(gbm.MonotoneGBM, **TINY)
+        )
+        return out
+
+    pooled = tiny(models.POOLED)
+    fixes = tuple(tiny(f) for f in models.LEVEL_FIXES)
+    head = (
+        dataclasses.replace(pooled, name="xg-gbm", title="Monotone GBM + Platt")
+        if adopted is None
+        else dataclasses.replace(fixes[adopted], name="xg-gbm")
+    )
+    if downstream is None:
+        downstream = tuple(f.name for f in fixes) if adopted is None else ()
+    mp.setattr(models, "POOLED", pooled)
+    mp.setattr(models, "LEVEL_FIXES", fixes)
+    mp.setattr(models, "ADOPTED", adopted)
+    mp.setattr(models, "DOWNSTREAM_MISSED", downstream)
+    mp.setattr(models, "GBM", head)

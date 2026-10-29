@@ -4,13 +4,13 @@
 - **Name / version:** `xg-lr-frames` v3
 - **Task:** binary classification: P(goal | shot) for non-penalty shots in periods 1–4 (extra time included; direct free kicks and corners from open play or set pieces included; direct corners, own goals and shoot-outs excluded)
 - **Status:** experimental
-- M1.3 step S3: S2 plus the freeze-frame features. Not the headline model; that is Monotone GBM + Platt.
+- M1.3 step S3: S2 plus the freeze-frame features. Not the headline model; that is Monotone GBM + Platt, trained without team-selected seasons.
 
 ## Intended use
 A transparent, reproducible xG model on StatsBomb open data, built one feature group at a time so each group's gain is measured on the same folds. For research and for comparing with StatsBomb's own xG; not for rating players or teams without that comparison, not for penalties, and not for other providers' data (it needs StatsBomb freeze frames and annotations) without re-fitting.
 
 ## Data
-- **Source(s):** StatsBomb open data, revision `4b73468fc5b0f1950f9f66fada70ad3a4f9327cb`; snapshot `statsbomb-open-v1`, data digest `067ddf5342cfd608045a15189a0b43008664d23f4c5ac4fab5ac403468e57ee5`
+- **Source(s):** StatsBomb open data, revision `4b73468fc5b0f1950f9f66fada70ad3a4f9327cb`; snapshot `statsbomb-open-v1`, data digest `a10b7542f2dc13c3b1f46191c8af3e52b9b6f9281543cc7a436f9797b881209e`
 - **Competitions & seasons:** 80 competition-seasons; hold-out Premier League 2015/2016
 - **Rows:** train and validation (dev) 89,897 shots in 3,581 matches / test (hold-out) 9,816 shots in 380 matches; men 65,803 shots, women 33,910
 - **Families (segments):** women; team-selected, where one team plays in at least half of a competition-season's matches (56 competition-seasons, 30 of them with one or two matches, mostly single finals, where both teams qualify trivially); league or tournament, the rest
@@ -177,7 +177,7 @@ Pooled out of fold. Log-loss skill is `1 − log loss / log loss of a constant a
 | LR splines + body part | 0.2860 | 0.0818 | 0.7650 | 0.9973 | 0.2709 | 0.0764 | 0.7570 | 0.9522 |
 | LR splines + context | 0.2740 | 0.0783 | 0.7901 | 0.9957 | 0.2595 | 0.0728 | 0.7798 | 0.9711 |
 | LR splines + context + freeze frames | 0.2673 | 0.0765 | 0.8046 | 0.9954 | 0.2547 | 0.0716 | 0.7915 | 0.9664 |
-| Monotone GBM + Platt | 0.2638 | 0.0754 | 0.8107 | 1.0097 | 0.2533 | 0.0711 | 0.7949 | 0.9526 |
+| Monotone GBM + Platt, trained without team-selected seasons | 0.2641 | 0.0755 | 0.8099 | 1.0086 | 0.2533 | 0.0711 | 0.7943 | 0.9483 |
 | StatsBomb xG | 0.2659 | 0.0757 | 0.8072 | 1.0166 | 0.2520 | 0.0704 | 0.7963 | 0.9916 |
 
 StatsBomb xG is a reference ceiling, not a like-for-like out-of-sample competitor: StatsBomb fits it on its own data, which likely includes these matches, and it uses freeze-frame and other inputs.

@@ -421,20 +421,23 @@ def test_models_run_cached(
     fsm_cache: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """§5.3, Decision 4: ``main --cache DIR`` fills the cache (17 written); a second
-    ``models.run(cache=DIR)`` reads all 17 specs, fits nothing, and writes the same 5 card bytes
-    and the same stdout but for the last line ``cache: {dir} (17 read, 0 written)``; ``main``
+    ``models.run(cache=DIR)`` reads all 20 specs (17, plus POOLED and the two level fixes of
+    PR1.xg-context §3.3, all evaluated when ``ADOPTED`` is None), fits nothing, and writes the
+    same 5 card bytes and the same stdout but for the last line ``cache: {dir} (20 read, 0
+    written)``; ``main``
     without flags reads ``data/cache`` under the working directory; ``--no-cache`` reads nothing
     (so the fit runs) and leaves the cache as it was."""
     from football_shot_models import data, models
 
     manifest = mc.write_models_snapshot(tmp_path / "fixture")
-    monkeypatch.setattr(models, "GBM", mc.tiny_gbm(models))
+    mc.patch_level(models, monkeypatch)
     root, docs = tmp_path / "cache", tmp_path / "docs"
     common = ["--manifest", str(manifest), "--docs-dir", str(docs)]
     code, first_out, err = _run_main(models, ["--cache", str(root), *common])
     assert code == 0, err
     n_specs = len(baselines.BASELINES) + len(ablation.STEPS) + len(ablation.VARIANTS) + 1
     assert n_specs == 17
+    n_specs += 1 + len(models.LEVEL_FIXES)  # PR1.xg-context: POOLED and both fixes (ADOPTED None)
     key_dir = fsm_cache.PredictionCache(root, data.load_xg_data(manifest).manifest.data_digest).dir
     assert first_out.splitlines()[-1] == f"cache: {key_dir} (0 read, {n_specs} written)"
     assert len(list(key_dir.glob("*.npz"))) == n_specs

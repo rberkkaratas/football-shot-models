@@ -115,6 +115,9 @@ def shots_frame(shots: Sequence[Shot]) -> pl.DataFrame:
             o in ("goal", "saved") and not s.own_goal for s, o in zip(shots, outcome, strict=True)
         ],
         **{c: [None] * n for c in ("first_time", "follows_dribble", "open_goal", "one_on_one")},
+        # schema 1.3 (PR1.xg-context): not derived for StatsBomb; read from the schema so the
+        # fixture builds before and after the bump
+        **{c: [None] * n for c in ("prev_action", "rebound") if c in schema.SHOT_SCHEMA},
         "big_chance": [None] * n,
         "deflected": [None] * n,
         "provider_xg": [None if s.own_goal else s.provider_xg for s in shots],

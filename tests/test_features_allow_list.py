@@ -35,7 +35,9 @@ def test_baseline_features_are_pre_shot() -> None:
 def test_allow_list_is_c3_pre_shot() -> None:
     expected = {name for name, role in ANY_ROLE.items() if role == "pre_shot"} - set(RESTRICTED)
     assert frozenset(expected) == features.XG_ALLOWED
-    assert len(features.XG_ALLOWED) == 20  # 19 shots columns + matches.gender (MS3.features)
+    # 21 shots columns + matches.gender (MS3.features; PR1 schema 1.3 adds prev_action, rebound)
+    assert len(features.XG_ALLOWED) == 22
+    assert {"prev_action", "rebound"} <= features.XG_ALLOWED
     assert "gender" in features.XG_ALLOWED
     assert tuple(features.RESTRICTED_UNTIL) == RESTRICTED
     assert "big_chance" not in features.XG_ALLOWED  # restricted: ablation only, null for SB

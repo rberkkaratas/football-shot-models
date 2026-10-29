@@ -172,7 +172,13 @@ LR_STAYS = evaluation.Comparison(
             "freeze frames is +0.0004 [-0.0003, +0.0011], an interval that does not lie above 0, "
             "so LR splines + context + freeze frames stays headline.",
         ),
-        ("s3", "gbm", LR_GAIN, "Not the headline model; that is Monotone GBM + Platt."),
+        (
+            "s3",
+            "gbm",
+            LR_GAIN,
+            "Not the headline model; that is Monotone GBM + Platt, trained without "
+            "team-selected seasons.",  # PR1 decision 29: the adopted fix's title
+        ),
         (
             "s1",
             "s3",

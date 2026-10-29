@@ -126,11 +126,11 @@ def test_kicks_only_season_is_small() -> None:
                           kind="penalty"))  # fmt: skip
     f = gc.blocks(*parts)
     b18 = pl.col("season_id") == "sb:30"
-    rated = gsax.rate(f, small=gsax.SmallLeague(2, 50))
+    rated = gsax.rate(f, small=gsax.SmallLeague(2, 50), zero_families=())
     assert rated.filter(b18)["small"].all() and (rated.filter(b18)["delta"] == 0.0).all()
     assert np.allclose(rated.filter(b18)["q"].to_numpy(), rated.filter(b18)["xgot"].to_numpy())
     assert not rated.filter(~b18)["small"].any()  # A18: 3 keepers, 60 shots
-    free = gsax.rate(f, small=None).filter(b18)
+    free = gsax.rate(f, small=None, zero_families=()).filter(b18)
     assert not free["small"].any() and free["delta"][0] != 0.0
     assert abs(float((free["q"] - free["is_goal"].cast(pl.Float64)).sum())) <= gsax.SUM_TOL
 
@@ -169,7 +169,7 @@ def test_next_season_left_out_by_grouping() -> None:
     ``KEEPER_SEASON`` the rated season's rows (g10 A19 -> A20, g11 both pairs: 3 out), for
     ``CAREER`` the keeper's rows with start <= t (g10's A18 goals keep his A19 -> A20 pair;
     g11 has none: 2 out). R10: a bare str for ``by`` raises ``TypeError``."""
-    rated = gsax.rate(_next_frame(), small=None)
+    rated = gsax.rate(_next_frame(), small=None, zero_families=())
     season = gsax.next_season(rated, by=gsax.KEEPER_SEASON)
     career = gsax.next_season(rated, by=gsax.CAREER)
     assert (season.pairs + season.left_out, season.left_out) == (7, 3)
@@ -178,23 +178,33 @@ def test_next_season_left_out_by_grouping() -> None:
         gsax.next_season(rated, by="gk_id")
 
 
-def test_next_season_loo_missing() -> None:
+def test_next_season_loo_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     """R8: ``loo_missing`` counts the test seasons with no unpaired row (B19 without g06) or a
     non-finite δ without the paired keepers (A20 whose unpaired keepers concede 0); 0 when
     every test season has one. Amended in run6-ms6 (football 5): such a season leaves the
     leave-out gains, which are scored on the other test seasons' rows (``loo_shots`` /
-    ``loo_pairs`` count what left), and are None only when fewer than 2 test matches remain."""
-    full = gsax.next_season(gsax.rate(_next_frame(), small=None), by=gsax.KEEPER_SEASON)
+    ``loo_pairs`` count what left), and are None only when fewer than 2 test matches remain.
+    Amended in PR1 (§3.4): a remainder failing E2 is rated at 0 (``loo_small``) before its
+    shift is tried, so the non-finite branch is shown with ``SMALL_LEAGUE`` None."""
+    full = gsax.next_season(
+        gsax.rate(_next_frame(), small=None, zero_families=()), by=gsax.KEEPER_SEASON
+    )
     assert full.loo_missing == 0 and full.gain_loo is not None
     assert (full.loo_shots, full.loo_pairs) == (0, 0)
     one = _next_frame(b19_unpaired=False)
-    ns = gsax.next_season(gsax.rate(one, small=None), by=gsax.KEEPER_SEASON)
+    ns = gsax.next_season(gsax.rate(one, small=None, zero_families=()), by=gsax.KEEPER_SEASON)
     assert ns.untestable is None and ns.gain is not None
     assert ns.loo_missing == 1 and (ns.loo_shots, ns.loo_pairs) == (16, 1)  # g04 B19
     assert ns.gain_loo is not None and ns.gain_none_loo is not None
     assert ns.gain_loo.groups == full.gain_loo.groups - 2  # B19's 2 matches left out
     two = _next_frame(b19_unpaired=False, a20_unpaired_goals=False)
-    ns = gsax.next_season(gsax.rate(two, small=None), by=gsax.KEEPER_SEASON)
+    rated_two = gsax.rate(two, small=None, zero_families=())
+    # PR1 §3.4: under SMALL_LEAGUE the remainders of A19 (g08, g11: 2 keepers) and A20 (g05,
+    # g10, g11: 3 keepers, 48 rows) fail E2 -> δ_loo 0; B19 (empty) is the one NaN
+    ns = gsax.next_season(rated_two, by=gsax.KEEPER_SEASON)
+    assert (ns.loo_missing, ns.loo_small) == (1, 2)
+    monkeypatch.setattr(gsax, "SMALL_LEAGUE", None)  # step 4: a non-finite δ -> NaN
+    ns = gsax.next_season(rated_two, by=gsax.KEEPER_SEASON)
     a20 = ns.test_shots - ns.loo_shots
     assert ns.loo_missing == 2 and ns.loo_shots > 16 and a20 > 0
     assert ns.gain_loo is not None and ns.gain_loo.groups < ns.test_matches
@@ -404,3 +414,242 @@ def test_model_card_loo_note(gsax_fits: dict[str, Any]) -> None:
     assert card.count(note) == 1
     assert ("Leave-out columns of *Career effect (the literal formula)*: n/a, because 2 test "
             "season(s) have no shot faced by an unpaired keeper") in card  # fmt: skip
+
+
+# ---- PR1 keeper-fixes build.md ratify items without a QA test (added at integration) ---------
+
+
+def test_pr1_r4_two_families_raise() -> None:
+    """PR1 R4: a competition-season with two ``family`` values makes ``rate`` raise (its
+    ``zero_family`` flag would be ambiguous); one family per season rates."""
+    f = gc.blocks(
+        gc.block("sb:g01", "A18", goals=[True, False], xgot=0.3, matches=["sb:m1"]),
+        gc.block("sb:g02", "A18", goals=[False, True], xgot=0.3, matches=["sb:m2"]),
+    )
+    assert gsax.rate(f, small=None, zero_families=gsax.ZERO_FAMILIES).height == 4  # precondition
+    mixed = f.with_columns(family=pl.Series([gc.LEAGUE] * 3 + [gsax.TEAM_SELECTED],
+                                            dtype=f.schema["family"]))  # fmt: skip
+    with pytest.raises(ValueError, match="1 competition-season.*more than one family"):
+        gsax.rate(mixed, small=None, zero_families=gsax.ZERO_FAMILIES)
+
+
+def test_pr1_r5_model_no_team_none_when_all_team_selected(gsax_census: dict[str, Any]) -> None:
+    """PR1 R5: with every open-play row team-selected, ``model_no_team`` is None (no keeper
+    model on an empty frame) and the without-team test is untestable, not an error."""
+    c = gsax_census
+    team = pl.lit(gsax.TEAM_SELECTED).cast(c["pred"].schema["family"])
+    g = gsax.assemble(c["f"], c["pred"].with_columns(family=team), stops=c["stops"],
+                      trained=c["trained"])  # fmt: skip
+    assert g.rated["zero_family"].all()  # precondition
+    assert g.model_no_team is None
+    assert g.next_no_team is not None and g.next_no_team.untestable is not None
+
+
+def test_pr1_r6_next_season_worse_than_xgot_alone(gsax_fits: dict[str, Any]) -> None:
+    """PR1 R6: a gain over xGOT alone whose interval lies below 0 reads "predict next season
+    worse than xGOT alone", not "not distinguishable"; an interval holding 0 reads the latter."""
+    base = gsax_fits["fits"]["statsbomb"].next_season
+    ci = lambda lo, hi: metrics.GainCI((lo + hi) / 2, lo, hi, metrics.N_BOOT, 40)  # noqa: E731
+    say = lambda none: gsax_cards.next_season_sentence(  # noqa: E731
+        dataclasses.replace(base, untestable=None, gain=ci(0.01, 0.03), gain_none=none)
+    )
+    worse, alone = "predict next season worse than xGOT alone", "not distinguishable from xGOT"
+    assert worse in say(ci(-0.02, -0.001)) and alone not in say(ci(-0.02, -0.001))
+    assert alone in say(ci(-0.02, 0.0)) and worse not in say(ci(-0.02, 0.0))
+
+
+def test_pr1_r9_stops_without_end_x(gsax_fits: dict[str, Any]) -> None:
+    """PR1 R9: ``stops(f)`` raises ``ValueError`` naming ``end_x`` when the xGOT rows have no
+    such column (not a polars error)."""
+    f = gsax_fits["xgot"]["statsbomb"]
+    assert gsax.stops(f) is not None  # precondition
+    inp = dataclasses.replace(f.inp, on_held=f.inp.on_held.drop("end_x"))
+    with pytest.raises(ValueError, match="no end_x column"):
+        gsax.stops(dataclasses.replace(f, inp=inp))
+
+
+# ---- PR1 keeper-fixes: the remaining build.md ratify items (QA, engineer-decision pass) ------
+
+
+def _census_names(table: pl.DataFrame) -> pl.DataFrame:
+    ids = sorted(table["gk_id"].to_list())
+    return pl.DataFrame({"player_id": ids, "player_name": [f"Fixture Keeper {i:02d}"
+                                                           for i in range(len(ids))],
+                         "names": pl.Series([1] * len(ids), dtype=pl.Int64())})  # fmt: skip
+
+
+def _with_noz(c: dict[str, Any]) -> Any:
+    """The census fit with a z-free table whose xGOT differs from the headline's."""
+    open_ = c["pred"].filter(pl.col("kind") == "open_play")
+    moved = open_.with_columns(xgot=(pl.col("xgot") * 0.9).clip(0.01, 0.99))
+    return dataclasses.replace(c["g"], noz=gsax.keeper_table(gsax.noz_rated(moved)))
+
+
+def test_pr1_r1_noz_gate_apart_from_line_gate(
+    gsax_fits: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR1 R1 (§3.6, E2 (c)): ``fit`` runs one z-free season-out (``without=NOZ_FEATURES``) for
+    a provider in ``NOZ_PROVIDERS``; both constants are read when called and gated apart from
+    ``LINE_PROVIDERS``: the line gate off keeps the z-free refit, the z-free gate off keeps the
+    line stops."""
+    from football_shot_models import season_out
+
+    f = gsax_fits["xgot"]["statsbomb"]
+    seen: list[tuple[str, ...]] = []
+
+    def fake(_f: Any, *, without: Any = ()) -> str:
+        seen.append(tuple(without))
+        return f"pred {tuple(without)}"
+
+    monkeypatch.setattr(season_out, "season_out", fake)
+    monkeypatch.setattr(season_out, "trained_seasons", lambda _f: "trained")
+    monkeypatch.setattr(gsax, "assemble", lambda _f, pred, **kw: {"pred": pred, **kw})
+
+    def run(**patch: Any) -> tuple[dict[str, Any], list[tuple[str, ...]]]:
+        seen.clear()
+        with pytest.MonkeyPatch.context() as mp:
+            for k, v in patch.items():
+                mp.setattr(gsax, k, v)
+            return gsax.fit(f), list(seen)
+
+    out, calls = run()
+    assert calls == [(), ("mouth_z",)] and out["pred"] == "pred ()"
+    assert out["noz"] == "pred ('mouth_z',)" and out["stops"] is not None
+    out, calls = run(LINE_PROVIDERS=frozenset())
+    assert out["stops"] is None and out["noz"] == "pred ('mouth_z',)"
+    out, calls = run(NOZ_PROVIDERS=frozenset())
+    assert calls == [()] and out["noz"] is None and out["stops"] is not None
+    out, calls = run(NOZ_FEATURES=("angle_rad",))
+    assert calls == [(), ("angle_rad",)]
+
+
+def test_pr1_r2_noz_refit_reads_the_same_xg_input(gsax_fits: dict[str, Any]) -> None:
+    """PR1 R2: the z-free refit fits the xG input under the headline season-out's own spec, on
+    the same rows and folds (one cache identity: a hit in ``make gsax``; without a cache, as in
+    the fixture and ``reproduce-cold``, StatsBomb fits it twice), then the headline once as
+    ``-season-out-no-mouth_z``, and no penalty xGOT (the season-out one is fitted once)."""
+    f = gsax_fits["xgot"]["statsbomb"]
+    calls = gsax_fits["calls"]["statsbomb"]
+    names = [c["spec"].name for c in calls]
+    xg_name = f"{f.xg_input.spec.name}-season-out"
+    assert names.count(xg_name) == 2, names
+    a, b = (c for c in calls if c["spec"].name == xg_name)
+    assert a["spec"] == b["spec"]
+    for side in ("dev", "held"):
+        assert a[side]["shot_id"].equals(b[side]["shot_id"])
+    fa, fb = (np.concatenate([np.asarray(t) for pair in c["folds"] for t in pair])
+              for c in (a, b))  # fmt: skip
+    assert np.array_equal(fa, fb)
+    assert [n for n in names if n.endswith("-no-mouth_z")] == [
+        f"{f.head.spec.name}-season-out-no-mouth_z"
+    ]
+    assert names.count(f"{f.penalty.spec.name}-season-out") == 1
+    assert not [n for n in names if n.startswith(f.penalty.spec.name) and "-no-" in n]
+
+
+def test_pr1_r3_shift_summary_needs_the_line_sensitivity(gsax_census: dict[str, Any]) -> None:
+    """PR1 R3: ``shift_summary(g, "gsax_noz")`` is None when ``g.line`` or ``g.line_seasons`` is
+    None even with ``g.noz`` set (the far-save counts and the population come from the line)."""
+    g = _with_noz(gsax_census)
+    assert gsax.shift_summary(g, "gsax_noz") is not None  # precondition
+    assert gsax.shift_summary(dataclasses.replace(g, line=None), "gsax_noz") is None
+    assert gsax.shift_summary(dataclasses.replace(g, line_seasons=None), "gsax_noz") is None
+
+
+def test_pr1_r7_row3_delta_zero_sum_both_kinds(gsax_census: dict[str, Any]) -> None:
+    """PR1 R7 (§3.3): row 3's "Σ (q − goal) at δ = 0" sums open play and kicks of the δ = 0
+    competition-seasons (team-selected; other small), recomputed here from the rated rows; the
+    kicks move the team-selected sum (precondition)."""
+    g = gsax_census["g"]
+    gap = (pl.col("q") - pl.col("is_goal").cast(pl.Float64)).sum()
+    team, other = pl.col("zero_family"), pl.col("small") & ~pl.col("zero_family")
+    op = pl.col("kind").cast(pl.String) == "open_play"
+    pen = pl.col("kind").cast(pl.String) == "penalty"
+    r = g.rated
+    assert r.filter(team & pen).height > 0  # precondition: kicks in a team-selected season
+    bump = pl.when(team & pen).then(pl.col("q") + 0.25).otherwise(pl.col("q"))
+    r2 = r.with_columns(q=bump)
+    row = gsax.checks(dataclasses.replace(g, rated=r2))[2]
+    t_all, t_op = (float(r2.filter(team & m).select(gap).item()) for m in (pl.lit(True), op))
+    o_all = float(r2.filter(other).select(gap).item())
+    assert f"{t_all:+.1f}" != f"{t_op:+.1f}"  # precondition: the kicks matter at print precision
+    assert f"Σ (q − goal) at δ = 0: team-selected {t_all:+.1f}, other small {o_all:+.1f}" in (
+        row.measured
+    ), row.measured
+
+
+def test_pr1_r8_penalty_zero_line_and_loo_small_always(
+    gsax_census: dict[str, Any], gsax_fits: dict[str, Any]
+) -> None:
+    """PR1 R8 (§4): the rating lines end with "- penalty at δ = 0: K kicks of competition-seasons
+    at δ = 0; P source pool(s) failing E2's minimum (N kicks)" (census: 7 kicks in 3 seasons;
+    1 pool, ``holdout_fit``); the keeper-model card's leave-out δ line is printed with 0 / 0
+    too."""
+    g = gsax_census["g"]
+    pens = g.rated.filter(pl.col("kind").cast(pl.String) == "penalty")
+    k = pens.filter(pl.col("small") | pl.col("zero_family")).height
+    pool = pens.filter(pl.col("pool_small"))
+    assert (k, pool["group"].n_unique()) == (7, 1) and pool.height > 0  # census
+    card = gsax_cards.render(g, names=_census_names(gsax.keeper_rows(g)))["gsax"]
+    want = (f"- penalty at δ = 0: {k:,} kicks of competition-seasons at δ = 0; 1 source pool(s) "
+            f"failing E2's minimum ({pool.height:,} kicks)")  # fmt: skip
+    assert want in card.splitlines(), [x for x in card.splitlines() if "penalty at" in x]
+    ws = gsax_fits["fits"]["whoscored"]
+    zero = {n: dataclasses.replace(getattr(ws, n), loo_missing=0, loo_small=0)
+            for n in ("next_season", "next_career")}  # fmt: skip
+    model = gsax_cards.render(dataclasses.replace(ws, **zero), names=None)["ws-gk-model"]
+    line = next(x for x in model.splitlines() if x.startswith("Leave-out δ per test season"))
+    assert line.count("0 left out, 0 at δ = 0") == 2, line
+
+
+def test_pr1_r10_keeper_rows_column_order(gsax_census: dict[str, Any]) -> None:
+    """PR1 R10: ``keeper_rows`` ends ``gsax_shrunk, gsax_with, gsax_line, gsax_noz,
+    zero_family`` (the chart seam's column order)."""
+    cols = gsax.keeper_rows(_with_noz(gsax_census)).columns
+    assert cols[-5:] == ["gsax_shrunk", "gsax_with", "gsax_line", "gsax_noz", "zero_family"]
+
+
+def test_pr1_r11_chart_note(
+    gsax_census: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR1 R11: with a team-selected row, the chart's note reads "† team-selected: rated at
+    δ = 0, no league shift"; without one there is no note."""
+    import matplotlib.image as mpimg
+
+    logo = tmp_path / "logo.png"
+    mpimg.imsave(logo, np.full((10, 60, 4), 0.5))
+    monkeypatch.setattr(gsax, "TABLE_MIN_SHOTS", 20)
+    table = gsax.keeper_rows(gsax_census["g"])
+    team = pl.col("family").cast(pl.String) == gsax.TEAM_SELECTED
+    assert 0 < table.filter(team).height < table.height  # precondition
+    names = _census_names(table)
+    note = f"{gsax_cards.FLAG} {gsax.TEAM_SELECTED}: rated at δ = 0, no league shift"
+    assert note in gsax_cards.chart(table, names=names, logo=logo)
+    assert "no league shift" not in gsax_cards.chart(table.filter(~team), names=names, logo=logo)
+
+
+def test_pr1_population_season_without_line_rows_is_at_zero(
+    gsax_census: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Audit A10 population: a keeper-season whose competition-season has no row in
+    ``g.line_seasons`` counts as ``at_zero`` (left out, counted), not judged and not dropped;
+    with no season at δ = 0, ``at_zero`` is 0 and ``at_zero_median_abs`` None. The card's count
+    line names the rule ("team-selected, or E2-small there")."""
+    monkeypatch.setattr(gsax, "TABLE_MIN_SHOTS", 20)
+    g = _with_noz(gsax_census)
+    base = gsax.shift_summary(g, "gsax_noz")
+    hit = (pl.col("competition_id") == "sb:9") & (pl.col("season_id") == "sb:42")
+    assert base is not None and g.line_seasons is not None
+    assert g.line_seasons.filter(hit & ~pl.col("at_zero")).height == 1  # precondition: fitted
+    n = gsax.keeper_rows(g).filter(hit).drop_nulls("gsax_noz").height
+    assert n > 0  # precondition
+    gone = gsax.shift_summary(dataclasses.replace(g, line_seasons=g.line_seasons.filter(~hit)),
+                              "gsax_noz")  # fmt: skip
+    assert gone is not None
+    assert (gone.keeper_seasons, gone.at_zero) == (base.keeper_seasons - n, base.at_zero + n)
+    none = dataclasses.replace(g, line_seasons=g.line_seasons.with_columns(at_zero=pl.lit(False)))
+    for column in gsax.SHIFTS:
+        s = gsax.shift_summary(none, column)
+        assert s is not None and s.at_zero == 0 and s.at_zero_median_abs is None
+    card = gsax_cards.render(g, names=_census_names(gsax.keeper_rows(g)))["gsax"]
+    assert "δ = 0 on the subset (team-selected, or E2-small there; median |shift|" in card

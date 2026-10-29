@@ -93,7 +93,7 @@ def test_keeper_table_values() -> None:
     ``open_goal_gsax`` counted on the open-goal rows (0 when none), null for a keeper-season
     whose ``open_goal`` is all null (B18). League table: the league sums, δ per kind."""
     gsax = _gsax()
-    rated = gsax.rate(gc.table_frame(), small=None)
+    rated = gsax.rate(gc.table_frame(), small=None, zero_families=())
     for v, expected in (("without penalties", WITHOUT), ("with penalties", WITH)):
         table = gsax.keeper_table(_variant(rated, v))
         assert set(KEEPER_COLUMNS) <= set(table.columns), table.columns
@@ -149,7 +149,7 @@ def test_ci_is_match_bootstrap() -> None:
     held fixed; a 1-match keeper-season has a null CI. ``CI_LEVEL`` is 0.90."""
     gsax = _gsax()
     assert gsax.CI_LEVEL == 0.90
-    rated = gsax.rate(gc.table_frame(), small=None)
+    rated = gsax.rate(gc.table_frame(), small=None, zero_families=())
     for v in gsax.VARIANTS:
         rows = _variant(rated, v)
         table = gsax.keeper_table(rows)
@@ -175,7 +175,8 @@ def test_ci_is_match_bootstrap() -> None:
 @given(st.data())
 def test_totals_sum_to_league(draw: st.DataObject) -> None:
     """Property, both variants: per comp-season the keepers' ``gsax_raw`` sum to the league's,
-    their ``gsax`` to 0 (within ``SUM_TOL``), their shots and goals to the league's and to the
+    their ``gsax`` to 0 without penalties and over all rows with them (PR1: one penalty δ per
+    source; within ``SUM_TOL``), their shots and goals to the league's and to the
     rows; the table does not depend on row order."""
     gsax = _gsax()
     n = draw.draw(st.integers(min_value=6, max_value=60))
@@ -190,7 +191,7 @@ def test_totals_sum_to_league(draw: st.DataObject) -> None:
     kinds = draw.draw(st.lists(st.sampled_from(["open_play", "open_play", "penalty"]),
                                min_size=n, max_size=n))  # fmt: skip
     f = gc.frame(gk=gks, season=seasons, match=matches, goal=goals, xgot=p, kind=kinds)
-    rated = gsax.rate(f, small=None)
+    rated = gsax.rate(f, small=None, zero_families=())
     for v in gsax.VARIANTS:
         rows = _variant(rated, v)
         kt, lt = gsax.keeper_table(rows), gsax.league_table(rows)
@@ -201,7 +202,9 @@ def test_totals_sum_to_league(draw: st.DataObject) -> None:
         assert joined.height == lt.height
         for r in joined.iter_rows(named=True):
             assert abs(r["gsax_raw"] - r["league"]) <= gsax.SUM_TOL, r
-            assert abs(r["gsax"]) <= gsax.SUM_TOL, r
+            if v == gsax.WITHOUT:  # PR1: penalties are pooled per source, not per season
+                assert abs(r["gsax"]) <= gsax.SUM_TOL, r
+        assert abs(float(kt["gsax"].sum())) <= gsax.SUM_TOL  # every group sums to its league
         perm = draw.draw(st.permutations(list(range(rows.height))))
         shuffled = gsax.keeper_table(rows[perm] if perm else rows)
         assert shuffled.select(*KEY, "gk_id", "shots", "goals").equals(
@@ -219,8 +222,8 @@ def test_null_gk_id_raises() -> None:
         gk_id=pl.when(pl.int_range(pl.len()).is_in([0, 5])).then(None).otherwise(pl.col("gk_id"))
     )
     with pytest.raises(ValueError, match=r"\b2\b"):
-        gsax.rate(bad, small=None)
-    rated = gsax.rate(f, small=None)
+        gsax.rate(bad, small=None, zero_families=())
+    rated = gsax.rate(f, small=None, zero_families=())
     rated_bad = rated.with_columns(gk_id=bad["gk_id"])
     for fn in (gsax.keeper_table, gsax.league_table):
         with pytest.raises(ValueError, match=r"\b2\b"):
@@ -232,7 +235,7 @@ def test_empty() -> None:
     their schema; ``reliability`` returns the three tiers with 0 keepers."""
     gsax = _gsax()
     empty = gc.table_frame().clear()
-    rated = gsax.rate(empty, small=None)
+    rated = gsax.rate(empty, small=None, zero_families=())
     assert rated.height == 0 and {"delta", "q", "small"} <= set(rated.columns)
     assert rated.schema["q"] == pl.Float64 and rated.schema["small"] == pl.Boolean
     kt, lt = gsax.keeper_table(rated), gsax.league_table(rated)
@@ -309,7 +312,7 @@ def test_ci_counts(monkeypatch: pytest.MonkeyPatch) -> None:
     one redraw of the goals as Bernoulli(q) from ``default_rng(seed)`` (a fake here, whose
     uniform draws are fixed), rating held fixed. Both recomputed by hand."""
     gsax = _gsax()
-    rated = gsax.rate(_ci_frame(), small=None)
+    rated = gsax.rate(_ci_frame(), small=None, zero_families=())
     q = rated["q"].to_numpy()
     u = np.array([(i * 0.6180339887) % 1.0 for i in range(rated.height)])
     seed = 987_654

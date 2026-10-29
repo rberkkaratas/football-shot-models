@@ -58,7 +58,10 @@ def test_gbm_constants_and_spec() -> None:
         gbm.MONOTONE["gk_to_goal_m"] = 1  # type: ignore[index]  # read-only mapping
     assert dict(models.MONOTONE_REASONS) == REASONS
     spec = models.GBM
-    assert (spec.name, spec.title) == ("xg-gbm", "Monotone GBM + Platt")
+    assert (spec.name, spec.title) == (
+        "xg-gbm",
+        "Monotone GBM + Platt, trained without team-selected seasons",  # PR1 decision 29
+    )
     assert spec.coefficients is gbm.gbm_settings
     fresh = spec.make()
     assert isinstance(fresh, gbm.MonotoneGBM)

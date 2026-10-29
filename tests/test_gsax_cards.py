@@ -13,6 +13,7 @@ from __future__ import annotations
 import dataclasses
 import itertools
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -210,7 +211,8 @@ def test_stability_sentence(gsax_fits: dict[str, Any]) -> None:
 
 def test_next_season_sentence(gsax_fits: dict[str, Any]) -> None:
     """Untestable -> the reason with its counts; beats raw (``gain.low > 0``) with and without a
-    gain over xGOT alone; not better than raw (``gain.low`` 0 included)."""
+    gain over xGOT alone ("not distinguishable from xGOT alone" when that interval holds 0, PR1
+    §4); not better than raw (``gain.low`` 0 included)."""
     cards = _cards()
     base = gsax_fits["fits"]["statsbomb"].next_season
     gain = lambda low: metrics.GainCI(0.02, low, 0.04, metrics.N_BOOT, 40)  # noqa: E731
@@ -220,14 +222,14 @@ def test_next_season_sentence(gsax_fits: dict[str, Any]) -> None:
     assert reason in say(untestable=reason, gain=None, gain_none=None)
     beats = ("shrunken estimates predict next season better than raw GSAx, because raw GSAx "
              "overfits small samples").lower()  # fmt: skip
-    alone = "and predict next season no better than xGOT alone (the league average)".lower()
+    alone = "not distinguishable from xgot alone"  # PR1 §4 (was "no better than")
     not_better = "shrunken estimates do not predict next season better than raw GSAx".lower()
     text = say(untestable=None, gain=gain(0.01), gain_none=gain(0.001))
     # run6-ms6 (football 3): a gain is an improvement, never "add ... log loss"
     assert beats in text and "and improve log loss by 0.02000 over xgot alone" in text
     assert alone not in text and "add" not in text
     text = say(untestable=None, gain=gain(0.01), gain_none=gain(0.0))
-    assert beats in text and alone in text
+    assert beats in text and alone in text and "no better than" not in text
     for low in (0.0, -0.01):
         text = say(untestable=None, gain=gain(low), gain_none=gain(-0.001))
         assert not_better in text and beats not in text
@@ -296,9 +298,9 @@ def test_main_errors(
 def test_cards_band_section(gsax_fits: dict[str, Any], sb: dict[str, Any],
                             monkeypatch: pytest.MonkeyPatch) -> None:  # fmt: skip
     """Both GSAx cards carry the band table of the season-out q (one row per
-    ``placement_bands`` row) and its limitation with the count of failing judged bands; only
-    the WhoScored card states the swapped fit's rows, share and training rows (counted here);
-    with the minimum at 0 every failing band is named in the limitation."""
+    ``placement_bands`` row) and its limitation with the count of failing judged bands; no card
+    mentions a swapped fit (PR1: deleted); with the minimum at 0 every failing band is named in
+    the limitation."""
     from football_shot_models import xgot
 
     gsax, cards = _gsax(), _cards()
@@ -314,14 +316,7 @@ def test_cards_band_section(gsax_fits: dict[str, Any], sb: dict[str, Any],
         bad = t.filter(pl.col("judged") & ~pl.col("within")).height
         judged = int(t["judged"].sum())
         assert f"Limitation: {bad:,} of {judged:,} judged bands" in card, p
-        src = g.rated["source"].cast(pl.String)
-        swap, held = int((src == "swapped_fit").sum()), int((src == "holdout_fit").sum())
-        if p == "whoscored":
-            assert swap > 0
-            assert f"`swapped_fit` rows ({swap:,}, {swap / g.rated.height:.0%}" in card
-            assert f"test season's {held:,} rated rows" in card
-        else:
-            assert swap == 0 and "Swapped fit:" not in card
+        assert "swapped_fit" not in card and "Swapped fit" not in card, p
     monkeypatch.setattr(xgot, "MIN_BAND_SHOTS", 0)
     g = gsax_fits["fits"]["whoscored"]
     t = gsax.placement_bands(g).filter(pl.col("judged") & ~pl.col("within"))
@@ -333,13 +328,13 @@ def test_cards_band_section(gsax_fits: dict[str, Any], sb: dict[str, Any],
 
 def test_team_selected_flag(sb: dict[str, Any], logo: Path) -> None:
     """Team-selected keeper-seasons are flagged († after the family) in the StatsBomb table and
-    the chart labels, with the limitation line giving the flagged count and the split by side
-    (``team_selected_split``); without team-selected rows there is no flag and no line."""
+    the chart labels; without team-selected rows there is no flag. (The split by side moved to
+    ``test_team_lines_count_only``, PR1.)"""
     gsax, cards = _gsax(), _cards()
     g = sb["g"]
     assert not (g.keepers[gsax.WITHOUT]["family"] == gsax.TEAM_SELECTED).any()  # precondition
     plain = cards.render(g, names=sb["names"])["gsax"]
-    assert cards.FLAG not in plain and "Limitation (" not in plain
+    assert cards.FLAG not in plain
     season = sb["table"].select(gsax.SEASON_KEY).row(0)
     hit = (pl.col("competition_id") == season[0]) & (pl.col("season_id") == season[1])
     fam = pl.when(hit).then(pl.lit(gsax.TEAM_SELECTED)).otherwise(pl.col("family"))
@@ -357,33 +352,9 @@ def test_team_selected_flag(sb: dict[str, Any], logo: Path) -> None:
         if hits:
             team = rows[hits[0]] == gsax.TEAM_SELECTED
             assert (f"{gsax.TEAM_SELECTED} {cards.FLAG} |" in line) == team, line
-    split = gsax.team_selected_split(g2.keepers[gsax.WITHOUT])
-    assert split.height
-    assert f"{flagged.height:,} of the {table.height:,} keeper-seasons" in card
-    for r in split.iter_rows(named=True):
-        assert f"{r['side']}: {r['keeper_seasons']:,} keeper-seasons, {r['shots']:,} shots" in card
     svg = cards.chart(table, names=sb["names"], logo=logo)
     assert cards.FLAG in svg
     assert cards.FLAG not in cards.chart(sb["table"], names=sb["names"], logo=logo)
-
-
-def test_rating_lines_shots_per_delta(gsax_fits: dict[str, Any], sb: dict[str, Any]) -> None:
-    """Each kind's rating line states the shots behind its δ (min and median over the
-    competition-seasons that are not small), counted here from the rated rows."""
-    gsax, cards = _gsax(), _cards()
-    for p, names in (("statsbomb", sb["names"]), ("whoscored", None)):
-        g = gsax_fits["fits"][p]
-        card = cards.render(g, names=names)[f"{cards.CARD_PREFIX[p]}gsax"]
-        for kind in gsax.RATED_KINDS:
-            n = (
-                g.rated.filter((pl.col("kind").cast(pl.String) == kind) & ~pl.col("small"))
-                .group_by(*gsax.SEASON_KEY).len()["len"].to_numpy()
-            )  # fmt: skip
-            line = next(
-                x for x in card.splitlines() if x.startswith(f"- {kind.replace('_', ' ')}:")
-            )
-            want = f"min {n.min():,}, median {float(np.median(n)):,.1f}" if n.size else "none"
-            assert line.endswith(f"shots per δ: {want}"), (p, kind, line)
 
 
 def test_distribution_with_and_without_penalties(
@@ -505,27 +476,217 @@ def test_cards_text_from_constants(
     assert "next season" in five.target
 
 
-def test_team_lines_raw_and_share(sb: dict[str, Any]) -> None:
-    """Run6-ms6 (football 4): the team-selected limitation prints raw (before δ) beside rated
-    per side and the selected side's share of the team-selected shots, computed from
-    ``team_selected_split``; it names both channels (no finisher term; δ absorbs the selected
-    keeper's record) instead of a credit for weaker finishers."""
+# ---- PR1 keeper-fixes §4: render-only changes ------------------------------------------------
+
+
+def _census_cards(c: dict[str, Any], g: Any = None) -> Mapping[str, str]:
+    """The StatsBomb cards of the census fit (or of ``g``), names for its table keepers."""
     gsax, cards = _gsax(), _cards()
-    g = sb["g"]
-    season = sb["table"].select(gsax.SEASON_KEY).row(0)
-    hit = (pl.col("competition_id") == season[0]) & (pl.col("season_id") == season[1])
-    fam = pl.when(hit).then(pl.lit(gsax.TEAM_SELECTED)).otherwise(pl.col("family"))
-    keepers = {k: v.with_columns(family=fam.cast(v.schema["family"])) for k, v in g.keepers.items()}
-    g2 = dataclasses.replace(g, keepers=keepers)
-    card = cards.render(g2, names=sb["names"])["gsax"]
-    split = gsax.team_selected_split(g2.keepers[gsax.WITHOUT])
-    assert split.height
+    g = c["g"] if g is None else g
+    return cards.render(g, names=_names(gsax.keeper_rows(g), conflicts=0))
+
+
+def _section(card: str, heading: str) -> str:
+    lines = card.splitlines()
+    start = lines.index(heading)
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("#")), len(lines))
+    return "\n".join(lines[start:end])
+
+
+def test_changelog_v2(gsax_census: dict[str, Any], gsax_fits: dict[str, Any]) -> None:
+    """§4: ``CHANGELOG`` is a tuple of the two versions, rendered one bullet each on all four
+    cards; the version is v2 (one constant: no card says v1 in its name line)."""
+    cards = _cards()
+    assert cards.CHANGELOG == (
+        "v1 (MS6, P3.1-P3.3): first version.",
+        "v2 (PR1): WhoScored season-out from competition-season folds; one penalty δ per "
+        "season-out source; team-selected competition-seasons at δ = 0 (flagged); goal_z "
+        "sensitivity (StatsBomb).",
+    )
+    out = {**_census_cards(gsax_census), **cards.render(gsax_fits["fits"]["whoscored"], names=None)}
+    assert set(out) == {"gsax", "gk-model", "ws-gsax", "ws-gk-model"}
+    for name, card in out.items():
+        for entry in cards.CHANGELOG:
+            assert f"- {entry}" in card, name
+        line = next(x for x in card.splitlines() if x.startswith("- **Name / version:**"))
+        assert line.endswith(f"` v{len(cards.CHANGELOG)}"), (name, line)
+
+
+def test_population_team_selected_line(gsax_census: dict[str, Any]) -> None:
+    """§4 ``_population``: "Team-selected competition-seasons: N rated at δ = 0 and flagged (PM
+    2026-10-28), K also E2-small, with M keeper-seasons"; census N 2 (T18, T19), K 1 (T18), M 6,
+    recomputed here from the flags."""
+    gsax = _gsax()
+    g = gsax_census["g"]
+    flags = g.rated.group_by(gsax.SEASON_KEY).agg(pl.col("zero_family").any(),
+                                                  pl.col("small").any())  # fmt: skip
+    team = flags.filter(pl.col("zero_family"))
+    n, k = team.height, team.filter(pl.col("small")).height
+    m = g.keepers[gsax.WITHOUT].join(team.select(gsax.SEASON_KEY), on=gsax.SEASON_KEY,
+                                     how="semi").height  # fmt: skip
+    assert (n, k, m) == (2, 1, 6)
+    card = _census_cards(gsax_census)["gsax"].replace("**", "")  # markdown bold aside
+    assert (f"Team-selected competition-seasons: {n:,} rated at δ = 0 and flagged (PM "
+            f"2026-10-28), {k:,} also E2-small, with {m:,} keeper-seasons") in card  # fmt: skip
+
+
+def test_team_lines_count_only(gsax_census: dict[str, Any]) -> None:
+    """§4 ``_team_lines``: the split by side over the team-selected seasons not E2-small (T19
+    only), each side's GSAx with its SD and shots (recomputed with ``team_selected_split`` on
+    those seasons' keeper-seasons) and the seasons' Σ (q − goal), then "δ = 0 removes the
+    league-sum coupling, not the gap between the sides."; no sentence attributes the gap (no
+    finishing credit, no δ absorbing a record)."""
     from football_shot_models.cards import signed
 
+    gsax = _gsax()
+    g = gsax_census["g"]
+    groups = gsax.rating_groups(g.rated).filter(
+        (pl.col("kind") == "open_play") & pl.col("zero_family") & ~pl.col("small")
+    )
+    assert groups.height == 1  # precondition: T19
+    seasons = g.rated.filter(pl.col("zero_family") & ~pl.col("small")).select(gsax.SEASON_KEY)
+    table = g.keepers[gsax.WITHOUT].join(seasons.unique(), on=gsax.SEASON_KEY, how="semi")
+    split = gsax.team_selected_split(table)
+    assert split.height == 2  # precondition: both sides
+    card = _census_cards(gsax_census)["gsax"]
+    coupling = "δ = 0 removes the league-sum coupling, not the gap between the sides."
+    line = next(x for x in card.splitlines() if coupling in x)
     for r in split.iter_rows(named=True):
-        assert (f"{r['side']}: {r['keeper_seasons']:,} keeper-seasons, {r['shots']:,} shots, GSAx "
-                f"raw {signed(r['gsax_raw'])}, rated {signed(r['gsax'])}") in card  # fmt: skip
-    sel = split.filter(pl.col("side") == "selected side")["shots"].sum()
-    share = sel / split["shots"].sum()
-    assert f"face {share:.0%} of the team-selected rated shots" in card
-    assert "weaker finishers" not in card and "absorbs part of their own record" in card
+        assert f"{r['shots']:,} shots" in line, r
+        assert f"{signed(r['gsax'])} (SD {r['sd']:.1f})" in line, r
+    assert signed(float(groups["gap"].sum())) in line
+    low = card.lower()
+    assert "absorbs" not in low and "weaker finishers" not in low and "finisher" not in low
+
+
+def test_rating_lines_pools(gsax_census: dict[str, Any]) -> None:
+    """§4 ``_rating_lines``: one open-play line over the fitted competition-seasons (5 in the
+    census) and, per fitted penalty pool, its source with its kicks and keepers (from
+    ``rating_groups``; groups at δ = 0 are only counted)."""
+    gsax = _gsax()
+    g = gsax_census["g"]
+    t = gsax.rating_groups(g.rated)
+    fitted = t.filter((pl.col("kind") == "open_play") & ~pl.col("small") & ~pl.col("zero_family"))
+    assert fitted.height == 5
+    card = _census_cards(gsax_census)["gsax"]
+    lines = card.splitlines()
+    op = next(x for x in lines if x.startswith("- open play:"))
+    assert f"over {fitted.height:,} competition-seasons" in op
+    pools = t.filter((pl.col("kind") == "penalty") & ~gsax.AT_ZERO)
+    assert pools["group"].to_list() == ["season_folds"]  # holdout_fit is an E2-small pool
+    for r in pools.iter_rows(named=True):
+        hit = [x for x in lines if f"on {r['rows']:,} kicks ({r['keepers']:,} keepers" in x]
+        assert hit and r["group"] in hit[0], r
+
+
+def _segments(card: str, bad: pl.DataFrame) -> list[str]:
+    """Per failing band, the card text from its label to the next label or the line's end."""
+    labels = [f"{r['feature']} {r['band']} ({r['source']})" for r in bad.iter_rows(named=True)]
+    line = next(x for x in card.splitlines() if labels[0] in x)
+    starts = [line.index(lab) for lab in labels]
+    ends = [min([s for s in starts if s > a], default=len(line)) for a in starts]
+    return [line[a:b] for a, b in zip(starts, ends, strict=True)]
+
+
+def test_band_lines_failing(gsax_fits: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    """§4 / PM E1 (a): each failing judged band is printed with feature, band, source, shots,
+    goals, Σ q − goals, SD and z (= gap / SD), and marked escalated ("not escalated" is not a
+    mark) iff it is in
+    ``ESCALATED_BANDS[provider]`` (read when called: the first failing band pinned, then none);
+    no adjective ("noise")."""
+    from types import MappingProxyType
+
+    from football_shot_models import xgot
+    from football_shot_models.cards import signed
+
+    gsax, cards = _gsax(), _cards()
+    monkeypatch.setattr(xgot, "MIN_BAND_SHOTS", 0)
+    g = gsax_fits["fits"]["whoscored"]
+    bad = gsax.placement_bands(g).filter(pl.col("judged") & ~pl.col("within"))
+    assert bad.height >= 1  # precondition: a failing band once every band is judged
+    first = bad.row(0, named=True)
+    for pinned in ({(first["feature"], first["band"], first["source"])}, set()):
+        escalated = MappingProxyType({"statsbomb": frozenset(), "whoscored": frozenset(pinned)})
+        monkeypatch.setattr(gsax, "ESCALATED_BANDS", escalated)
+        card = cards.render(g, names=None)["ws-gsax"]
+        segs = _segments(card, bad)
+        for i, (r, seg) in enumerate(zip(bad.iter_rows(named=True), segs, strict=True)):
+            z = r["gap"] / r["sd"]
+            for part in (f"{r['shots']:,}", f"{r['goals']:,}", signed(r["gap"]),
+                         f"{r['sd']:.1f}", f"z {z:+.2f}"):  # fmt: skip
+                assert part in seg, (part, seg)
+            marked = "escalated" in seg.lower() and "not escalated" not in seg.lower()
+            assert marked == (i == 0 and bool(pinned)), seg
+        assert "noise" not in "".join(segs).lower()
+
+
+def test_disclosure_branches(gsax_fits: dict[str, Any]) -> None:
+    """§4 gk-model disclosure (2) from ``g.saw_test`` (S, P, L): S > 0 -> "For S of the P pairs
+    the test scores, the rated season's xGOT comes from fits that trained on the test season"
+    and "L more pairs are left out"; S = 0 -> "No pair's rated-season xGOT was fitted on its
+    test season (P pairs scored, L left out)."."""
+    cards = _cards()
+    g = gsax_fits["fits"]["whoscored"]
+    seen = cards.render(dataclasses.replace(g, saw_test=(3, 7, 2)), names=None)["ws-gk-model"]
+    assert ("For 3 of the 7 pairs the test scores, the rated season's xGOT comes from fits that "
+            "trained on the test season") in seen  # fmt: skip
+    assert "2 more pairs are left out" in seen and "No pair's rated-season xGOT" not in seen
+    none = cards.render(dataclasses.replace(g, saw_test=(0, 7, 2)), names=None)["ws-gk-model"]
+    assert ("No pair's rated-season xGOT was fitted on its test season (7 pairs scored, 2 left "
+            "out).") in none  # fmt: skip
+    assert "For 0 of" not in none
+
+
+def test_tau_without_team_selected(gsax_census: dict[str, Any], gsax_fits: dict[str, Any]) -> None:
+    """§4 / Football F1: the keeper-model card prints τ̂ without team-selected seasons beside τ̂
+    (``g.model_no_team``); omitted when it is None."""
+    g = gsax_census["g"]
+    card = _census_cards(gsax_census)["gk-model"]
+    line = next(x for x in card.splitlines() if "without team-selected" in x.lower()
+                and f"{g.model_no_team.tau:.4f}" in x)  # fmt: skip
+    assert line
+    ws = _cards().render(gsax_fits["fits"]["whoscored"], names=None)["ws-gk-model"]
+    assert gsax_fits["fits"]["whoscored"].model_no_team is None
+    assert not any("τ̂" in x and "without team-selected" in x.lower() for x in ws.splitlines())
+
+
+def test_line_paragraph_statsbomb_only(
+    gsax_census: dict[str, Any], gsax_fits: dict[str, Any]
+) -> None:
+    """§4 / §8: the StatsBomb GSAx card has a "### goal_z sensitivity" summary from
+    ``line_summary`` (keeper-seasons, the saves left out, what the shift tracks, every goal kept,
+    open play only; the keeper-seasons at δ = 0 on the subset on their own count line, audit A10)
+    with no keeper name in it and no per-keeper column in the table; no
+    WhoScored card has one. With ``g.noz`` (PM E2 (c)) the section also reports the z-free
+    shift (it names ``mouth_z``)."""
+    gsax = _gsax()
+    g = gsax_census["g"]
+    s = gsax.line_summary(g)
+    assert s is not None
+    card = _census_cards(gsax_census)["gsax"]
+    sec = _section(card, "### goal_z sensitivity")
+    assert f"{s.far:,}" in sec and f"{s.keeper_seasons:,}" in sec
+    assert "tracks the share of saves stopped off the line" in sec
+    assert f"Left out of both summaries: {s.at_zero:,} keeper-seasons" in sec  # audit A10
+    assert "cannot re-level a subset selected on the outcome" in sec
+    assert "every goal" in sec.lower() and "open play" in sec.lower()
+    names = _names(gsax.keeper_rows(g), conflicts=0)["player_name"].to_list()
+    assert names and not any(n in sec for n in names)
+    header = next(x for x in card.splitlines() if x.startswith("|") and "hrunk" in x).lower()
+    assert "line" not in header and "yd" not in header and "noz" not in header
+    for p in ("whoscored",):
+        ws = _cards().render(gsax_fits["fits"][p], names=None)["ws-gsax"]
+        assert "### goal_z sensitivity" not in ws and "gsax_line" not in ws  # CHANGELOG aside
+    open_ = gsax_census["pred"].filter(pl.col("kind") == "open_play")
+    noz = gsax.keeper_table(gsax.noz_rated(open_.with_columns(xgot=pl.col("xgot") * 0.9)))
+    g2 = dataclasses.replace(g, noz=noz)
+    sec2 = _section(_census_cards(gsax_census, g2)["gsax"], "### goal_z sensitivity")
+    assert "mouth_z" in sec2 and sec2 != sec
+    with pytest.MonkeyPatch.context() as mp:  # audit A10: δ = 0 keeper-seasons counted apart
+        mp.setattr(gsax, "TABLE_MIN_SHOTS", 20)
+        s20 = gsax.line_summary(g)
+        assert s20 is not None and s20.at_zero > 0 and s20.at_zero_median_abs is not None
+        sec3 = _section(_census_cards(gsax_census)["gsax"], "### goal_z sensitivity")
+        assert f"Over the {s20.keeper_seasons:,} keeper-seasons" in sec3
+        assert (f"Left out of both summaries: {s20.at_zero:,} keeper-seasons" in sec3
+                and f"median |shift| {s20.at_zero_median_abs:.2f}" in sec3)  # fmt: skip

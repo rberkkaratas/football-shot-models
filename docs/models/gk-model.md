@@ -1,10 +1,10 @@
 # Model card: Hierarchical keeper model
 
 ## Overview
-- **Name / version:** `gk-model` v1
+- **Name / version:** `gk-model` v2
 - **Task:** goal ~ offset(logit q) + (1 | keeper-season), no fixed intercept: a shrunken GSAx per keeper-season (P3.2)
 - **Status:** experimental
-- **Source(s):** StatsBomb open data; snapshot `statsbomb-open-v1`, data digest `067ddf5342cfd608045a15189a0b43008664d23f4c5ac4fab5ac403468e57ee5`; xGOT: the headline Monotone GBM + Platt, refitted season-out
+- **Source(s):** StatsBomb open data; snapshot `statsbomb-open-v1`, data digest `a10b7542f2dc13c3b1f46191c8af3e52b9b6f9281543cc7a436f9797b881209e`; xGOT: the headline Monotone GBM + Platt, refitted season-out
 
 ## Intended use
 Shrinks each keeper-season's GSAx towards the league according to how many shots it rests on, and asks whether that predicts the next season better. For research; the stability section of the GSAx card decides what may be said about keeper skill.
@@ -15,8 +15,9 @@ Each on-target open-play shot's goal is Bernoulli with logit = logit q + u, q th
 
 | Grouping | τ̂ (logit) | At a bound | One SD in goals per 100 shots |
 |---|---|---|---|
-| keeper-season | 0.1267 | no | 2.66 |
-| keeper career | 0.1567 | no | 3.29 |
+| keeper-season | 0.1435 | no | 3.01 |
+| keeper-season without team-selected competition-seasons | 0.1045 | no | 2.18 |
+| keeper career | 0.1574 | no | 3.30 |
 
 ## Next-season test
 
@@ -24,24 +25,27 @@ Pairs: the same keeper in the same competition in consecutive seasons (by start 
 
 | Model | Pairs | Left out | Test shots / matches | Log loss none | Log loss raw | Log loss shrunk | Gain over raw | Gain over none | Gain over raw (leave-out δ) | Gain over none (leave-out δ) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| Keeper-season effect | 227 | 14 | 5,866 / 938 | 0.4123 | 0.4476 | 0.4113 | +0.03630 [+0.02779, +0.04520] | +0.00105 [+0.00014, +0.00193] | +0.03712 [+0.02843, +0.04619] | +0.00119 [+0.00025, +0.00209] |
-| … without team-selected competition-seasons | 22 | 2 | 1,302 / 188 | 0.4347 | 0.4458 | 0.4341 | +0.01177 [-0.00097, +0.02546] | +0.00060 [-0.00041, +0.00164] | +0.01217 [-0.00070, +0.02596] | +0.00055 [-0.00045, +0.00161] |
-| Career effect (the literal formula) | 238 | 3 | 6,049 / 953 | 0.4136 | 0.4348 | 0.4123 | +0.02252 [+0.01581, +0.03011] | +0.00129 [+0.00031, +0.00224] | +0.02359 [+0.01671, +0.03135] | +0.00127 [+0.00025, +0.00226] |
+| Keeper-season effect | 227 | 14 | 5,866 / 938 | 0.4144 | 0.4511 | 0.4135 | +0.03759 [+0.02901, +0.04714] | +0.00097 [-0.00018, +0.00214] | +0.03745 [+0.02888, +0.04696] | +0.00102 [-0.00016, +0.00219] |
+| … without team-selected competition-seasons | 22 | 2 | 1,302 / 188 | 0.4345 | 0.4460 | 0.4340 | +0.01194 [-0.00019, +0.02517] | +0.00050 [-0.00047, +0.00148] | +0.01225 [-0.00005, +0.02549] | +0.00047 [-0.00051, +0.00146] |
+| Career effect (the literal formula) | 238 | 3 | 6,049 / 953 | 0.4156 | 0.4367 | 0.4144 | +0.02228 [+0.01525, +0.03001] | +0.00118 [+0.00016, +0.00219] | +0.02198 [+0.01500, +0.02969] | +0.00121 [+0.00018, +0.00223] |
 
-Shrunken estimates predict next season better than raw GSAx, because raw GSAx overfits small samples, and improve log loss by 0.00105 over xGOT alone. Without team-selected competition-seasons (22 pairs) the gain over raw is +0.01177 [-0.00097, +0.02546], its interval not above 0, and over xGOT alone +0.00060 [-0.00041, +0.00164], its interval not above 0.
+Leave-out δ per test season, E2's minimum (at most 2 keepers or under 50 shots: δ = 0) applied to the unpaired keepers: *Keeper-season effect* 0 left out, 0 at δ = 0; *… without team-selected competition-seasons* 0 left out, 0 at δ = 0; *Career effect (the literal formula)* 0 left out, 0 at δ = 0.
+
+Shrunken estimates predict next season better than raw GSAx, because raw GSAx overfits small samples, and are not distinguishable from xGOT alone (the league average). Without team-selected competition-seasons (22 pairs) the gain over raw is +0.01194 [-0.00019, +0.02517], its interval not above 0, and over xGOT alone +0.00050 [-0.00047, +0.00148], its interval not above 0.
 
 Raw GSAx is the unpooled estimate on small samples, so beating it says raw overfits; keeper differences are read from the gain over none.
 
-Disclosures: (1) the test offsets use the test season's δ, which the paired keepers' own goals feed; the leave-out columns show the result without them. (2) The rated season's xGOT comes from fits that saw the test season (season-out fits train on later seasons too), the same for all three predictors; a rolling xGOT is a later item (PM E4).
+Disclosures: (1) the test offsets use the test season's δ, which the paired keepers' own goals feed; the leave-out columns show the result without them. (2) For 177 of the 227 pairs the test scores, the rated season's xGOT comes from fits that trained on the test season (season-out folds train on later seasons too), the same for all three predictors; a rolling xGOT is a later item (PM E4); 14 more pairs are left out by the test (infinite raw estimate).
 
 ## Checks
 
 | Target | Measured | Result |
 |---|---|---|
-| Shrunken estimates predict the next season better than raw GSAx (log-loss gain, 95% match-bootstrap interval above 0; judged on the keeper-season grouping, the career grouping (1 | keeper) beside it) | keeper-season +0.03630 [+0.02779, +0.04520] on 5,866 shots, 227 pairs; career +0.02252 [+0.01581, +0.03011] | met |
+| Shrunken estimates predict the next season better than raw GSAx (log-loss gain, 95% match-bootstrap interval above 0; judged on the keeper-season grouping, the career grouping (1 | keeper) beside it) | keeper-season +0.03759 [+0.02901, +0.04714] on 5,866 shots, 227 pairs; career +0.02228 [+0.01525, +0.03001] | met |
 
 ## Data licensing
 Data: StatsBomb open data (github.com/statsbomb/open-data), credit StatsBomb. Never committed or redistributed; this card holds aggregates only.
 
 ## Changelog
 - v1 (MS6, P3.1-P3.3): first version.
+- v2 (PR1): WhoScored season-out from competition-season folds; one penalty δ per season-out source; team-selected competition-seasons at δ = 0 (flagged); goal_z sensitivity (StatsBomb).

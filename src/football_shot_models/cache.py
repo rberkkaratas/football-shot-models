@@ -9,7 +9,8 @@ the cards are recomputed on every run, from the cached arrays.
 this package and of ``football_core`` plus the Python and library versions: any code edit
 makes the next run cold, except in the render-only modules (:data:`RENDER_ONLY`: card and
 chart rendering), which no fit-side module imports, so they cannot change a prediction, and
-in :data:`ORCHESTRATION_ONLY` (``gsax.py``), which fits only through a hashed module.
+in :data:`ORCHESTRATION_ONLY` (``gsax.py``, ``level.py``), which fit only through a hashed
+module.
 **The identity** of one entry (:func:`identity`) is the spec's name, features and
 ``get_params()``, and a digest of the ``shot_id`` values of dev and the hold-out in frame
 order, so a cached prediction can never serve another split or rows that no longer line up.
@@ -61,12 +62,16 @@ RENDER_ONLY: Final[frozenset[str]] = frozenset(
     {
         "football_shot_models/xgot_cards.py",
         "football_shot_models/gsax_cards.py",
+        "football_shot_models/v2_cards.py",
         "football_core/viz.py",
     }
 )
-# orchestration that fits nothing itself: gsax.py calls xgot.season_out (hashed) for every fit,
-# never the cache or a fitting module, so its arithmetic cannot change a cached prediction
-ORCHESTRATION_ONLY: Final[frozenset[str]] = frozenset({"football_shot_models/gsax.py"})
+# orchestration that fits nothing itself: gsax.py calls season_out.season_out (hashed) for every
+# fit, never the cache or a fitting module, so its arithmetic cannot change a cached prediction;
+# level.py (PR1) reads Evaluation arrays only: models.py (hashed) evaluates what it judges
+ORCHESTRATION_ONLY: Final[frozenset[str]] = frozenset(
+    {"football_shot_models/gsax.py", "football_shot_models/level.py"}
+)
 FIELDS: Final[tuple[str, ...]] = (
     "key",
     "identity",

@@ -10,7 +10,7 @@
 Penalty xGOT: P(goal) of an on-target penalty from where it crossed the line, kept apart from the open-play xGOT. For research and as the penalty input of the MS6 goalkeeper models; not a rating of takers or keepers on its own.
 
 ## Data
-- **Source(s):** StatsBomb open data, revision `4b73468fc5b0f1950f9f66fada70ad3a4f9327cb`; snapshot `statsbomb-open-v1`, data digest `067ddf5342cfd608045a15189a0b43008664d23f4c5ac4fab5ac403468e57ee5`
+- **Source(s):** StatsBomb open data, revision `4b73468fc5b0f1950f9f66fada70ad3a4f9327cb`; snapshot `statsbomb-open-v1`, data digest `a10b7542f2dc13c3b1f46191c8af3e52b9b6f9281543cc7a436f9797b881209e`
 - **Competitions & seasons:** 49 competition-seasons; hold-out Premier League 2015/2016
 - **Rows:** train and validation (dev) 915 shots in 797 matches / test (hold-out) 85 shots in 75 matches; men 681 shots, women 319
 - **Families (segments):** women; team-selected, where one team plays in at least half of a competition-season's matches (56 competition-seasons, 30 of them with one or two matches, mostly single finals, where both teams qualify trivially); league or tournament, the rest

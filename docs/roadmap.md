@@ -15,6 +15,15 @@ single-season StatsBomb pilot; they are re-baselined once on the final split, th
 
 Dropped: P3.4 (keeper positioning variant). It was optional and StatsBomb-only.
 
+## Polish round
+
+Work after the six milestones, one row per polish round. Same rule as above: each number is
+printed by a card or a README block, checked byte for byte by `make reproduce`.
+
+| # | Round | Components | Done when |
+|---|---|---|---|
+| PR1 | **Keeper fixes, WhoScored xG context, StatsBomb hold-out level** ✅ | `season_out` (new, moved from `xgot`), `gsax`, `gsax_cards`; `v2`, `v2_cards`, `level` (new), `models`, `evaluation`, `features`; core schema 1.3 (`prev_action`, `rebound`) | ✅ **Package 1 (keeper fixes, PM decisions after MS6):** WhoScored season-out xGOT from competition-season folds (`season_out.SEASON_OUT`, both providers), one penalty δ per (provider, season-out source), team-selected StatsBomb competition-seasons rated at δ = 0 and flagged, E2's minimum on every league-level offset (PM E3), the season-out block moved to `season_out.py` so `xgot.py` is under its cap, and a StatsBomb [goal_z sensitivity](models/gsax.md) (the 1 yd line subset plus a season-out refit without `mouth_z`, PM E2 (c)) printed beside the headline, never as it. Every MS6 xGOT check (12 of 12) and GSAx check (6 of 6) stays met on both providers (README MS5 / MS6 blocks). The WhoScored GSAx band table now has 2 of 51 judged bands outside 2 SD (MS6: 15), both in the test-season fit, printed on the [card](models/ws-gsax.md) with counts, gap, SD and z as its listed limitation (PM E1 (a)). **Package 2 (xG context and level):** [xG v2](models/xg-v2.md) adds the previous play event and a 3 s rebound flag (pre-shot, from core's WhoScored loader) to v1's inputs, without big chance: test log-loss gain over v1 +0.0010 [+0.0004, +0.0017], test calibration slope 0.9867, 6 of 6 PR1 checks met; v1 stays the record and the WhoScored xGOT input (PM E4 (a)), so WhoScored xGOT and GSAx do not move. The StatsBomb hold-out over-prediction (pooled GBM 974.8 for 913 goals, z +2.30) is decomposed by segment on the [xG GBM card](models/xg-gbm.md) ("Hold-out level"); of two pre-registered fixes, the GBM trained without team-selected seasons brings it within 2 SD (962.7, z +1.86) with 10 of 10 MS3 checks met and is the headline; the hold-out chose it, so its level is no longer an independent check. No WhoScored row, player table, keeper name or file is committed; StatsBomb keeper names appear only on the StatsBomb cards and the git-ignored chart with the logo |
+
 ## Publishing
 Charts or numbers go to LinkedIn only after Berk approves them. Milestone 2 gives the first
 publishable chart; milestone 4 is the xG v1 release.
