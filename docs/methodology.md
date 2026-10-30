@@ -187,7 +187,7 @@ are rated against that season's league sum, so the xGOT level gap is not charged
 absorbs their own performance; team-selected competition-seasons are rated at δ = 0 too,
 because their league sum is one team's keeper against its opponents. Penalties have
 one δ per season-out source, since per-season groups hold a handful of kicks;
-The minimum group size applies to every league-level offset, not to a keeper's own shift. GSAx
+the minimum group size applies to every league-level offset, not to a keeper's own shift. GSAx
 with penalties minus GSAx without is the keeper's penalty GSAx; shoot-outs are not rated. Keeper totals sum to the
 league sum exactly; each keeper-season has the analytic SD √Σ q(1 − q) and a 90% match-bootstrap
 interval. Team-selected seasons (one club's matches) rate the selected keeper against the

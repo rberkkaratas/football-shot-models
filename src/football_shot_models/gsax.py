@@ -1403,7 +1403,7 @@ def gain_text(c: GainCI | None) -> str:
 
 
 def checks(g: GsaxFit) -> tuple[Check, ...]:
-    """The six checks of the P3 criterion, in the card's order (spec §4.7).
+    """The six checks of the GSAx criterion, in the card's order.
 
     Rows 1-5 can be missed. Row 1: the rated rows carry ``g.predictions``' season-out xGOT
     (``season_out`` raises on a fold that saw its season) and some of it differs from the match

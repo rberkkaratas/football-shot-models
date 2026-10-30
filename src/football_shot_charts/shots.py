@@ -65,7 +65,7 @@ NULLABLE: Final = frozenset({"body_part"})
 MIN_PITCH_PX: Final = 400
 PANEL_STEP_PX: Final = 8
 CAPTION_LINES: Final = 4  # the player's zone_bias sentence under the rows
-# the row panel lives in ``rows`` (one engine for every CH1 chart)
+# the row panel lives in ``rows`` (one engine for every chart)
 GIDS: Final = rows.Gids(band="band-league", cap="mark-band", tick="mark-xg", dot="mark-goals-dot")
 ZONE_HEADING: Final = "Goals and xG by zone"
 BODY_PART_HEADING: Final = "Goals and xG by body part"

@@ -88,7 +88,7 @@ def text(fit: v2.V2Fit) -> cards.CardText:
 
     Examples
     --------
-    >>> text(fit).role.startswith("PR1")  # doctest: +SKIP
+    >>> text(fit).role != ""  # doctest: +SKIP
     True
     """
     feats = fit.head.spec.features if isinstance(fit.head.spec, evaluation.ModelSpec) else ()

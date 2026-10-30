@@ -8,8 +8,8 @@ reads fit outputs from the warm cache (never refitting) and writes the git-ignor
 (``make charts``).
 
 The package sits outside ``cache.ROOTS``, so a chart edit never makes a fit cold. One module
-under the hash imports it: ``gsax_cards`` (in ``cache.RENDER_ONLY``) imports ``keepers`` only
-(keeper spec §1, pinned by ``test_outside_hash_and_one_way``). Folding any of these modules
-into ``football_shot_models`` must add it to ``RENDER_ONLY`` in the same edit, or every
-styling edit makes the cache cold (the fold is maintenance-round work).
+under the hash imports it: ``gsax_cards`` (in ``cache.RENDER_ONLY``) imports ``keepers`` only,
+which ``test_outside_hash_and_one_way`` pins. Folding any of these modules into
+``football_shot_models`` must add it to ``RENDER_ONLY`` in the same edit, or every styling
+edit makes the cache cold.
 """

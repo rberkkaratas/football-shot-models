@@ -523,12 +523,12 @@ def _canvas(logo: Path, provider: str = "statsbomb", *, drop: str | None = None)
 def test_titles_json_from_canvas(
     repo: Path, logo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """``_write_all`` writes ``charts.json`` from each canvas's title and subtitle texts (``\\n``
+    """``write_charts`` writes ``charts.json`` from each canvas's title and subtitle texts (``\\n``
     read as a space; sorted, indent 1, UTF-8) after the charts and prints ``titles: <path>``; a
     canvas without the title or the subtitle text, or a ``charts.json`` git would track, writes
     nothing; the private run writes no ``charts.json``."""
     out = repo / "outputs" / "charts"
-    render._write_all({"team-x-light-square.png": _canvas(logo)}, out, private=False)
+    render.write_charts({"team-x-light-square.png": _canvas(logo)}, out, private=False)
     entries = {"team-x-light-square.png": {"title": "T U", "subtitle": "S"}}
     text = (out / "charts.json").read_text(encoding="utf-8")
     assert text == json.dumps(entries, sort_keys=True, indent=1, ensure_ascii=False) + "\n"
@@ -538,14 +538,14 @@ def test_titles_json_from_canvas(
     for gid in ("title", "subtitle"):
         bad = repo / "outputs" / f"no-{gid}"
         with pytest.raises(ValueError):
-            render._write_all({"a.png": _canvas(logo, drop=gid)}, bad, private=False)
+            render.write_charts({"a.png": _canvas(logo, drop=gid)}, bad, private=False)
         assert not bad.exists() or not list(bad.iterdir())
     # PNGs ignored, charts.json not: the titles file's own git check refuses, nothing written
     (repo / ".gitignore").write_text("data/\nshown/*.png\n")
     shown = repo / "shown"
     with pytest.raises(ValueError):
-        render._write_all({"team-x-light-square.png": _canvas(logo)}, shown, private=False)
+        render.write_charts({"team-x-light-square.png": _canvas(logo)}, shown, private=False)
     assert not shown.exists() or not list(shown.iterdir())
     private = repo / "data" / "charts" / "private"
-    render._write_all({"ws-x.png": _canvas(logo, "whoscored")}, private, private=True)
+    render.write_charts({"ws-x.png": _canvas(logo, "whoscored")}, private, private=True)
     assert sorted(p.name for p in private.iterdir()) == ["ws-x.png"]

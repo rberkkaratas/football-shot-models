@@ -450,8 +450,9 @@ def level_lines(probe: LevelProbe, *, steps_train_exclude: tuple[str, ...]) -> t
 
     Examples
     --------
-    >>> level_lines(probe, steps_train_exclude=())[0]  # doctest: +SKIP
-    '### Hold-out level (PR1)'
+    >>> lines = level_lines(probe, steps_train_exclude=())  # doctest: +SKIP
+    >>> lines[0].startswith("### Hold-out level")  # doctest: +SKIP
+    True
     """
     least = metrics.MIN_JUDGED_SHOTS  # read when called
     rows, t = probe.rows, probe.segments

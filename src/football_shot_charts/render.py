@@ -859,9 +859,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
 
-def _write_all(charts_: Mapping[str, viz.Canvas], out: Path, *, private: bool) -> None:
-    """``rows.write_all`` (nothing is written when one chart fails), then the printed lines; a
-    StatsBomb run also writes ``charts.json`` (:func:`titles`), checked git-ignored first."""
+def write_charts(charts_: Mapping[str, viz.Canvas], out: Path, *, private: bool) -> None:
+    """Write a run's charts with ``rows.write_all`` (nothing is written when one chart fails) and
+    print one ``chart:`` line per file; a StatsBomb run (not ``private``) also writes
+    ``charts.json`` (:func:`titles`), checked git-ignored before anything is written.
+
+    Raises
+    ------
+    ValueError
+        A chart fails ``rows.write_all``'s checks, or git would track ``charts.json``.
+
+    Examples
+    --------
+    >>> write_charts(model_charts(f, cands, logo=logo), CHART_OUT, private=False)  # doctest: +SKIP
+    chart: outputs/charts/calibration-xg-dark.png
+    """
     entries = None if private else titles(charts_)
     if entries is not None:
         snapshot.check_ignored(Path(os.path.abspath(out / TITLES)), what="chart titles")
@@ -888,7 +900,7 @@ def _run_private(args: argparse.Namespace) -> int:
     out = {f"{PRIVATE_PREFIX}{n}": c for n, c in gsax_cards.keeper_charts(
         g, names=None, logo=None, team_selected=_mode(args)).items()}  # fmt: skip
     out |= model_charts(f, cands, logo=None, prefix=PRIVATE_PREFIX)
-    _write_all(out, Path(args.out or PRIVATE_DIR), private=True)
+    write_charts(out, Path(args.out or PRIVATE_DIR), private=True)
     return 0
 
 
@@ -952,7 +964,7 @@ def _run(args: argparse.Namespace) -> int:
                 out[f"{kind}-{slug(who)}-{theme}-{size}.png"] = c
     out |= gsax_cards.keeper_charts(g, names=keeper_names, logo=logo, team_selected=_mode(args))
     out |= model_charts(f, cands, logo=logo)
-    _write_all(out, Path(args.out or CHART_OUT), private=False)
+    write_charts(out, Path(args.out or CHART_OUT), private=False)
     return 0
 
 

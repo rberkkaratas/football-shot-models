@@ -4,10 +4,10 @@ Example charts drawn from StatsBomb open data: the shot charts show the Premier 
 hold-out season, which no xG model of record was trained on. Every chart is drawn from the
 models' cached predictions, and no model of record is refitted to draw it (rendering re-runs
 only two small existing estimations, the shoot-out penalty LR inside the xGOT fit and the keeper
-model's estimation, both deterministic and disclosed on the cards). Every chart carries the
-StatsBomb logo and attribution, as the open-data licence asks. Titles are computed from the data,
-never typed. Each image opens the full-size PNG; the light or dark version follows the site's
-colour scheme.
+model's estimation, both deterministic and disclosed in the [roadmap](roadmap.md) and the
+[render module's reference](api/charts_render.md)). Every chart carries the StatsBomb logo and
+attribution, as the open-data licence asks. Titles are computed from the data, never typed. Each
+image opens the full-size PNG; the light or dark version follows the site's colour scheme.
 
 The 14 published PNGs come from `make charts` and are copied byte for byte by `make
 docs-charts`, which checks that each one carries the logo; together they are 2.81 MB, so
@@ -17,7 +17,7 @@ re-publishing them is a deliberate step. WhoScored charts are never published.
 
 Every non-penalty shot of one team on a pitch cropped to where it shot from: marker area is
 proportional to the shot's xG, goals are filled in red and drawn above the hollow misses. The
-strip gives the season totals. The panel compares goals (red dot) with xG (dark tick) per zone,
+strip gives the season totals. The panel compares goals (red dot) with xG (vertical tick) per zone,
 with the band of what the rest of the league scores from the same xG in that zone; a zone with
 too few shots is printed but not judged. Numbers come from the [xG GBM card](models/xg-gbm.md)'s
 model and the hold-out predictions.
@@ -56,6 +56,11 @@ and observed goal rate, cross-validation as hollow rings and the hold-out as red
 the match-bootstrap band of the observed rate. A calibrated model keeps the dots on the dashed
 diagonal; the title counts the bins whose band holds the prediction. Numbers come from the
 [xG GBM card](models/xg-gbm.md) and the [xGOT GBM card](models/xgot-gbm.md).
+
+The hold-out chose the adopted xG fix (training without team-selected seasons), so the xG
+chart's hold-out total of goals against xG is not an independent check of the model's level;
+see the [xG GBM card](models/xg-gbm.md). Hold-out log loss is unaffected: both candidates score
+0.2533.
 
 [![xG calibration chart: xG inside the band in 10 of 10 bins in cross-validation, 9 of 10 on the hold-out (Out-of-fold and hold-out predictions of shots in 10 equal-count bins · bands: 95% match bootstrap of the observed rate)](assets/charts/calibration-xg-light.png#only-light){ loading=lazy }](assets/charts/calibration-xg-light.png)
 [![xG calibration chart: xG inside the band in 10 of 10 bins in cross-validation, 9 of 10 on the hold-out (Out-of-fold and hold-out predictions of shots in 10 equal-count bins · bands: 95% match bootstrap of the observed rate)](assets/charts/calibration-xg-dark.png#only-dark){ loading=lazy }](assets/charts/calibration-xg-dark.png)

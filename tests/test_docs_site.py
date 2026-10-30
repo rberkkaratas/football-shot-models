@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 import yaml
-from football_docs import pages, theme
+from football_docs import meta, pages, theme
 
 from football_shot_models import cache
 
@@ -24,13 +24,16 @@ README = REPO / "README.md"
 INDEX = DOCS / "index.md"
 CHARTS_PAGE = DOCS / "charts.md"
 CHARTS_JSON = DOCS / "assets" / "charts" / "charts.json"
-AUTHOR = "R. Berk Karataş"  # s-cedilla, U+015F
 
-# Internal codes the PM's brief names (acceptance: none of these may survive on a page)
-BRIEF_CODES = ("PM E2 (b)", "PM 2026-10-28 (a)", "PM X5", "MS6 P3.1", "R14", "A5", "run8")
-# The README's two card blocks keep their codes this round (the cards stay byte-identical)
+# The README's two card blocks keep their codes this round (the cards stay byte-identical);
+# the pattern list itself, with the brief's example codes, is pinned in football-core's tests
 CARD_BLOCKS = ("xgot", "v2")
 CARD_BLOCK_CODES = 9
+# The only generated blocks the scan exempts: the README's card blocks and the home results
+GENERATED = {
+    "README.md": ["models:summary", "v1:summary", "v2:summary", "xgot:summary", "gsax:summary"],
+    "docs/index.md": ["results"],
+}
 
 
 def _front_matter(text: str) -> tuple[dict[str, Any], str]:
@@ -77,26 +80,22 @@ def _unhashed_sources() -> list[Path]:
     return files
 
 
-def _block(text: str, name: str) -> str:
-    """The inner text of the generated block ``name`` (exactly one), markers excluded."""
-    found = re.findall(rf"<!-- {name}:start -->\n(.*?)<!-- {name}:end -->", text, re.S)
-    assert len(found) == 1, f"{name}: {len(found)} blocks"
-    return str(found[0])
-
-
 # --- internal codes ---------------------------------------------------------------------------
 
 
 def test_pages_and_unhashed_docstrings_clean() -> None:
     """No ``CODES`` hit and no ``STALE`` phrase on any README or docs page outside the cards and
-    the generated blocks, nor in any unhashed docstring (doctest regions skipped); the scan
-    reads what it claims to (the new pages, ``viz.py``, the chart package), the brief's
-    examples are caught, and the README's codes sit only in its two card blocks (9 codes),
-    so the exemption is exactly those blocks."""
-    for code in BRIEF_CODES:
-        assert pages.find_codes(f"Settled by {code} last week."), code
+    the generated blocks, nor in any unhashed docstring (doctest examples included: they show on
+    the API pages); the scan reads what it claims to (the new pages, ``viz.py``, the chart
+    package); the exempt blocks are exactly the README's card blocks and the home results
+    block, and the README's codes sit only in its two card blocks (9 codes)."""
     scanned = _scanned_pages()
     assert {README, INDEX, CHARTS_PAGE, DOCS / "roadmap.md"} <= set(scanned)
+    blocks = {
+        str(p.relative_to(REPO)): [name for name, _ in pages.generated_blocks(p.read_text())]
+        for p in scanned
+    }
+    assert {page: names for page, names in blocks.items() if names} == GENERATED
     hits = [
         (str(p.relative_to(REPO)), line, code)
         for p in scanned
@@ -108,14 +107,19 @@ def test_pages_and_unhashed_docstrings_clean() -> None:
     sources = _unhashed_sources()
     names = {p.name for p in sources}
     assert {"viz.py", "gsax.py", "level.py", "gsax_cards.py", "render.py", "rows.py"} <= names
-    doc_hits = [(str(p), line, code) for p in sources for line, code, _ in pages.docstring_codes(p)]
+    doc_hits = [
+        (str(p), line, code)
+        for p in sources
+        for line, code, _ in pages.docstring_codes(p, doctests=True)
+    ]
     assert doc_hits == []
     for path in [*scanned, *sources]:
         flat = _flat(path.read_text())
         for phrase in pages.STALE:
             assert phrase.lower() not in flat, (path, phrase)
     text = README.read_text()
-    in_blocks = [pages.find_codes(_block(text, f"{b}:summary")) for b in CARD_BLOCKS]
+    inner = dict(pages.generated_blocks(text))
+    in_blocks = [pages.find_codes(inner[f"{b}:summary"]) for b in CARD_BLOCKS]
     assert sum(len(h) for h in in_blocks) == CARD_BLOCK_CODES
     assert len(pages.find_codes(text)) == CARD_BLOCK_CODES  # none outside the two blocks
 
@@ -189,6 +193,19 @@ def test_numbers_sourced(page: str) -> None:
     assert pages.unsourced_numbers((DOCS / page).read_text(), *sources) == []
 
 
+def test_published_size_stated() -> None:
+    """The README and the Charts page state the published charts' count and total size, read
+    from the committed PNGs (MB = 10^6 bytes, two decimals), so a re-publish that changes them
+    fails here rather than leaving both pages stale."""
+    pngs = sorted(CHARTS_JSON.parent.glob("*.png"))
+    size = f"{sum(p.stat().st_size for p in pngs) / 1e6:.2f} MB"
+    assert len(pngs) >= 2  # precondition: the published set is committed
+    readme = " ".join(README.read_text().split())
+    charts = " ".join(CHARTS_PAGE.read_text().split())
+    assert f"copy the {len(pngs)} published charts ({size})" in readme
+    assert f"The {len(pngs)} published PNGs" in charts and f"together they are {size}" in charts
+
+
 def test_home_statement() -> None:
     """Home: front matter hides nav and toc; H1 is the repo name; the statement names both data
     sources (WhoScored private); the chart grid's caption line; install steps; about 70 lines."""
@@ -218,7 +235,8 @@ def _recipe(target: str) -> str:
 
 def test_make_targets_on_home_exist() -> None:
     """Every ``make <target>`` on the home page is a Makefile target; the public chain is
-    there; ``docs`` runs the raw-role site check after the strict build; ``docs-charts``
+    there; ``docs`` runs the raw-role site check after the strict build and checks the results
+    block and theme are current (Pages deploys from it); ``docs-charts``
     publishes through the one ``CHARTS`` module path; ``docs-theme`` regenerates the theme."""
     targets = _make_targets()
     named = set(re.findall(r"\bmake ([a-z][\w-]*)", INDEX.read_text()))
@@ -228,6 +246,9 @@ def test_make_targets_on_home_exist() -> None:
     docs = _recipe("docs")
     assert "zensical build --strict" in docs
     assert docs.index("zensical build --strict") < docs.index("football_docs.pages site site")
+    # the Pages workflow runs only ``make docs``: it must refuse a stale results block or theme
+    assert "football_docs.pages results docs/index.md\n" in docs
+    assert "football_docs.theme docs --check\n" in docs
     assert "--publish docs/assets/charts" in _recipe("docs-charts")
     makefile = (REPO / "Makefile").read_text()
     assert re.search(r"^CHARTS :?= uv run python -m football_shot_charts\.render$", makefile, re.M)
@@ -300,17 +321,23 @@ def _names(entries: list[Any]) -> set[str]:
 
 def test_site_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """mkdocs.yml: author with the s-cedilla, copyright, logo and favicon, Inter, custom palette
-    in both toggled schemes, the generated theme.css, attr_list and md_in_html, the roles
-    extension and ``show_source: false``; the committed theme.css and logo.svg are current;
-    the home grid class is used on the home page and defined in the theme."""
+    in the automatic entry and both toggled schemes, the generated theme.css, attr_list and
+    md_in_html, the roles extension and ``show_source: false``; the committed theme.css and
+    logo.svg are current; the home grid class is used on the home page and defined in the
+    theme."""
     cfg = _config()
-    assert cfg["site_author"] == AUTHOR
-    assert cfg["copyright"] == f"© 2026 {AUTHOR} · MIT licence"
+    assert cfg["site_author"] == meta.AUTHOR
+    assert cfg["copyright"] == f"© 2026 {meta.AUTHOR} · MIT licence"
     th = cfg["theme"]
     assert th["logo"] == "assets/logo.svg" and th["favicon"] == "assets/logo.svg"
     assert th["font"] == {"text": "Inter", "code": "JetBrains Mono"}
-    schemes = [p["scheme"] for p in th["palette"]]
-    assert schemes == ["default", "slate"]
+    # automatic entry first (follows the device on every visit), then the two toggled schemes
+    schemes = [(p["media"], p.get("scheme")) for p in th["palette"]]
+    assert schemes == [
+        ("(prefers-color-scheme)", None),
+        ("(prefers-color-scheme: light)", "default"),
+        ("(prefers-color-scheme: dark)", "slate"),
+    ]
     for p in th["palette"]:
         assert p["primary"] == "custom" and p["accent"] == "custom" and "toggle" in p
     assert "stylesheets/theme.css" in cfg["extra_css"]
