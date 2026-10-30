@@ -8,40 +8,22 @@ Building, evaluating and documenting **shot models** for football from first pri
 | 2 | **xGOT / PSxG**: post-shot xG | Given where the shot ended up in the goal mouth, how likely was it to go in? |
 | 3 | **Goals prevented / GSAx** | How many goals did a goalkeeper save compared with an average keeper facing the same shots? |
 
-> **Status:** milestone 6 built, the last of the shot-model roadmap: goalkeepers for StatsBomb
-> and the private WhoScored / Opta archive. GSAx is rated from season-out xGOT against each
-> competition-season's league sum, with and without penalties, an analytic SD and a 90 %
-> match-bootstrap interval per keeper-season; a hierarchical keeper model is tested on the next
-> season; split-half reliability is reported at 100 / 250 / 500 shots faced. Package 1 made xGOT
-> keeper-ready: StatsBomb saves snapped to the 0.1 yd goal-mouth lattice, a placement-free GBM,
-> coarse-grid matches left out (PM ruling E1 (a)) and the band rule judged on bands of at least
-> 100 shots. Results are the generated MS5 / MS6 blocks below and the
-> [GSAx](docs/models/gsax.md) and [xGOT](docs/models/xgot-gbm.md) cards; none is typed here.
-> Milestone 4 (WhoScored xG v1, [card](docs/models/xg-v1.md)) has two check rows missed with
-> computed reasons: the test log-loss bound and the gain over the legacy v0, which reads Opta's
-> big-chance tag (q214, a column v1's leakage rule bars). PM ruling (2026-10-25): both misses
-> stand as recorded misses, and the v0 comparison is re-baselined to v0's inputs without q214,
-> which the headline beats with an interval above 0. See [`docs/roadmap.md`](docs/roadmap.md).
->
-> **Polish round 1 (PR1)** after the six milestones: WhoScored season-out xGOT from
-> competition-season folds, one penalty δ per season-out source, team-selected StatsBomb seasons
-> rated at δ = 0 and a goal_z sensitivity on the GSAx cards; WhoScored xG v2 with pre-shot
-> context ([card](docs/models/xg-v2.md), v1 stays the record and the xGOT input); the StatsBomb
-> headline GBM is trained without team-selected seasons after a hold-out level decomposition
-> ([card](docs/models/xg-gbm.md), section "Hold-out level"). Results are the generated blocks
-> below; none is typed here.
->
-> **Chart round 1 (CH1), render only:** themed charts on football-core's `viz` theme layer
-> (light and dark, Inter, statement titles, stat strip, credited footer, 1080 × 1350 and
-> 1080 × 1080 px): a team shot chart, a player shot profile, a keeper (GSAx) chart and the
-> model-card visuals (calibration, log-loss gain over each reference), in the sibling package
-> `football_shot_charts` outside the prediction cache's hash. `make charts` reads the warm cache
-> and fits nothing; every chart passes `viz.check` (text overlap and clipping, WCAG contrast)
-> before it is written to a git-ignored folder. No chart of real data is committed; StatsBomb
-> charts carry the logo, WhoScored charts are private only (`make charts-private`). Charts go to
-> LinkedIn only after Berk approves them.
+> **Status:** the six shot-model milestones, a polish round, a chart round and a docs round are
+> built: xG
+> on StatsBomb open data and on a private WhoScored / Opta archive, xGOT / PSxG of on-target
+> shots for both providers, and goalkeeper ratings (GSAx against each competition-season's
+> league sum, a hierarchical keeper model tested on the next season, split-half reliability).
+> Every result is a generated block below or a [model card](docs/models/xg-gbm.md); none is
+> typed here. The WhoScored xG v1 card records two missed check rows with computed reasons (the
+> test log-loss bound, and the gain over the legacy v0, which reads Opta's big-chance tag q214, a
+> column v1's leakage rule bars); against v0's inputs refitted without q214 the headline's gain
+> interval lies above 0. The StatsBomb example charts (team and player shot maps, keeper chart,
+> calibration and model comparison) are published on the docs site with the StatsBomb logo;
+> WhoScored charts are private only (`make charts-private`). GitHub Actions run `make check` on
+> every push and pull request and publish the docs site. Next: a maintenance round, then
+> football-passing-models. See [`docs/roadmap.md`](docs/roadmap.md).
 
-### Results (MS3, every model and StatsBomb xG on the same shots)
+### Results: StatsBomb xG, every model and StatsBomb's own xG on the same shots
 
 <!-- models:summary:start -->
 | Model | CV log loss | CV AUC | CV cal. slope | Hold-out log loss | Hold-out cal. slope | Hold-out Σ xG error (signed) |
@@ -62,7 +44,7 @@ Penalties (in-game): P(goal) point estimate 0.7627 [95% interval 0.7374, 0.7872]
 Match xG = Σ non-penalty xG (headline model) + P(goal | in-game penalty) × in-game penalties; shoot-out kicks are not part of match xG, and own goals and direct corners carry no xG.
 <!-- models:summary:end -->
 
-### Results (MS4, WhoScored xG v1 and the legacy v0 on the 2026/27 test season)
+### Results: WhoScored xG v1 and the legacy v0 on the 2026/27 test season
 
 <!-- v1:summary:start -->
 | Model | CV log loss | Test log loss | Test AUC | Test cal. slope | Test Σ xG error (signed) | Test gain over v0 [95% CI] |
@@ -83,7 +65,7 @@ Penalties (in-game): P(goal) 0.7775 [95% interval 0.7500, 0.8038] from 918 train
 WhoScored test season, 16,164 shots, goal rate 0.0999; not comparable with the StatsBomb block.
 <!-- v1:summary:end -->
 
-WhoScored xG v2 (PR1: v1 plus pre-shot context, [card](docs/models/xg-v2.md)):
+WhoScored xG v2 (v1 plus pre-shot context, [card](docs/models/xg-v2.md)):
 
 <!-- v2:summary:start -->
 | Model | CV log loss | Test log loss | Test AUC | Test cal. slope | Test Σ xG error (signed) |
@@ -94,7 +76,7 @@ WhoScored xG v2 (PR1: v1 plus pre-shot context, [card](docs/models/xg-v2.md)):
 Test gain of v2 over v1: +0.0010 [+0.0004, +0.0017], an interval that lies above 0. The design probe that chose `prev_action` and `rebound` scored its candidates on the test season, so the test gain over xG v1 carries selection optimism; the CV gain over xG v1 on the training season, which the probe never scored, is +0.0004 [+0.0001, +0.0006], an interval that lies above 0. Share of the big-chance ablation gap closed on test: 6.5%. PR1 checks met: 6 of 6. v1 stays the WhoScored xG of record and the xGOT input; test goal rate 9.99%.
 <!-- v2:summary:end -->
 
-### Results (MS5, MS6: xGOT of on-target shots, both providers)
+### Results: xGOT of on-target shots, both providers
 
 Printed by `make xgot` (paste it between the markers) and checked byte for byte by `make reproduce`. Headline model per provider in bold; CV is grouped by match on on-target shots, the hold-out is Premier League 2015/16 (StatsBomb) and the test season 2026-27 (WhoScored). ECE: CV fold mean, hold-out / test point value (its noise floor is on the cards).
 
@@ -127,7 +109,7 @@ private WhoScored / Opta event archive, penalty xGOT (placement only, in-game ki
 private WhoScored / Opta event archive, shooting goals added (descriptive), split-half r at >= 40 shots, 711 players: SGA per shot -0.038 [-0.111, +0.036], goals − xG per shot +0.040 [-0.034, +0.113].
 <!-- xgot:summary:end -->
 
-### Results (MS6, goalkeepers, both providers)
+### Results: goalkeepers, both providers
 
 Printed by `make gsax` (paste it between the markers) and checked byte for byte by `make reproduce`. GSAx is rated against each competition-season's league sum from season-out xGOT; the next-season columns are log-loss gains of the shrunken keeper model with 95% match-bootstrap intervals. Counts and metrics only; the StatsBomb keeper table is on the [GSAx card](docs/models/gsax.md).
 
@@ -148,53 +130,54 @@ Part of the `football-*-models` family; shared loaders and pitch conventions com
 ## Data
 - **StatsBomb open data**: public training data, plus a benchmark against StatsBomb's own xG.
 - **WhoScored / Opta events**: a private CSV archive (2025-26 and 2026-27), read by
-  football-core's `io.whoscored` (C5, milestone 4) into a git-ignored snapshot and never
+  football-core's `io.whoscored` (milestone 4) into a git-ignored snapshot and never
   published; cards and this README carry counts and metrics only. See
   [`docs/data.md`](docs/data.md).
 
 ## Modules
 | Module | What | Status |
 |---|---|---|
-| `data` | xG population: verified snapshot, exclusion log, families, hold-out split | ✅ M1.0 / M1.1 |
-| `features` | Leakage guard (pre-shot allow-list, derived features) and design matrix | ✅ M1.0 |
-| `metrics` | Log loss, Brier, AUC, calibration, reliability, thresholds | ✅ M1.1 |
-| `evaluation` | Model specs, grouped CV, hold-out, benchmark: one harness for every model | ✅ M1.1 |
-| `cards` | Model-card rendering from an evaluation plus per-model text | ✅ M1.1 |
-| `baselines` | The three M1.1 baselines, their card text and the CLI | ✅ M1.1 |
-| `ablation` | M1.2 / M1.3 LR steps, drop-one / add-one variants and step cards | ✅ M1.2 / M1.3 |
-| `models` | M1.4 GBM spec and card, headline rule, MS3 checks, the StatsBomb CLI; PR1 hold-out level fixes | ✅ M1.4 / M1.5, PR1 |
-| `level` | PR1 hold-out level probe, adoption rule and segment decomposition (fits nothing) | ✅ PR1 |
-| `gbm` | Monotone histogram GBM with inner tuning and cross-fitted Platt | ✅ M1.4 |
-| `penalties` | Beta-binomial penalty model, shoot-outs apart | ✅ M1.5 |
-| `cache` | Prediction cache keyed by data digest and code hash (git-ignored) | ✅ MS4 |
-| `legacy` | Legacy v0 xG behind a SHA-256 pin, scored on its own inputs | ✅ M0 |
-| `v1` | WhoScored xG run: season split, candidates, v0 comparison, CLI | ✅ M1.6 |
-| `release` | The `xg-v1` card and README block | ✅ M1.7 |
-| `v2` | WhoScored xG v2: v1 plus pre-shot context (`prev_action`, `rebound`), qualifier census, checks | ✅ PR1 |
-| `v2_cards` | The `xg-v2` card and README block (render-only) | ✅ PR1 |
-| `xgot` | xGOT of on-target shots, both providers: population, cross-fitted xG input, LR / GBM / penalty xGOT, shooting goals added; pure `fit`, coarse-grid filter | ✅ P2.2–P2.5, MS6 |
-| `xgot_cards` | The xGOT cards and README block from an `XgotFit` (render-only) | ✅ MS6 |
-| `season_out` | Season-out xGOT refits on competition-season folds (both providers), the z-free refit | ✅ MS6, PR1 |
-| `gsax` | GSAx rated against the league sum, keeper tables with SD and CI, hierarchical keeper model, next-season test, stability; goal_z sensitivity | ✅ P3.1–P3.3, PR1 |
-| `gsax_cards` | The goalkeeper cards, README block and the StatsBomb keeper charts with their digests (render-only) | ✅ P3.1–P3.3, CH1 |
-| `football_shot_charts.rows` | The row panel every chart shares, scale helpers, the write guard | ✅ CH1 |
-| `football_shot_charts.shots` | Team shot chart and player shot profile (zones, goals against xG, league-rate band) | ✅ CH1 |
-| `football_shot_charts.keepers` | Keeper (GSAx) chart: top and bottom keeper-seasons with intervals | ✅ CH1 |
-| `football_shot_charts.diagnostics` | Calibration diagram and log-loss gain comparison of a model | ✅ CH1 |
-| `football_shot_charts.render` | Warm-cache reads (no fit), views and the `make charts` CLI | ✅ CH1 |
+| `data` | xG population: verified snapshot, exclusion log, families, hold-out split | ✅ |
+| `features` | Leakage guard (pre-shot allow-list, derived features) and design matrix | ✅ |
+| `metrics` | Log loss, Brier, AUC, calibration, reliability, thresholds | ✅ |
+| `evaluation` | Model specs, grouped CV, hold-out, benchmark: one harness for every model | ✅ |
+| `cards` | Model-card rendering from an evaluation plus per-model text | ✅ |
+| `baselines` | The three xG baselines, their card text and the CLI | ✅ |
+| `ablation` | LR steps, drop-one / add-one variants and step cards | ✅ |
+| `models` | GBM spec and card, headline rule, xG checks, the StatsBomb CLI; hold-out level fixes | ✅ |
+| `level` | Hold-out level probe, adoption rule and segment decomposition (fits nothing) | ✅ |
+| `gbm` | Monotone histogram GBM with inner tuning and cross-fitted Platt | ✅ |
+| `penalties` | Beta-binomial penalty model, shoot-outs apart | ✅ |
+| `cache` | Prediction cache keyed by data digest and code hash (git-ignored) | ✅ |
+| `legacy` | Legacy v0 xG behind a SHA-256 pin, scored on its own inputs | ✅ |
+| `v1` | WhoScored xG run: season split, candidates, v0 comparison, CLI | ✅ |
+| `release` | The `xg-v1` card and README block | ✅ |
+| `v2` | WhoScored xG v2: v1 plus pre-shot context (`prev_action`, `rebound`), qualifier census, checks | ✅ |
+| `v2_cards` | The `xg-v2` card and README block (render-only) | ✅ |
+| `xgot` | xGOT of on-target shots, both providers: population, cross-fitted xG input, LR / GBM / penalty xGOT, shooting goals added; pure `fit`, coarse-grid filter | ✅ |
+| `xgot_cards` | The xGOT cards and README block from an `XgotFit` (render-only) | ✅ |
+| `season_out` | Season-out xGOT refits on competition-season folds (both providers), the z-free refit | ✅ |
+| `gsax` | GSAx rated against the league sum, keeper tables with SD and CI, hierarchical keeper model, next-season test, stability; goal_z sensitivity | ✅ |
+| `gsax_cards` | The goalkeeper cards, README block and the StatsBomb keeper charts with their digests (render-only) | ✅ |
+| `football_shot_charts.rows` | The row panel every chart shares, scale helpers, the write guard, the logo check | ✅ |
+| `football_shot_charts.shots` | Team shot chart and player shot profile (zones, goals against xG, league-rate band) | ✅ |
+| `football_shot_charts.keepers` | Keeper (GSAx) chart: top and bottom keeper-seasons with intervals | ✅ |
+| `football_shot_charts.diagnostics` | Calibration diagram and log-loss gain comparison of a model | ✅ |
+| `football_shot_charts.render` | Warm-cache reads (no fit), views, the `make charts` CLI and the docs-site publishing | ✅ |
 
 ```bash
-make snapshot && make xg-baselines   # freeze StatsBomb open data, write the M1.1 cards
-make xg-models                       # every MS3 model and its card (about 10 min cold,
+make snapshot && make xg-baselines   # freeze StatsBomb open data, write the baseline cards
+make xg-models                       # every StatsBomb xG model and its card (about 10 min cold,
                                      #   about 20 s from the prediction cache)
 make snapshot-whoscored WHOSCORED_ARCHIVE=<archive>/data && make legacy-v0 LEGACY_V0=<v0 json>
 make xg-v1                           # the WhoScored v1 card (about 8-10 min cold)
-make xg-v2                           # the WhoScored v2 card (PR1; after xg-v1)
+make xg-v2                           # the WhoScored v2 card (after xg-v1)
 make xgot                            # the six xGOT cards (after xg-models and xg-v1)
 make statsbomb-logo                  # once (network): the logo every StatsBomb chart carries
 make gsax                            # the four goalkeeper cards and the StatsBomb keeper charts
-make charts                          # CH1: 18 themed StatsBomb charts into git-ignored outputs/charts
-                                     #   (warm cache, no fit; after xg-models, xgot and gsax)
+make charts                          # 18 themed StatsBomb charts into git-ignored outputs/charts
+                                     #   (warm cache, no model refitted; after xg-models, xgot, gsax)
+make docs-charts                     # copy the 14 published charts (2.81 MB) into docs/assets/charts
 make reproduce                       # every card and README block, byte for byte
 ```
 
@@ -203,7 +186,7 @@ make reproduce                       # every card and README block, byte for byt
 src/football_shot_models/   # data, features, metrics, evaluation, cards, baselines, ablation,
                             #   models, level, gbm, penalties, cache, legacy, v1, release,
                             #   v2, v2_cards, xgot, xgot_cards, season_out, gsax, gsax_cards
-src/football_shot_charts/   # CH1 render-only charts (outside the cache hash): rows, shots,
+src/football_shot_charts/   # render-only charts (outside the cache hash): rows, shots,
                             #   keepers, diagnostics, render
 notebooks/                  # exploration & narrative
 docs/                       # methodology, model cards, roadmap (Zensical site)

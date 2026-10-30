@@ -7,7 +7,7 @@
 | WhoScored / Opta CSV archive | 4,025 event files, 11 competitions, 2025-26 and 2026-27; the `whoscored-v1` snapshot keeps 3,802 matches and 98,261 shots | Private; no provider xG; no player positions; one duplicated match and varying columns handled by `football_core.io.whoscored` |
 
 ## Shot table
-The models read the canonical C3 shot and freeze-frame tables of football-core: one row per
+The models read the canonical shot and freeze-frame tables of football-core: one row per
 shot in the shared 105 x 68 m frame, every column with a dtype, nullability, allowed values and
 a role (`pre_shot`, `outcome`, `post_shot`, …). The column list lives in one place,
 `football_core.schema` (see football-core's schema docs and
@@ -15,7 +15,7 @@ a role (`pre_shot`, `outcome`, `post_shot`, …). The column list lives in one p
 shot is joined to its row of the canonical matches table (schema 1.1), whose only `pre_shot`
 column, `gender`, the guard allows (`data.MATCH_FEATURES`).
 
-## Filters (xG population, M1.1, MS3)
+## Filters (xG population)
 `football_shot_models.data` removes shots from the xG population with a logged reason, never
 silently. The reasons are checked in this order and the first match wins:
 
@@ -23,9 +23,9 @@ silently. The reasons are checked in this order and the first match wins:
 |---|---|---|---|
 | `own_goal` | Own goals are not the shooter's attempts and are 100 % goals | 387 | 330 |
 | `shootout` | Period 5 is not match play | 363 | 20 |
-| `penalty` | In-game penalties get their own model (M1.5) | 1,118 | 1,063 |
-| `direct_corner` | A direct corner is logged as a shot (MS3) | 33 | 13 |
-| `no_freeze_frame` | Every M1.x model must see the same shots | 0 | n/a (no frames) |
+| `penalty` | In-game penalties get their own model | 1,118 | 1,063 |
+| `direct_corner` | A direct corner is logged as a shot | 33 | 13 |
+| `no_freeze_frame` | Every StatsBomb xG model must see the same shots | 0 | n/a (no frames) |
 
 That leaves 99,713 non-penalty shots in periods 1–4 (extra time, direct free kicks and corners
 included). The per-shot log is the git-ignored snapshot `xg-exclusions-v1`; only its manifest
@@ -43,7 +43,7 @@ Liga seasons and other one-club collections, and also every one- or two-match
 competition-season, where both teams qualify trivially: 30 of its 56 competition-seasons, mostly
 single finals (18 Champions League finals, three World Cup and three Copa del Rey matches).
 
-## WhoScored xG v1 (MS4)
+## WhoScored xG v1
 The private archive becomes the `whoscored-v1` snapshot through football-core's
 `io.whoscored` builder: `make snapshot-whoscored WHOSCORED_ARCHIVE=<archive>/data`. The parquet
 files go to `data/snapshots/whoscored-v1/` and the manifest to `manifests/whoscored-v1.json`;

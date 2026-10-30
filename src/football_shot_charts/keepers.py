@@ -1,6 +1,6 @@
 """The keeper (GSAx) chart: which keeper-seasons are distinguishable from noise.
 
-It replaces the MS6 forest plot of every keeper-season. A ranked list of 97 seasons invites
+It replaces the earlier forest plot of every keeper-season. A ranked list of 97 seasons invites
 reading the order as skill, and the reliability table says that at 100 shots a keeper is not
 distinguishable from noise. So the chart shows only the extremes (the highest and lowest
 ``TOP_N``), and on each row what the keeper model believes:
@@ -18,12 +18,13 @@ The title counts the rows whose interval excludes 0 over *all* keeper-seasons, n
 drawn; the subtitle is the card's reliability verdict (``gsax_cards.caveat``); the strip sets
 the keeper spread beside the median interval width, which is why nothing clears 0.
 
-Team-selected seasons are rated against the model, not their league (δ = 0, PM 2026-10-28):
+Team-selected seasons are rated against the model, not their league (δ = 0: their league sum is
+one team's keeper against its opponents):
 they are flagged (``team_selected="flag"``, with ``FLAG``: the card's † reads as "+" at chart
 size, beside signed values) with the card's selected-side gap in the footer,
 or left out and rated by the keeper model fitted without them (``"drop"``, Berk's publishing
-switch). Keeper names appear only on StatsBomb charts (Rule 1): a WhoScored view is unnamed,
-its labels rank-prefixed competition-seasons.
+switch). Keeper names appear only on StatsBomb charts (the private archive publishes counts and
+metrics only): a WhoScored view is unnamed, its labels rank-prefixed competition-seasons.
 """
 
 from __future__ import annotations
@@ -188,7 +189,8 @@ def keeper_view(
     Raises
     ------
     ValueError
-        No row; a named view with a ``gk_id`` that is not ``sb:`` (Rule 1) or a missing name;
+        No row; a named view with a ``gk_id`` that is not ``sb:`` (names are StatsBomb only) or a
+        missing name;
         a null shrunk value; ``keeper_rows`` shots differing from the model's on any row;
         ``"drop"`` without ``g.model_no_team``; an unknown ``team_selected``.
 

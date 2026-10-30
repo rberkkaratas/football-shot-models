@@ -1,8 +1,8 @@
-"""The row panel every CH1 chart shares: one mark grammar, one layout engine, one write guard.
+"""The row panel every themed chart shares: one mark grammar, one layout engine, one write guard.
 
 A panel is a heading, a one-line key of the marks it draws, rows, optional dividers, an
 optional scale row and a caption. Each :class:`Row` is a label block (label over sublabel), a
-track and a value block; on the track the grammar is fixed across charts (package 1's A1):
+track and a value block; on the track the grammar is fixed across charts:
 
 - **dot** (accent): the headline value, drawn last;
 - **tick** (ink): the reference it is read against;
@@ -35,6 +35,7 @@ from typing import Final, Literal
 import numpy as np
 from football_core import viz
 from football_core.io import snapshot
+from matplotlib import image as mpimg
 from matplotlib.axes import Axes
 from matplotlib.patches import Rectangle
 from matplotlib.text import Text
@@ -65,6 +66,11 @@ SCALE_PAD: Final = 0.05  # of the span, each side
 DIVIDER_LINES: Final = 2
 HEADING_LINES: Final = 2  # a long heading wraps (the fallback font is wider) rather than fail
 NICE_STEPS: Final = (1.0, 2.0, 5.0)
+# the StatsBomb logo's red, measured in the footer logo box of every published chart (1,512 px
+# each); the light accent #e4002b is 21 off in blue, so the tolerance keeps it out
+LOGO_RGB: Final = (226, 12, 22)
+LOGO_TOL: Final = 12
+LOGO_MIN_PX: Final = 1000
 
 
 class NoLayout(ValueError):
@@ -116,7 +122,7 @@ class Panel:
 
     ``key`` is ``(glyph, label)`` pairs, glyph one of ``KEY_SLOT_PX``; ``caption`` paragraphs
     are split on ``"\\n"``, each at most ``caption_lines`` lines. ``guide`` ``"zero"`` draws one
-    line at 0 under the marks, ``"rail"`` a line along each row's track (package 1).
+    line at 0 under the marks, ``"rail"`` a line along each row's track.
     """
 
     heading: str
@@ -555,6 +561,37 @@ def draw_panel(
 
 
 # --- Write guard ------------------------------------------------------------------------------
+
+
+def logo_pixels(path: StrPath) -> int:
+    """Opaque pixels within ``LOGO_TOL`` of ``LOGO_RGB`` (every channel) in the footer logo box.
+
+    The box is where ``viz.canvas`` puts the provider logo: ``LOGO_PX`` square at the bottom
+    right inside ``MARGIN_PX`` and ``BOTTOM_PX``, padded by ``LOGO_PLATE_PAD_PX``. A published
+    StatsBomb chart has well over ``LOGO_MIN_PX`` of them; an image smaller than the box has 0.
+
+    Examples
+    --------
+    >>> import tempfile
+    >>> img = np.zeros((400, 400, 4))
+    >>> img[-100:-40, -200:-70] = (*(np.array(LOGO_RGB) / 255), 1.0)
+    >>> with tempfile.TemporaryDirectory() as tmp:
+    ...     mpimg.imsave(Path(tmp) / "c.png", img)
+    ...     logo_pixels(Path(tmp) / "c.png")
+    7800
+    """
+    img = np.asarray(mpimg.imread(Path(path)), dtype=np.float64)
+    if img.ndim != 3 or img.shape[2] not in (3, 4):
+        return 0
+    h, w = img.shape[:2]
+    pad, side = viz.LOGO_PLATE_PAD_PX, viz.LOGO_PX
+    top, left = h - viz.BOTTOM_PX - side - pad, w - viz.MARGIN_PX - side - pad
+    if top < 0 or left < 0:
+        return 0
+    box = img[top : h - viz.BOTTOM_PX + pad, left : w - viz.MARGIN_PX + pad]
+    near = (np.abs(np.round(box[..., :3] * 255) - np.array(LOGO_RGB)) <= LOGO_TOL).all(axis=-1)
+    opaque = box[..., 3] >= 0.99 if box.shape[2] == 4 else np.ones(near.shape, dtype=bool)
+    return int((near & opaque).sum())
 
 
 def _private(path: Path) -> bool:

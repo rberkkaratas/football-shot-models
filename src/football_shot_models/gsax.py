@@ -1,12 +1,12 @@
-"""MS6 goalkeepers: goals saved above expected (P3.1), a keeper model (P3.2), stability (P3.3).
+"""Goalkeepers: goals saved above expected, a keeper model, stability.
 
-**Rating (P3.1).** A keeper's goals saved above expected (GSAx) is Σ xGOT − goals over the
+**Rating.** A keeper's goals saved above expected (GSAx) is Σ xGOT − goals over the
 on-target shots he faced. Every row's xGOT comes from fits that never saw its season
 (``season_out.season_out``), and the rating is **against the league sum**: one logit shift δ
 per rating group (:func:`league_shift`) makes Σ q = goals, ``q = expit(logit xGOT + δ)``, so the
 xGOT level gap is not charged to keepers. Open play has one δ per competition-season;
-penalties one δ per season-out source (PM 2026-10-28 (a): a season has too few kicks for its
-own δ). A δ is fitted only where E2's minimum holds (:func:`too_small`), and team-selected
+penalties one δ per season-out source (a season has too few kicks for its own δ). A δ is
+fitted only where the minimum group size holds (:func:`too_small`), and team-selected
 competition-seasons are rated at δ = 0 and flagged (``ZERO_FAMILIES``): their league sum is one
 team's keeper against its opponents. A logit shift, not a ratio, keeps every q below 1 on
 near-certain shots. GSAx is a record of shots faced, rated against the league; positive means
@@ -14,20 +14,20 @@ fewer goals conceded than a league-average keeper facing the same shots. The SD 
 √Σ q(1 − q) of a league-average keeper; the interval is a match bootstrap with the rating held
 fixed.
 
-**Keeper model (P3.2).** ``goal ~ offset(logit q) + (1 | group)``, no fixed intercept (the
+**Keeper model.** ``goal ~ offset(logit q) + (1 | group)``, no fixed intercept (the
 rated offset fixes the level), fitted by a Laplace approximation (:func:`fit_keeper_model`):
 τ̂ maximises the approximate marginal likelihood, and each group's effect is its posterior
 mode, shrunk towards 0 as its shots get fewer. It is tested on the next season's on-target
 shots against the raw (unpooled) estimate and against xGOT alone (:func:`next_season`).
 
-**Stability (P3.3).** Split-half reliability of q − goal per shot, alternating shots within a
-keeper in time order (PM X5), for the keepers whose total shots faced reach each tier
+**Stability.** Split-half reliability of q − goal per shot, alternating shots within a
+keeper in time order, for the keepers whose total shots faced reach each tier
 (:func:`reliability`); a tier no keeper reaches is reported empty.
 
-**Sensitivities (PR1, StatsBomb).** A projected save's ``goal_z`` is where the keeper met the
+**Sensitivities (StatsBomb).** A projected save's ``goal_z`` is where the keeper met the
 ball, not its height at the line: :func:`line_rated` re-rates GSAx on goals and the saves
 stopped within ``LINE_YD`` of the line, and ``season_out(f, without=NOZ_FEATURES)`` refits the
-headline without ``mouth_z`` (PM E2 (c)). Both are printed beside the headline, never as it,
+headline without ``mouth_z``. Both are printed beside the headline, never as it,
 and both are summarised over the keeper-seasons whose competition-season has a δ fitted on the
 line subset: that subset keeps every goal and few saves, and a season at δ = 0 cannot re-level
 it, so its shift is the selection, not ``goal_z`` (:func:`shift_summary`).
@@ -138,12 +138,12 @@ SMALL_LEAGUE: Final[SmallLeague | None] = SmallLeague(2, 50)
 
 
 def too_small(units: int, rows: int, small: SmallLeague | None) -> bool:
-    """E2's minimum, the one rule for every fitted league offset: a group with at most
+    """The minimum group size, the one rule for every fitted league offset: a group with at most
     ``small.max_keepers`` keepers (``units``) or fewer than ``small.min_shots`` rows, or no row,
     is too small; never with ``small`` None.
 
-    Not applied to a keeper's own shift (``next_season``'s raw estimate or the model's u): PM
-    PR1 E3, the minimum protects a league offset from absorbing its keepers' performance.
+    Not applied to a keeper's own shift (``next_season``'s raw estimate or the model's u): the
+    minimum protects a league offset from absorbing its keepers' performance.
 
     Examples
     --------
@@ -235,7 +235,8 @@ def _zero_families(zero_families: Sequence[str]) -> tuple[str, ...]:
 def _season_flags(
     pred: pl.DataFrame, small: SmallLeague | None, zero: tuple[str, ...]
 ) -> pl.DataFrame:
-    """``SEASON_KEY``, ``small`` (E2 on its open-play rows) and ``zero_family``, per season."""
+    """``SEASON_KEY``, ``small`` (the minimum on its open-play rows), ``zero_family``, per
+    season."""
     play = pl.col("kind").cast(pl.String) == "open_play"
     seasons = pred.group_by(SEASON_KEY).agg(
         families=pl.col("family").cast(pl.String).n_unique(),
@@ -258,11 +259,11 @@ def rate(
 ) -> pl.DataFrame:
     """Rate every row against its league: ``group``, ``delta``, ``q`` and three flags.
 
-    In order: (1) a competition-season is ``small`` when its open-play rows fail E2's minimum
+    In order: (1) a competition-season is ``small`` when its open-play rows fail the minimum
     (:func:`too_small`; no open-play row counts) and ``zero_family`` when its ``family`` is in
     ``zero_families``; every row of such a season, both kinds, gets δ = 0. (2) The other rows
     are grouped on ``RATING_GROUPS[kind]`` (a season for open play, the ``source`` for
-    penalties); a group that fails E2's minimum gets δ = 0 and ``pool_small``, any other the
+    penalties); a group that fails the minimum gets δ = 0 and ``pool_small``, any other the
     :func:`league_shift` of its xGOT against its goals, so it sums to its league. (3) With
     ``small`` None no season or group is small. ``q = expit(logit xgot + delta)``, and
     ``q = goal`` when δ is infinite.
@@ -274,7 +275,7 @@ def rate(
         ``SEASON_KEY``, ``competition_name``, ``season_name``, ``kind``, ``family``,
         ``source``).
     small : SmallLeague or None
-        E2's minimum; None fits every group.
+        The minimum group size (:func:`too_small`); None fits every group.
     zero_families : sequence of str
         Families rated at δ = 0 (``ZERO_FAMILIES`` in :func:`fit`); values of
         ``data.FAMILIES``.
@@ -284,8 +285,8 @@ def rate(
     polars.DataFrame
         ``pred`` in its order plus ``group`` (String: ``"<competition_id> <season_id>"`` for
         open play and for the kicks of a small or zero-family season, else the ``source``),
-        ``delta`` (Float64, ±inf allowed), ``q`` (Float64), ``small`` (the season's E2 flag),
-        ``zero_family`` and ``pool_small`` (the penalty pool's E2 flag) (Boolean); empty in,
+        ``delta`` (Float64, ±inf allowed), ``q`` (Float64), ``small`` (the season's flag),
+        ``zero_family`` and ``pool_small`` (the penalty pool's flag) (Boolean); empty in,
         empty out.
 
     Raises
@@ -544,7 +545,7 @@ def team_selected_split(table: pl.DataFrame) -> pl.DataFrame:
     """The team-selected keeper-seasons of a :func:`keeper_table`, by side.
 
     The selected side's keeper faces at least ``SELECTED_SIDE`` shots that season, the
-    opponents' keepers fewer. At δ = 0 (PR1) each side's sum is its keepers' goals against
+    opponents' keepers fewer. At δ = 0 each side's sum is its keepers' goals against
     xGOT; δ = 0 removes the league-sum coupling between the sides, not the gap between them,
     and this split cannot attribute that gap to finishing or keeping.
 
@@ -823,7 +824,7 @@ class NextSeason:
     ``log_loss`` is (none, raw, shrunk); ``gain`` is shrunk over raw and ``gain_none`` shrunk
     over xGOT alone (``metrics.GAIN_LEVEL`` match-bootstrap intervals); the ``_loo`` pair uses
     the test season's δ fitted without the paired keepers' rows (δ = 0 in a season at δ = 0 by
-    rule, and in ``loo_small`` seasons whose unpaired rows fail E2's minimum). A test season
+    rule, and in ``loo_small`` seasons whose unpaired rows fail the minimum). A test season
     with no unpaired row or a non-finite δ without them is left out of the ``_loo`` pair:
     ``loo_missing`` seasons, ``loo_shots`` test shots and ``loo_pairs`` pairs (the ``_loo``
     gains are None when fewer than 2 test matches are left). ``kept_pairs`` are the scored
@@ -945,10 +946,10 @@ def _loo_logits(rows: pl.DataFrame, test: pl.DataFrame) -> tuple[FloatArray, int
     """logit xgot + δ_loo per test row, δ_loo fitted on its season's rows of unpaired keepers.
 
     In order: no unpaired row → NaN; a season at δ = 0 by rule (``small`` or
-    ``zero_family``, as :func:`rate`) → 0; unpaired rows that fail E2's minimum
+    ``zero_family``, as :func:`rate`) → 0; unpaired rows that fail the minimum
     (:func:`too_small` with ``SMALL_LEAGUE``, read when called) → 0, counted; else their
     :func:`league_shift`, NaN when not finite. Returns the logits, the count of NaN seasons and
-    the count of E2-small remainders."""
+    the count of too-small remainders."""
     faced = test.select("gk_id", *SEASON_KEY).unique()
     shifts: dict[tuple[str, str], float] = {}
     loo_small = 0
@@ -972,7 +973,7 @@ def _loo_logits(rows: pl.DataFrame, test: pl.DataFrame) -> tuple[FloatArray, int
 
 def saw_test(ns: NextSeason, trained: pl.DataFrame) -> int:
     """The kept pairs of ``ns`` whose rated season's xGOT came from a fit that trained on the
-    test season (PM E4, a disclosure): (``competition_id``, ``next_season_id``) is a training
+    test season (a disclosure): (``competition_id``, ``next_season_id``) is a training
     season of (``competition_id``, ``season_id``) in ``trained``
     (``season_out.trained_seasons``).
 
@@ -1011,7 +1012,7 @@ def saw_test(ns: NextSeason, trained: pl.DataFrame) -> int:
 
 @dataclass(frozen=True)
 class Tier:
-    """Split-half reliability at ``tier`` shots faced (PM X5): ``first`` on each keeper's first
+    """Split-half reliability at ``tier`` shots faced: ``first`` on each keeper's first
     ``tier`` shots, ``all_shots`` on all of them; ``*_sb`` the Spearman-Brown step-up of r and
     its interval. ``keepers`` 0 is an empty tier."""
 
@@ -1080,12 +1081,12 @@ def stops(f: xgot.XgotFit) -> pl.DataFrame | None:
 
 def line_rated(pred: pl.DataFrame, stops: pl.DataFrame, *, coarse: pl.Series) -> pl.DataFrame:
     """The open-play rows of ``pred`` that are a goal or a save stopped at ``end_x >=
-    LINE_X``, re-rated by :func:`rate` (δ and E2 smallness fitted on this subset).
+    LINE_X``, re-rated by :func:`rate` (δ and the minimum fitted on this subset).
 
-    The goal_z sensitivity (PM after MS6): a projected save's ``goal_z`` is where the keeper
+    The goal_z sensitivity: a projected save's ``goal_z`` is where the keeper
     met the ball, so only saves stopped within ``LINE_YD`` of the line keep a z near the line.
     Every goal stays. ``LINE_X`` is a fine-grid value; it holds because coarse-grid matches
-    are out of GSAx (PM E1 (a)).
+    are out of GSAx.
 
     Parameters
     ----------
@@ -1282,9 +1283,9 @@ def shift_summary(g: GsaxFit, column: str) -> LineSummary | None:
     population come from it).
 
     Both sensitivities are judged on one population: the keeper-seasons whose competition-season
-    has a δ fitted on the line subset (``g.line_seasons``, not ``at_zero``; audit A10). The line
+    has a δ fitted on the line subset (``g.line_seasons``, not ``at_zero``). The line
     subset keeps every goal and few saves; a fitted δ re-levels that selection, a season at δ = 0
-    (team-selected, or E2-small on the subset) cannot, so its keeper-seasons are only counted.
+    (team-selected, or too small on the subset) cannot, so its keeper-seasons are only counted.
 
     Raises
     ------
@@ -1510,7 +1511,7 @@ def assemble(
 
     ``pred`` is ``season_out.season_out(f)``, rated with ``SMALL_LEAGUE`` and
     ``ZERO_FAMILIES`` (read when called); ``stops`` (:func:`stops`, None to skip) feeds the
-    line sensitivity, ``trained`` (``season_out.trained_seasons``) the E4 count and ``noz``
+    line sensitivity, ``trained`` (``season_out.trained_seasons``) the saw-test count and ``noz``
     (``season_out(f, without=NOZ_FEATURES)``, None to skip) the z-free sensitivity.
 
     Raises
@@ -1550,7 +1551,7 @@ def fit(f: xgot.XgotFit) -> GsaxFit:
     """GSAx tables, keeper models, next-season tests and reliability of one provider.
 
     ``season_out.season_out(f)`` is the fit (through ``f``'s cache), then, for a provider in
-    ``NOZ_PROVIDERS``, one serial z-free refit (``without=NOZ_FEATURES``, PM E2 (c)); the rest
+    ``NOZ_PROVIDERS``, one serial z-free refit (``without=NOZ_FEATURES``); the rest
     is :func:`assemble`. Every constant is read when called.
 
     Examples

@@ -1,0 +1,58 @@
+{
+ "calibration-xg-dark.png": {
+  "subtitle": "Out-of-fold and hold-out predictions of shots in 10 equal-count bins · bands: 95% match bootstrap of the observed rate",
+  "title": "xG inside the band in 10 of 10 bins in cross-validation, 9 of 10 on the hold-out"
+ },
+ "calibration-xg-light.png": {
+  "subtitle": "Out-of-fold and hold-out predictions of shots in 10 equal-count bins · bands: 95% match bootstrap of the observed rate",
+  "title": "xG inside the band in 10 of 10 bins in cross-validation, 9 of 10 on the hold-out"
+ },
+ "calibration-xgot-dark.png": {
+  "subtitle": "Out-of-fold and hold-out predictions of on-target shots in 10 equal-count bins · bands: 95% match bootstrap of the observed rate",
+  "title": "xGOT inside the band in 10 of 10 bins in cross-validation, 10 of 10 on the hold-out"
+ },
+ "calibration-xgot-light.png": {
+  "subtitle": "Out-of-fold and hold-out predictions of on-target shots in 10 equal-count bins · bands: 95% match bootstrap of the observed rate",
+  "title": "xGOT inside the band in 10 of 10 bins in cross-validation, 10 of 10 on the hold-out"
+ },
+ "comparison-xg-dark.png": {
+  "subtitle": "Log-loss gain of the xG model over each reference · 95% intervals from 2,000 match resamples of fixed fits",
+  "title": "Clearly lower log loss than 3 of 3 references in cross-validation and 1 of 3 on the hold-out"
+ },
+ "comparison-xg-light.png": {
+  "subtitle": "Log-loss gain of the xG model over each reference · 95% intervals from 2,000 match resamples of fixed fits",
+  "title": "Clearly lower log loss than 3 of 3 references in cross-validation and 1 of 3 on the hold-out"
+ },
+ "comparison-xgot-dark.png": {
+  "subtitle": "Log-loss gain of the xGOT model over each reference · 95% intervals from 2,000 match resamples of fixed fits",
+  "title": "Clearly lower log loss than 1 of 1 reference in cross-validation and 1 of 1 on the hold-out"
+ },
+ "comparison-xgot-light.png": {
+  "subtitle": "Log-loss gain of the xGOT model over each reference · 95% intervals from 2,000 match resamples of fixed fits",
+  "title": "Clearly lower log loss than 1 of 1 reference in cross-validation and 1 of 1 on the hold-out"
+ },
+ "gsax-keepers-dark.png": {
+  "subtitle": "Not distinguishable from noise at 100 shots: stepped-up split-half r +0.12 [−0.28, +0.40] on the first 100 shots of 111 keepers.",
+  "title": "After shrinkage, none of 97 keeper-seasons differs clearly from average"
+ },
+ "gsax-keepers-light.png": {
+  "subtitle": "Not distinguishable from noise at 100 shots: stepped-up split-half r +0.12 [−0.28, +0.40] on the first 100 shots of 111 keepers.",
+  "title": "After shrinkage, none of 97 keeper-seasons differs clearly from average"
+ },
+ "player-jamie-vardy-dark-square.png": {
+  "subtitle": "Jamie Vardy · Leicester City · Premier League 2015/2016",
+  "title": "19 non-penalty goals from 19.2 xG: in line with the model (SD 3.6)"
+ },
+ "player-jamie-vardy-light-square.png": {
+  "subtitle": "Jamie Vardy · Leicester City · Premier League 2015/2016",
+  "title": "19 non-penalty goals from 19.2 xG: in line with the model (SD 3.6)"
+ },
+ "team-leicester-city-dark-square.png": {
+  "subtitle": "Leicester City · Premier League 2015/2016",
+  "title": "54 of 57 non-penalty goals came from inside the box, the league's highest share (rest of league: 84%)"
+ },
+ "team-leicester-city-light-square.png": {
+  "subtitle": "Leicester City · Premier League 2015/2016",
+  "title": "54 of 57 non-penalty goals came from inside the box, the league's highest share (rest of league: 84%)"
+ }
+}

@@ -1,27 +1,39 @@
 site_name: football-shot-models
 site_description: "Shot models for football: expected goals (xG), post-shot xG (xGOT/PSxG) and goalkeeper shot-stopping"
-site_author: R.Berk Karatas
+site_author: R. Berk Karataş
+copyright: © 2026 R. Berk Karataş · MIT licence
 docs_dir: docs
 
 theme:
   name: material
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
   features:
     - navigation.sections
     - content.code.copy
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
 
 markdown_extensions:
   - admonition
+  - attr_list
+  - md_in_html
   - tables
   - toc:
       permalink: true
@@ -37,7 +49,8 @@ plugins:
           paths: [src]
           options:
             docstring_style: numpy
-            show_source: true
+            show_source: false
+            extensions: [football_docs.roles]
             show_root_heading: true
 
 extra_javascript:
@@ -46,15 +59,14 @@ extra_javascript:
   - https://unpkg.com/katex@0.16.11/dist/contrib/auto-render.min.js
 
 extra_css:
+  - stylesheets/theme.css
   - https://unpkg.com/katex@0.16.11/dist/katex.min.css
 
 nav:
   - Home: index.md
+  - Charts: charts.md
   - Data: data.md
   - Methodology: methodology.md
-  - Roadmap: roadmap.md
-  - Modules: modules.md
-  - Model card template: model-card-template.md
   - Model cards:
       - "Base rate": models/xg-base-rate.md
       - "LR distance + angle": models/xg-lr-distance-angle.md
@@ -76,6 +88,9 @@ nav:
       - "Keeper model (StatsBomb)": models/gk-model.md
       - "GSAx (WhoScored / Opta)": models/ws-gsax.md
       - "Keeper model (WhoScored / Opta)": models/ws-gk-model.md
+      - "Model card template": model-card-template.md
+  - Modules: modules.md
+  - Roadmap: roadmap.md
   - References: references.md
   - API reference:
       - data: api/data.md

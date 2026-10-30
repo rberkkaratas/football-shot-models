@@ -1,6 +1,6 @@
 # level
 
-PR1: the StatsBomb hold-out level gap. The level test (`level_z`: Σ xG − goals against the
+The StatsBomb hold-out level gap. The level test (`level_z`: Σ xG − goals against the
 Poisson-binomial SD, within `metrics.BAND_SDS` through `metrics.within`), the segment decomposition (`segments`), the adoption
 rule (`adopt`) and the xg-gbm card section (`level_lines`). What is fitted (`models.POOLED`,
 `models.LEVEL_FIXES`, `models.ADOPTED`) stays in the hashed `models.py`; this module fits

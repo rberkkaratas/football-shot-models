@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import io
+import json
 import re
 import subprocess
 import tomllib
@@ -1064,25 +1065,36 @@ def test_main_writes_all_families(harness: dict[str, Any]) -> None:
     """``main`` (``make charts``): package 1's 8 files plus the keeper, calibration and
     comparison charts in both themes: 18 files, one ``chart:`` line each, ``written []`` and
     ``checks: 0 problems``; ``--drop-team-selected`` writes ``gsax-keepers-no-team-{theme}``
-    instead."""
+    instead. Amended for the docs sites (a ratify item): each run also writes ``charts.json`` (19
+    files), whose keys are exactly that run's 18 PNG names, and prints ``titles: <path>``."""
     harness["fake_fits"]()
     rc, out, err = _run(harness["argv"])
     assert rc == 0, err
-    files = sorted(p.name for p in (harness["repo"] / "outputs" / "charts").iterdir())
-    assert len(files) == 18
+    charts_dir = harness["repo"] / "outputs" / "charts"
+    files = sorted(p.name for p in charts_dir.iterdir())
+    assert len(files) == 19 and "charts.json" in files
+    pngs = [f for f in files if f.endswith(".png")]
+    assert len(pngs) == 18
     assert set(FAMILIES) <= set(files)
     assert sum(f.startswith("team-team-one-") for f in files) == 4
     assert sum(f.startswith("player-") for f in files) == 4
+    titles = json.loads((charts_dir / "charts.json").read_text(encoding="utf-8"))
+    assert set(titles) == set(pngs)
+    assert all(set(v) == {"title", "subtitle"} and v["title"] for v in titles.values())
     assert out.count("chart: ") == 18 and "checks: 0 problems" in out and "written []" in out
+    assert out.count("titles: ") == 1
     assert harness["fits_called"] == ["statsbomb"]
-    for p in (harness["repo"] / "outputs" / "charts").iterdir():
+    for p in charts_dir.iterdir():
         p.unlink()
     rc, out, err = _run([*harness["argv"], "--drop-team-selected"])
     assert rc == 0, err
-    files = {p.name for p in (harness["repo"] / "outputs" / "charts").iterdir()}
-    assert {"gsax-keepers-no-team-light.png", "gsax-keepers-no-team-dark.png"} <= files
-    assert not {"gsax-keepers-light.png", "gsax-keepers-dark.png"} & files
-    assert len(files) == 18
+    files_set = {p.name for p in charts_dir.iterdir()}
+    assert {"gsax-keepers-no-team-light.png", "gsax-keepers-no-team-dark.png"} <= files_set
+    assert not {"gsax-keepers-light.png", "gsax-keepers-dark.png"} & files_set
+    assert len(files_set) == 19
+    titles = json.loads((charts_dir / "charts.json").read_text(encoding="utf-8"))
+    assert set(titles) == files_set - {"charts.json"}
+    assert "gsax-keepers-no-team-light.png" in titles and "gsax-keepers-light.png" not in titles
 
 
 def test_main_private(harness: dict[str, Any]) -> None:

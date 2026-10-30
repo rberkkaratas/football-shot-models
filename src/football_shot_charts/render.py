@@ -1,4 +1,4 @@
-"""Read fit outputs from the warm cache, never fitting, and write every CH1 chart.
+"""Read fit outputs from the warm cache, refitting no model of record, and write every chart.
 
 :func:`cached_evaluation` reads the ``xg-gbm`` hold-out predictions for the shot charts: the
 spec is evaluated through the prediction cache with an estimator that refuses to fit. The
@@ -7,7 +7,7 @@ keeper and model-card charts read what the existing public functions return
 :func:`read_only`, which turns every cache miss and every cache write into an error. Two
 estimations that guard cannot see are existing behaviour, run on every call as every warm
 ``make xgot`` / ``make gsax`` / ``make reproduce`` runs them: ``xgot.fit`` fits the shoot-out
-penalty xGOT LR once per provider, uncached (drawn by no chart; PM E1 (a)), and ``gsax.fit``
+penalty xGOT LR once per provider, uncached (drawn by no chart), and ``gsax.fit``
 re-estimates the keeper model (τ̂ by ``fit_keeper_model``, plus the ``next_season`` rolling
 fits), which the keeper chart draws. Both are deterministic, so no number moves; caching them is
 in the maintenance round.
@@ -18,8 +18,11 @@ plain :class:`~football_shot_charts.diagnostics.ModelView`. Every file goes thro
 ``rows.write_all``, which refuses a chart not drawn in Inter, a WhoScored chart outside the
 private folder, any path git would track, and any chart that fails ``viz.check``.
 ``python -m football_shot_charts.render`` (``make charts``) writes the 18 StatsBomb charts into
-the git-ignored ``outputs/charts``; ``--private`` (``make charts-private``) writes the 10
-WhoScored ones into ``data/charts/private``.
+the git-ignored ``outputs/charts``, with ``charts.json`` (each chart's drawn title and subtitle,
+:func:`titles`); ``--private`` (``make charts-private``) writes the 10 WhoScored ones into
+``data/charts/private``. ``--publish docs/assets/charts`` (``make docs-charts``, :func:`publish`)
+copies the StatsBomb charts the docs site shows (:data:`PUBLISH`) byte for byte, after checking
+each carries the StatsBomb logo; WhoScored charts are never published.
 """
 
 from __future__ import annotations
@@ -27,8 +30,11 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
+import fnmatch
+import json
 import os
 import re
+import shutil
 import sys
 import unicodedata
 from collections.abc import Iterator, Mapping, Sequence
@@ -41,6 +47,7 @@ import numpy.typing as npt
 import polars as pl
 from football_core import viz
 from football_core.io import snapshot, statsbomb
+from matplotlib.text import Text
 
 from football_shot_charts import diagnostics, keepers, rows
 from football_shot_charts import shots as charts
@@ -100,6 +107,20 @@ COLD_HINT: Final[Mapping[str, str]] = MappingProxyType({
 })  # fmt: skip
 CHART_OUT: Final = "outputs/charts"
 PRIVATE_PREFIX: Final = "ws-"
+TITLES: Final = "charts.json"  # {file name: {"title", "subtitle"}} of the last StatsBomb run
+# the charts the docs site publishes: (file pattern with {theme}, kind); each (pattern, theme)
+# must match exactly one chart of the run, so a second team or the keeper chart without
+# team-selected seasons is never picked by accident
+PUBLISH: Final[tuple[tuple[str, str], ...]] = (
+    ("team-*-{theme}-square.png", "Team shot map"),
+    ("player-*-{theme}-square.png", "Player shot map"),
+    ("gsax-keepers-{theme}.png", "Keeper GSAx interval chart"),
+    ("calibration-xg-{theme}.png", "xG calibration chart"),
+    ("calibration-xgot-{theme}.png", "xGOT calibration chart"),
+    ("comparison-xg-{theme}.png", "xG model comparison chart"),
+    ("comparison-xgot-{theme}.png", "xGOT model comparison chart"),
+)
+_ALT_ESCAPE: Final = re.compile(r"([\\`*_\[\]])")
 
 
 class CacheMiss(ValueError):
@@ -227,7 +248,7 @@ def excluded_note(
 
 def default_player(held: pl.DataFrame, team: str) -> str:
     """The team's player with the most kept shots (ties: the smallest id as a string); the
-    choice never reads an outcome (PM E2).
+    choice never reads an outcome.
 
     Raises
     ------
@@ -302,7 +323,7 @@ def read_only() -> Iterator[None]:
 
     It patches the class for the process, so it is not thread-safe (the CLI and pytest without
     xdist are single-threaded). It cannot see a fit that bypasses the cache: ``xgot.fit`` fits
-    the shoot-out penalty xGOT LR once per provider (PM E1 (a)).
+    the shoot-out penalty xGOT LR once per provider (existing behaviour, deterministic).
 
     Examples
     --------
@@ -342,7 +363,7 @@ def _hinted(provider: str, e: CacheMiss) -> CacheMiss:
 def fits(provider: str, *, cache: StrPath | None) -> tuple[xgot.XgotFit, gsax.GsaxFit]:
     """``xgot.fit`` and ``gsax.fit`` of one provider from the warm cache, inside
     :func:`read_only`: no xG or xGOT prediction is refitted. Not cached, and run on every call
-    as every warm ``make gsax`` runs them: ``xgot.fit``'s shoot-out penalty LR (PM E1 (a)) and
+    as every warm ``make gsax`` runs them: ``xgot.fit``'s shoot-out penalty LR and
     ``gsax.fit``'s keeper-model estimation (τ̂ and the ``next_season`` rolling fits), which the
     keeper chart draws; both deterministic.
 
@@ -659,6 +680,141 @@ def model_charts(
     return out
 
 
+# --- Publishing to the docs site ---------------------------------------------------------------
+
+
+def titles(charts_: Mapping[str, viz.Canvas]) -> dict[str, dict[str, str]]:
+    """``{file name: {"title": ..., "subtitle": ...}}`` read from each canvas's ``title`` and
+    ``subtitle`` texts, line breaks as spaces: the alt text of the published charts.
+
+    Raises
+    ------
+    ValueError
+        A canvas without a title or subtitle text.
+
+    Examples
+    --------
+    >>> c = viz.canvas("light", "square", title="Saves\\nabove", subtitle="S",
+    ...                footer=viz.Footer(("whoscored",)))
+    >>> titles({"c.png": c})
+    {'c.png': {'title': 'Saves above', 'subtitle': 'S'}}
+    """
+    out: dict[str, dict[str, str]] = {}
+    for name, c in charts_.items():
+        texts = {t.get_gid(): t.get_text() for t in c.fig.findobj(Text)}
+        if not ({"title", "subtitle"} <= texts.keys()):
+            raise ValueError(f"{name}: the canvas has no title or subtitle text")
+        out[name] = {k: str(texts[k]).replace("\n", " ") for k in ("title", "subtitle")}
+    return out
+
+
+def _dumps(entries: Mapping[str, Mapping[str, str]]) -> str:
+    return json.dumps(entries, sort_keys=True, indent=1, ensure_ascii=False) + "\n"
+
+
+def _published(name: str) -> tuple[str, str]:
+    for pattern, kind_ in PUBLISH:
+        for theme in viz.THEMES:
+            if fnmatch.fnmatchcase(name, pattern.format(theme=theme)):
+                return kind_, theme
+    raise ValueError(f"{name} is not a published chart ({', '.join(p for p, _ in PUBLISH)})")
+
+
+def kind(name: str) -> str:
+    """The kind of a published chart file, from :data:`PUBLISH`.
+
+    Raises
+    ------
+    ValueError
+        ``name`` matches no :data:`PUBLISH` pattern.
+
+    Examples
+    --------
+    >>> kind("gsax-keepers-dark.png")
+    'Keeper GSAx interval chart'
+    """
+    return _published(name)[0]
+
+
+def alt_text(name: str, entry: Mapping[str, str]) -> str:
+    """The alt text of a published chart: its kind, then the drawn title and subtitle.
+
+    Examples
+    --------
+    >>> alt_text("calibration-xg-light.png", {"title": "T", "subtitle": "S"})
+    'xG calibration chart: T (S)'
+    """
+    return f"{kind(name)}: {entry['title']} ({entry['subtitle']})"
+
+
+def image_markdown(name: str, entry: Mapping[str, str], href: str) -> str:
+    """The Markdown of one published chart, shown in its own colour scheme only and linking to
+    ``href``; Markdown metacharacters in the alt text are backslash-escaped so that the built
+    page's alt attribute equals :func:`alt_text`.
+
+    Examples
+    --------
+    >>> md = image_markdown("gsax-keepers-light.png", {"title": "A [b", "subtitle": "c_d"}, "#k")
+    >>> print(md.replace("](", "]\\n("))
+    [![Keeper GSAx interval chart: A \\[b (c\\_d)]
+    (assets/charts/gsax-keepers-light.png#only-light){ loading=lazy }]
+    (#k)
+    """
+    theme = _published(name)[1]
+    alt = _ALT_ESCAPE.sub(r"\\\1", alt_text(name, entry))
+    return f"[![{alt}](assets/charts/{name}#only-{theme}){{ loading=lazy }}]({href})"
+
+
+def publish(src: StrPath, dest: StrPath) -> tuple[Path, ...]:
+    """Copy the published charts of the last StatsBomb run (``src/charts.json``) into ``dest``,
+    byte for byte, with their ``charts.json``; print one :func:`image_markdown` line per file.
+
+    Raises
+    ------
+    ValueError
+        No ``src/charts.json`` (run ``make charts`` first); a WhoScored (``ws-``) name in it; a
+        (pattern, theme) of :data:`PUBLISH` matching no chart or several; a selected file
+        missing; a selected PNG without the StatsBomb logo (``rows.logo_pixels`` under
+        ``rows.LOGO_MIN_PX``); a PNG in ``dest`` outside the selection. Nothing is copied.
+
+    Examples
+    --------
+    >>> publish("no-such-folder", "docs/assets/charts")
+    Traceback (most recent call last):
+    ...
+    ValueError: no no-such-folder/charts.json; run make charts first
+    """
+    src, dest = Path(src), Path(dest)
+    if not (src / TITLES).is_file():
+        raise ValueError(f"no {src / TITLES}; run make charts first")
+    entries: dict[str, dict[str, str]] = json.loads((src / TITLES).read_text(encoding="utf-8"))
+    if private := sorted(n for n in entries if n.startswith(PRIVATE_PREFIX)):
+        raise ValueError(f"{src / TITLES} lists WhoScored charts {private}; never published")
+    selected: list[str] = []
+    for pattern, _ in PUBLISH:
+        for theme in viz.THEMES:
+            found = fnmatch.filter(sorted(entries), pattern.format(theme=theme))
+            if len(found) != 1:
+                raise ValueError(f"{pattern.format(theme=theme)} matches {len(found)} charts of "
+                                 f"{src / TITLES}, not exactly one: {found}")  # fmt: skip
+            selected += found
+    for name in selected:
+        if not (src / name).is_file():
+            raise ValueError(f"{src / name} is listed in {TITLES} but missing; run make charts")
+        if (n := rows.logo_pixels(src / name)) < rows.LOGO_MIN_PX:
+            raise ValueError(f"{src / name}: {n} StatsBomb-logo pixels (< {rows.LOGO_MIN_PX})")
+    if extra := sorted(p.name for p in dest.glob("*.png") if p.name not in selected):
+        raise ValueError(f"{dest} holds charts outside the selection: {extra}; remove them first")
+    dest.mkdir(parents=True, exist_ok=True)
+    out = []
+    for name in selected:
+        shutil.copyfile(src / name, dest / name)
+        out.append(dest / name)
+        print(image_markdown(name, entries[name], href=f"assets/charts/{name}"))
+    (dest / TITLES).write_text(_dumps({n: entries[n] for n in selected}), encoding="utf-8")
+    return tuple(out)
+
+
 # --- Command line -------------------------------------------------------------------------------
 
 
@@ -673,7 +829,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(
         prog="python -m football_shot_charts.render",
-        description="Write the CH1 charts: shot charts, keeper chart, model-card visuals.",
+        description="Write the shot-model charts: shot charts, keeper chart, model-card visuals; "
+        "or copy the published ones into the docs site (--publish).",
     )
     parser.add_argument("--team", help="team id, e.g. sb:22 (StatsBomb charts)")
     parser.add_argument("--team-name", help="the team's display name")
@@ -687,8 +844,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help=f"WhoScored charts only, under {PRIVATE_DIR}")  # fmt: skip
     parser.add_argument("--drop-team-selected", action="store_true",
                         help="the keeper chart without team-selected seasons")  # fmt: skip
+    parser.add_argument("--publish", metavar="DEST",
+                        help="copy the published StatsBomb charts of --out into DEST")  # fmt: skip
     args = parser.parse_args(argv)
     try:
+        if args.publish:
+            if args.private:
+                raise ValueError("--publish copies StatsBomb charts only; drop --private")
+            publish(args.out or CHART_OUT, args.publish)
+            return 0
         return _run_private(args) if args.private else _run(args)
     except (ValueError, OSError, snapshot.SnapshotError) as e:
         print(f"charts: error: {e}", file=sys.stderr)
@@ -696,9 +860,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _write_all(charts_: Mapping[str, viz.Canvas], out: Path, *, private: bool) -> None:
-    """``rows.write_all`` (nothing is written when one chart fails), then the printed lines."""
+    """``rows.write_all`` (nothing is written when one chart fails), then the printed lines; a
+    StatsBomb run also writes ``charts.json`` (:func:`titles`), checked git-ignored first."""
+    entries = None if private else titles(charts_)
+    if entries is not None:
+        snapshot.check_ignored(Path(os.path.abspath(out / TITLES)), what="chart titles")
     for path in rows.write_all(charts_, out, private=private):
         print(f"chart: {path}")
+    if entries is not None:
+        (out / TITLES).write_text(_dumps(entries), encoding="utf-8")
+        print(f"titles: {out / TITLES}")
     print("checks: 0 problems")
 
 

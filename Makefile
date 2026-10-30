@@ -1,6 +1,6 @@
 .PHONY: check lint format typecheck test docs docs-notebooks docs-serve snapshot xg-baselines xg-models reproduce \
 	reproduce-cold reproduce-public reproduce-public-cold snapshot-whoscored legacy-v0 xg-v1 xg-v2 xgot \
-	statsbomb-logo gsax charts charts-private
+	statsbomb-logo gsax charts charts-private docs-charts docs-theme docs-results
 
 ## Run every quality gate (CI runs the same target)
 check: lint typecheck test docs
@@ -25,8 +25,19 @@ docs-notebooks:
 		uv run jupyter nbconvert --to markdown --output-dir docs/notebooks notebooks/*.ipynb; \
 	fi
 
+## The strict site build, then fail on any Sphinx role left raw in the built pages
 docs: docs-notebooks
 	uv run zensical build --strict
+	uv run python -m football_docs.pages site site
+
+## Regenerate the committed site theme (docs/stylesheets/theme.css, docs/assets/logo.svg) from
+## football-core's viz themes
+docs-theme:
+	uv run python -m football_docs.theme docs
+
+## Rewrite the home page's results block from the README's card blocks ([[tool.football_docs.results]])
+docs-results:
+	uv run python -m football_docs.pages results docs/index.md --write
 
 docs-serve: docs-notebooks
 	uv run zensical serve
@@ -153,9 +164,10 @@ reproduce-public-cold:
 ## fitted: run make xg-models xgot gsax first.
 CHART_TEAM ?= sb:22
 CHART_TEAM_NAME ?= Leicester City
+CHARTS := uv run python -m football_shot_charts.render
 charts:
 	$(NEED_STATSBOMB_EXTRAS)
-	uv run python -m football_shot_charts.render --team "$(CHART_TEAM)" --team-name "$(CHART_TEAM_NAME)" \
+	$(CHARTS) --team "$(CHART_TEAM)" --team-name "$(CHART_TEAM_NAME)" \
 		--statsbomb-raw "$(STATSBOMB_RAW)" --out outputs/charts
 
 ## CH1, private: the WhoScored keeper, calibration and comparison charts (10 PNGs, unnamed) into
@@ -168,4 +180,10 @@ charts-private:
 	@git check-ignore -q data/charts/private; rc=$$?; test $$rc -eq 0 || { echo \
 	"charts-private: data/charts/private is not git-ignored (git check-ignore exit $$rc); \
 	refusing to write there" >&2; exit 1; }
-	uv run python -m football_shot_charts.render --private
+	$(CHARTS) --private
+
+## Copy the published StatsBomb charts (team and player squares, keeper, calibration and
+## comparison, both themes: 14 PNGs) and their charts.json from outputs/charts into the docs
+## site, byte for byte; refuses a chart without the StatsBomb logo. Run after make charts.
+docs-charts:
+	$(CHARTS) --publish docs/assets/charts

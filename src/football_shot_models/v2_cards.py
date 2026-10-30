@@ -1,4 +1,4 @@
-"""PR1: the ``xg-v2`` model card and README block, rendered from a :class:`~.v2.V2Fit`.
+"""The ``xg-v2`` model card and README block, rendered from a :class:`~.v2.V2Fit`.
 
 Render-only (``cache.RENDER_ONLY``): it fits nothing and no other module imports it, so a
 wording fix here keeps the prediction cache warm. Every number comes from the fit; the card

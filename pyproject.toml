@@ -5,7 +5,7 @@ description = "Shot models for football: expected goals (xG), post-shot xG (xGOT
 readme = "README.md"
 license = "MIT"
 authors = [
-    { name = "R.Berk Karatas", email = "rberkk@protonmail.com" }
+    { name = "R. Berk Karataş", email = "rberkk@protonmail.com" }
 ]
 requires-python = ">=3.12"
 dependencies = [
@@ -60,3 +60,49 @@ markers = [
     "slow: needs the real snapshot; run with make reproduce",
     "whoscored: needs the private WhoScored snapshot and v0",
 ]
+
+# The home page's headline results (docs/index.md, results block): rows and columns copied by
+# football_docs.pages from the README's generated card blocks; `make docs-results` rewrites it.
+[[tool.football_docs.results]]
+result = "xG, monotone GBM + Platt trained without team-selected seasons, StatsBomb open data: log loss"
+block = "models"
+row = ["Monotone GBM + Platt, trained without team-selected seasons"]
+columns = ["CV log loss", "Hold-out log loss"]
+
+[[tool.football_docs.results]]
+result = "StatsBomb's own xG on the same shots: log loss"
+block = "models"
+row = ["StatsBomb xG"]
+columns = ["CV log loss", "Hold-out log loss"]
+
+[[tool.football_docs.results]]
+result = "xG v1, monotone GBM + Platt, private WhoScored / Opta archive: log loss"
+block = "v1"
+row = ["Monotone GBM + Platt"]
+columns = ["CV log loss", "Test log loss"]
+
+[[tool.football_docs.results]]
+result = "xGOT, monotone GBM + Platt, StatsBomb open data: AUC"
+block = "xgot"
+row = ["StatsBomb open data", "Monotone GBM + Platt"]
+columns = ["CV AUC", "Hold-out / test AUC"]
+
+[[tool.football_docs.results]]
+result = "xGOT, monotone GBM + Platt, private WhoScored / Opta archive: AUC"
+block = "xgot"
+row = ["private WhoScored / Opta event archive", "Monotone GBM + Platt"]
+columns = ["CV AUC", "Hold-out / test AUC"]
+
+[[tool.football_docs.results]]
+result = "Keeper model, StatsBomb open data: next-season log-loss gain of the shrunken keeper estimates"
+block = "gsax"
+row = ["StatsBomb open data"]
+columns = ["Next season: gain over raw", "Gain over xGOT alone"]
+notes = ["StatsBomb open data: Shrunken", "Without team-selected"]
+
+[[tool.football_docs.results]]
+result = "Keeper model, private WhoScored / Opta archive: next-season log-loss gain of the shrunken keeper estimates"
+block = "gsax"
+row = ["private WhoScored / Opta event archive"]
+columns = ["Next season: gain over raw", "Gain over xGOT alone"]
+notes = ["private WhoScored / Opta event archive: Shrunken"]

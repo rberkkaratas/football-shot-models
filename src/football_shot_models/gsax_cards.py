@@ -1,18 +1,19 @@
-"""Render and write the goalkeeper cards (P3.1-P3.3) and the StatsBomb keeper charts.
+"""Render and write the goalkeeper cards and the StatsBomb keeper charts.
 
 :func:`render` turns one provider's :class:`~football_shot_models.gsax.GsaxFit` into its two
 cards (``gsax`` and ``gk-model``, ``ws-`` prefixed for WhoScored) as Markdown: no fit, no
-write, no print. :func:`keeper_charts` draws the keeper chart (``football_shot_charts.keepers``,
-CH1) in both themes; :func:`caveat` is its subtitle, the reliability verdict worded here with
+write, no print. :func:`keeper_charts` draws the keeper chart (``football_shot_charts.keepers``)
+in both themes; :func:`caveat` is its subtitle, the reliability verdict worded here with
 :func:`stability_sentence`, so keeper wording stays in this module. :func:`run_from` is fit,
 names, charts, render, write and the printed summary; ``python -m
 football_shot_models.gsax_cards --provider both`` (``make gsax``) runs it after ``make xgot``.
 
-Rule 1: the WhoScored cards and the README block hold counts and metrics only (no keeper, no
-id); keeper names appear only on the StatsBomb card and charts (``NAMED``), from the lineup
-files. The charts embed the StatsBomb logo, which is never committed, so they are written to
-the git-ignored ``CHART_DIR`` (PM E3 (b)) and checked by ``make reproduce`` through the
-SHA-256 of each file on the card.
+The private archive publishes counts and metrics only: the WhoScored cards and the README
+block hold no keeper and no id; keeper names appear only on the StatsBomb card and charts
+(``NAMED``), from the lineup files. The keeper charts are written to the git-ignored
+``CHART_DIR`` and checked by ``make reproduce`` through the SHA-256 of each file on the card;
+the docs site publishes a byte-identical copy (``make docs-charts``), checked against those
+digests. The StatsBomb logo file itself is never committed.
 
 Render-only for the prediction cache (``cache.RENDER_ONLY``): no other module under the hash
 imports it; it imports ``football_shot_charts.keepers``, which is outside the hash.
@@ -59,7 +60,7 @@ StrPath = str | os.PathLike[str]
 
 CARD_PREFIX: Final[Mapping[str, str]] = MappingProxyType({"statsbomb": "", "whoscored": "ws-"})
 NAMED: Final[frozenset[str]] = frozenset({"statsbomb"})  # providers whose cards name keepers
-CHART_FOLDER: Final[str] = "data/charts"  # printed on the card; git-ignored: logo inside
+CHART_FOLDER: Final[str] = "data/charts"  # printed on the card; git-ignored (docs: a copy)
 CHART_DIR: StrPath = CHART_FOLDER  # where run_from writes them, read when called (tests move it)
 CHART_NAME: Final[str] = "gsax-keepers-{theme}.png"
 # the open-data cache holding the lineups; this repo's own by default (core's loader default),
@@ -297,7 +298,7 @@ def _z(z: float) -> str:
 def _band_lines(g: GsaxFit) -> list[str]:
     """The rated q by placement band (``gsax.placement_bands``) and its failing judged bands,
     each with its counts, gap, SD and z (true minus signs) and whether it is in
-    ``gsax.ESCALATED_BANDS`` (escalated and ruled a listed limitation, PM PR1 E1 (a)); the
+    ``gsax.ESCALATED_BANDS`` (the card's listed limitation, with counts); the
     keeper-level effect of the season-out refit against the match out-of-fold
     xGOT."""
     t, least = gsax.placement_bands(g), metrics.MIN_JUDGED_SHOTS
@@ -407,7 +408,8 @@ def _line_lines(g: GsaxFit) -> list[str]:
 
 def team_split(g: GsaxFit) -> pl.DataFrame:
     """``gsax.team_selected_split`` of the team-selected competition-seasons with a fitted δ
-    before PR1 (team-selected, not E2-small): the card's rows and the chart's † number.
+    before they were set to δ = 0 (team-selected, not too small): the card's rows and the
+    chart's † number.
 
     Examples
     --------
@@ -440,8 +442,9 @@ def team_gap_100(g: GsaxFit) -> float | None:
 
 
 def _team_lines(g: GsaxFit) -> list[str]:
-    """The team-selected competition-seasons with a fitted δ before PR1 (team-selected, not
-    E2-small) by side (:func:`team_split`), counts only; none without such rows."""
+    """The team-selected competition-seasons with a fitted δ before they were set to δ = 0
+    (team-selected, not too small) by side (:func:`team_split`), counts only; none without such
+    rows."""
     groups = gsax.rating_groups(gsax.variant(g.rated, WITHOUT))
     seasons = groups.filter(pl.col("zero_family") & ~pl.col("small"))
     split = team_split(g)
@@ -822,7 +825,7 @@ def _model_card(g: GsaxFit, name: str) -> str:
 
 
 def _saw_test_text(saw: tuple[int, int, int]) -> str:
-    """Disclosure (2) from ``GsaxFit.saw_test`` (S, P, L), computed (PM E4).
+    """Disclosure (2) from ``GsaxFit.saw_test`` (S, P, L), computed.
 
     Examples
     --------
@@ -849,8 +852,9 @@ def render(
     """The two cards of one provider, card name → Markdown; pure.
 
     ``charts`` (StatsBomb) maps each keeper chart's file name to the SHA-256 of its bytes,
-    printed beside ``CHART_FOLDER``: the charts are git-ignored (PM E3 (b)), so the committed
-    card carries their digests and the card's byte check covers the charts.
+    printed beside ``CHART_FOLDER``: the written charts are git-ignored and the docs site's
+    copies are byte-identical, so the committed card carries their digests and the card's byte
+    check covers the charts.
 
     Raises
     ------
@@ -912,7 +916,7 @@ def keeper_charts(
     ``-no-team`` before the theme in drop mode); pure.
 
     StatsBomb (``NAMED``) is named, credited and carries ``logo``; WhoScored is unnamed with
-    rank-prefixed labels and no logo (Rule 1). The subtitle is :func:`caveat` of the tier at
+    rank-prefixed labels and no logo. The subtitle is :func:`caveat` of the tier at
     ``gsax.TABLE_MIN_SHOTS``, the flag's number :func:`team_gap_100` (the card's row). The
     chart flags team-selected rows with ``keepers.FLAG``, not the card's ``FLAG`` (†), which
     reads as "+" at chart size.

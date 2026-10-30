@@ -1,6 +1,6 @@
-"""PR1: the StatsBomb hold-out level gap, decomposed by segment, and the rule that adopts a fix.
+"""The StatsBomb hold-out level gap, decomposed by segment, and the rule that adopts a fix.
 
-The MS3 GBM over-predicted the PL 2015/16 hold-out (Σ xG 974.8 for 913 goals, z +2.30). This
+The xG model's GBM over-predicted the PL 2015/16 hold-out (Σ xG 974.8 for 913 goals, z +2.30). This
 module holds everything about that gap that fits nothing: the level test (:func:`level_z`), the
 segment decomposition, the adoption rule (:func:`adopt`) and the card text
 (:func:`level_lines`). What is fitted (the pooled GBM and the two candidate fixes) and the
@@ -14,7 +14,7 @@ its SD is ``√Σ p(1−p)`` (``metrics.poisson_binomial``), and the gap ``Σ p 
 the noise band when ``|z| <= metrics.BAND_SDS`` (``metrics.within``, the xGOT and GSAx band rule,
 read when called; two-sided, equality is within).
 
-**The rule.** A fix is adoptable iff its hold-out level is within the band, every MS3 check that
+**The rule.** A fix is adoptable iff its hold-out level is within the band, every xG check row that
 the pooled GBM meets is met by the fix too, and no xGOT / GSAx check refused it
 (``models.DOWNSTREAM_MISSED``). The first adoptable fix in ``models.LEVEL_FIXES`` order is
 adopted; ``models.run`` refuses an ``ADOPTED`` constant that the rule does not pick. Once a fix
@@ -84,12 +84,12 @@ def within(z: float) -> bool:
 
 @dataclass(frozen=True)
 class LevelRow:
-    """One fitted GBM on the hold-out level: the level test, its MS3 checks and its scores.
+    """One fitted GBM on the hold-out level: the level test, its xG check rows and scores.
 
-    ``met`` counts the MS3 check rows met and ``judged`` the rows that are not ``n/a``;
-    ``adopted`` marks the fix the rule picks and ``refused`` a fix that meets the MS3 rule
+    ``met`` counts the check rows met and ``judged`` the rows that are not ``n/a``;
+    ``adopted`` marks the fix the rule picks and ``refused`` a fix that meets the rule
     (within the band, every check the pooled GBM meets kept) but an xGOT / GSAx check refused
-    (``models.DOWNSTREAM_MISSED``): a skipped fix that fails the MS3 rule is not ``refused``.
+    (``models.DOWNSTREAM_MISSED``): a skipped fix that fails the rule is not ``refused``.
     """
 
     name: str
@@ -149,7 +149,7 @@ def adopt(
     *,
     skip: Sequence[str],
 ) -> int | None:
-    """The rule: the first fix that is within the band, keeps every MS3 check the pooled GBM
+    """The rule: the first fix that is within the band, keeps every xG check row the pooled GBM
     meets, and is not in ``skip``; None when no fix qualifies.
 
     Raises

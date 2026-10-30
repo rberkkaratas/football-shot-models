@@ -10,7 +10,7 @@ This module is render-only for the prediction cache (``cache.RENDER_ONLY``): no 
 imports it, so editing a card's prose leaves every cached prediction warm. The dependency is
 one-way, ``xgot_cards`` → ``xgot``.
 
-The WhoScored cards, README block and output hold counts and metrics only (Rule 1).
+The WhoScored cards, README block and output hold counts and metrics only.
 """
 
 from __future__ import annotations
@@ -185,7 +185,7 @@ CHANGELOG: Final[tuple[str, ...]] = (
 
 
 def input_changelog(xg_input: Evaluation) -> tuple[str, ...]:
-    """``CHANGELOG`` of the open-play xGOT cards, plus PR1's line when the xG input is trained
+    """``CHANGELOG`` of the open-play xGOT cards, plus the polish line when the xG input is trained
     without some families (StatsBomb's league-trained headline); the WhoScored input is not.
 
     Examples
@@ -296,7 +296,7 @@ def band_lines(ev: Evaluation, dev: pl.DataFrame) -> list[str]:
 
 
 def _band_rows(table: pl.DataFrame) -> list[str]:
-    """The header and rows of a :func:`xgot.band_table`, judged by the PM's rule."""
+    """The header and rows of a :func:`xgot.band_table`, judged by the band rule."""
     least, out = metrics.MIN_JUDGED_SHOTS, []
     for r, ok in zip(table.iter_rows(named=True), judged(table), strict=True):
         gap = f"{r['gap']:+.1f}" if r["shots"] else "n/a"
@@ -316,7 +316,7 @@ def _band_rows(table: pl.DataFrame) -> list[str]:
 def held_band_lines(ev: Evaluation, held: pl.DataFrame, split: str) -> list[str]:
     """The band table of ``ev.holdout_p`` on ``held`` (the hold-out or test split), rendered.
 
-    The PM names the hold-out / test splits as the clean evidence (after MS5); check row 12
+    The hold-out / test splits are the clean evidence of the xGOT fit; check row 12
     judges dev out of fold, so this table is printed beside it with the same rule, not judged
     as a check.
 
@@ -341,7 +341,7 @@ def held_band_lines(ev: Evaluation, held: pl.DataFrame, split: str) -> list[str]
 def band_limit(ev: Evaluation, head: Evaluation, dev: pl.DataFrame) -> str | None:
     """The limitation of a card whose model is not the headline and fails the band rule.
 
-    The band rule judges the headline xGOT only (PM E1): another model's card names its
+    The band rule judges the headline xGOT only (GSAx reads it): another model's card names its
     failing bands with their counts; None when every band is within or ``ev`` is the headline.
 
     Examples
@@ -366,7 +366,7 @@ def band_limit(ev: Evaluation, head: Evaluation, dev: pl.DataFrame) -> str | Non
 
 
 def grid_lines(grid: pl.DataFrame) -> list[str]:
-    """The coarse-grid matches left out of the xGOT (PM E1 (a)), per competition-season;
+    """The coarse-grid matches left out of the xGOT fit and GSAx, per competition-season;
     nothing when there is none (WhoScored).
 
     Examples
@@ -524,7 +524,7 @@ def _recon_lines(recon: Reconciliation) -> list[str]:
 @dataclass(frozen=True, eq=False)
 class XgotRun(XgotFit):
     """An :class:`~football_shot_models.xgot.XgotFit` plus ``cards``: card name → the Markdown
-    written. Every MS5 ``XgotRun`` attribute keeps its name (``penalty`` is a property)."""
+    written. Every earlier ``XgotRun`` attribute keeps its name (``penalty`` is a property)."""
 
     cards: Mapping[str, str]
 

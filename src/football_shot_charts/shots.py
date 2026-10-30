@@ -21,9 +21,9 @@ model's band, inside the league's).
 **One reference per row.** A panel row draws the goals dot against the model's xG tick; the
 league-rate expectation is drawn as a band only (± ``metrics.BAND_SDS`` SD, rows of at least
 ``metrics.MIN_JUDGED_SHOTS`` shots), never as a second tick, and a one-line key of the drawn
-marks sits under the heading (result audit A1: two ticks told apart by shade were unreadable
-on a phone). The model's level on the rest of the league is a footer sentence after the model
-credit, not a stat tile (A2: readers took it for the team's own conversion).
+marks sits under the heading (two ticks told apart by shade were unreadable on a phone). The
+model's level on the rest of the league is a footer sentence after the model credit, not a stat
+tile (readers took it for the team's own conversion).
 """
 
 from __future__ import annotations
@@ -120,7 +120,7 @@ def check_inputs(shots: pl.DataFrame, league: pl.DataFrame) -> None:
     Raises
     ------
     ValueError
-        A missing column or wrong dtype (C3 dtypes, ``xg`` Float64); a null outside
+        A missing column or wrong dtype (shot-table dtypes, ``xg`` Float64); a null outside
         ``body_part``; non-finite ``x``/``y``/``xg`` or ``xg`` outside [0, 1]; a duplicate
         ``shot_id``; a penalty or shoot-out row; an empty ``shots``; a ``shots`` id missing
         from ``league``; more than one provider.
@@ -596,7 +596,7 @@ def _note(excluded: Sequence[str], hidden: pl.DataFrame | None) -> str | None:
 def _with_level(footer: viz.Footer, shots: pl.DataFrame, league: pl.DataFrame) -> viz.Footer:
     """The footer with :func:`model_level` after the model credit: the footer's sentence about
     the model (the not-shown note is capped at 2 lines by core and can fill them). Its subject
-    is always "The model": on a team chart "It" could be read as the team (audit A2)."""
+    is always "The model": on a team chart "It" could be read as the team."""
     level = model_level(shots, league)
     model = ". ".join(x for x in (footer.model, level) if x)
     return dataclasses.replace(footer, model=model or None)

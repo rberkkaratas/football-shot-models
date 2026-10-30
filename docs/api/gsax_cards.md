@@ -1,17 +1,18 @@
 # gsax_cards
 
-MS6: the goalkeeper cards and (CH1) the keeper charts, rendered from a `gsax.GsaxFit`.
+The goalkeeper cards and the keeper charts, rendered from a `gsax.GsaxFit`.
 
 - **Render.** `render(g, *, names)` returns the `gsax` and `gk-model` cards (`ws-` prefixed for
   WhoScored) as Markdown: no fit, no write, no print. StatsBomb cards need the lineup names
-  (`football_core.io.statsbomb.player_names`); WhoScored cards refuse them (Rule 1: counts and
-  metrics only). `stability_sentence` and `next_season_sentence` are the only places the cards
+  (`football_core.io.statsbomb.player_names`); WhoScored cards refuse them (the private archive
+  publishes counts and metrics only). `stability_sentence` and `next_season_sentence` are the only places the cards
   word what the numbers allow.
 - **Charts.** `keeper_charts(g, *, names, logo, team_selected)` draws the keeper chart
   (`football_shot_charts.keepers`) in both themes; `caveat(tier)` is its subtitle, the same
   verdict as `stability_sentence` (`stability_branch`). `write_charts` writes them to the
-  git-ignored `CHART_DIR` (`data/charts/gsax-keepers-{light,dark}.png`, PM E3 (b)) only when
-  every one passes the write guard.
+  git-ignored `CHART_DIR` (`data/charts/gsax-keepers-{light,dark}.png`) only when every one
+  passes the write guard; the docs site publishes a byte-identical copy (`make docs-charts`),
+  checked against the card's digests.
 - **Run.** `run_from(f, *, docs_dir, raw)` is `gsax.fit`, names, render, write and the printed
   checks; `summary_block` gives the README block.
 - **CLI.** `python -m football_shot_models.gsax_cards --provider statsbomb|whoscored|both
