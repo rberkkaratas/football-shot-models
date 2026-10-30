@@ -49,8 +49,8 @@ intervals. Copied by code from the README's card blocks, checked against the [mo
 
 ## Install and reproduce
 
-Clone football-core next to this repository (`../football-core`: shared loaders, schema, pitch
-frame and chart theme), then:
+`uv sync` installs [football-core](https://github.com/rberkkaratas/football-core) (shared loaders, schema, pitch
+frame and chart theme) from GitHub at a pinned tag; then:
 
 ```bash
 uv sync --all-groups      # runtime, dev and docs dependencies, football-core included

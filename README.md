@@ -125,7 +125,7 @@ private WhoScored / Opta event archive: Shrunken estimates predict next season b
 <!-- gsax:summary:end -->
 
 Part of the `football-*-models` family; shared loaders and pitch conventions come from
-[football-core](../football-core).
+[football-core](https://github.com/rberkkaratas/football-core) (installed by `uv sync` as a git dependency pinned to a tag).
 
 ## Data
 - **StatsBomb open data**: public training data, plus a benchmark against StatsBomb's own xG.
@@ -196,7 +196,7 @@ tests/
 
 ## Development
 ```bash
-uv sync --all-groups        # expects ../football-core next to this repo
+uv sync --all-groups        # football-core comes from GitHub at the pinned tag
 make check                  # ruff, mypy, pytest, strict docs build
 make docs-serve             # documentation site at http://127.0.0.1:8000
 ```

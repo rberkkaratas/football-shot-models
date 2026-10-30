@@ -412,7 +412,7 @@ wheels = [
 [[package]]
 name = "football-core"
 version = "0.1.0"
-source = { editable = "../football-core" }
+source = { git = "https://github.com/rberkkaratas/football-core?tag=v0.1.0#a9137c4478ee4051eaa79845908e089713d4a9b1" }
 dependencies = [
     { name = "numpy" },
     { name = "pandera", extra = ["polars"] },
@@ -422,32 +422,6 @@ dependencies = [
 [package.optional-dependencies]
 viz = [
     { name = "matplotlib" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.11.2" },
-    { name = "numpy", specifier = ">=2.0" },
-    { name = "pandera", extras = ["polars"], specifier = ">=0.34.1" },
-    { name = "polars", specifier = ">=2.0.0" },
-]
-provides-extras = ["viz"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "football-core", extras = ["viz"] },
-    { name = "hypothesis", specifier = ">=6.100.0" },
-    { name = "kloppy", specifier = "==3.19.1" },
-    { name = "mplsoccer", specifier = ">=1.8.1" },
-    { name = "mypy", specifier = ">=1.13.0" },
-    { name = "pytest", specifier = ">=9.1.1" },
-    { name = "ruff", specifier = ">=0.8.0" },
-    { name = "types-pyyaml", specifier = "==6.0.12.20250915" },
-]
-docs = [
-    { name = "mkdocstrings", extras = ["python"], specifier = ">=1.0.0" },
-    { name = "nbconvert", specifier = ">=7.16.0" },
-    { name = "zensical", specifier = "==0.0.72" },
 ]
 
 [[package]]
@@ -475,7 +449,7 @@ docs = [
 
 [package.metadata]
 requires-dist = [
-    { name = "football-core", extras = ["viz"], editable = "../football-core" },
+    { name = "football-core", extras = ["viz"], git = "https://github.com/rberkkaratas/football-core?tag=v0.1.0" },
     { name = "scikit-learn", specifier = ">=1.9.1" },
 ]
 
