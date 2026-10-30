@@ -68,6 +68,9 @@ CAPTION_LINES: Final = 4  # the player's zone_bias sentence under the rows
 # the row panel lives in ``rows`` (one engine for every chart)
 GIDS: Final = rows.Gids(band="band-league", cap="mark-band", tick="mark-xg", dot="mark-goals-dot")
 ZONE_HEADING: Final = "Goals and xG by zone"
+LEAGUE_BAND: Final = "Range at league rate"  # ± metrics.BAND_SDS SD around adj_xg
+TOO_FEW: Final = "too few to judge"
+GOAL_KEY: Final = "Goal"
 BODY_PART_HEADING: Final = "Goals and xG by body part"
 
 
@@ -283,7 +286,7 @@ def _beyond(line: Line) -> str:
     word = "more" if line.gap > 0 else "fewer"
     return (
         f"{_n(line.goals, 'non-penalty goal')}, {abs(line.gap):.1f} {word} than the model's "
-        f"{line.xg:.1f} xG (SD {line.sd:.1f})"
+        f"{line.xg:.1f} xG: beyond its normal range of {normal_range(line.sd)}"
     )
 
 
@@ -316,10 +319,11 @@ def team_title(shots: pl.DataFrame, league: pl.DataFrame) -> str:
     return f"{box} of {line.goals} non-penalty goals came from inside the box{rank}{p}"
 
 
-def player_title(shots: pl.DataFrame, league: pl.DataFrame) -> str:
+def player_title(shots: pl.DataFrame, league: pl.DataFrame, *, ranged: bool = False) -> str:
     """The player profile's statement, by :func:`verdict`: goals against the model when outside
     both bands, "in line with" the model or the league's zone rate otherwise, and "too few to
-    judge" under ``metrics.MIN_JUDGED_SHOTS`` shots.
+    judge" under ``metrics.MIN_JUDGED_SHOTS`` shots. The strip prints the normal range;
+    ``ranged`` puts it in the "in line" titles, for a chart drawn without the strip.
 
     Examples
     --------
@@ -333,26 +337,38 @@ def player_title(shots: pl.DataFrame, league: pl.DataFrame) -> str:
         case "beyond":
             return _beyond(line)
         case "noise":
-            return f"{head}: in line with the model (SD {line.sd:.1f})"
+            tail = f" (normal {normal_range(line.sd)})" if ranged else ""
+            return f"{head}: in line with the model{tail}"
         case "zone_bias":
-            return (
-                f"{head}: in line with the league's rate from the same zones (SD {line.sd_adj:.1f})"
-            )
+            tail = f" (normal {normal_range(line.sd_adj)})" if ranged else ""
+            return f"{head}: in line with the league's zone rates{tail}"
         case _:
             return f"{head} on {_n(line.n, 'shot')}: too few to judge"
+
+
+def normal_range(sd: float) -> str:
+    """The model's noise in reader words: ``±`` ``metrics.BAND_SDS`` SD (the band rule).
+
+    Examples
+    --------
+    >>> normal_range(3.25)
+    '±6.5'
+    """
+    return f"\u00b1{metrics.BAND_SDS * sd:.1f}"
 
 
 def stats(
     shots: pl.DataFrame, league: pl.DataFrame, *, per: Literal["xg", "goals"] = "xg"
 ) -> tuple[viz.Stat, ...]:
-    """The stat strip: shots, goals, xG, goals − xG with its SD, then xG per shot (``per="xg"``,
+    """The stat strip: shots, goals, xG, goals − xG with its normal range
+    (:func:`normal_range`), then xG per shot (``per="xg"``,
     the team chart) or goals per shot (``per="goals"``, the player profile) at 2 dp.
 
     Examples
     --------
     >>> s = _example()
     >>> [(t.value, t.label, t.note) for t in stats(s.head(2), s)][3:]
-    [('+0.5', 'Goals − xG', 'SD 0.5'), ('0.25', 'xG per shot', None)]
+    [('+0.5', 'Goals − xG', 'Normal range ±1.1'), ('0.25', 'xG per shot', None)]
     >>> stats(s.head(2), s, per="goals")[-1].label
     'Goals per shot'
     """
@@ -367,23 +383,21 @@ def stats(
         viz.Stat(str(line.n), "Shots"),
         viz.Stat(str(line.goals), "Goals"),
         viz.Stat(f"{line.xg:.1f}", "xG"),
-        viz.Stat(rows.signed(line.gap), "Goals \u2212 xG", f"SD {line.sd:.1f}"),
+        viz.Stat(rows.signed(line.gap), "Goals \u2212 xG", f"Normal range {normal_range(line.sd)}"),
         last,
     )
 
 
-def model_level(
-    shots: pl.DataFrame, league: pl.DataFrame, subject: str = "The model"
-) -> str | None:
-    """The footer sentence on the model's level over the rest of the league: "over-" or
-    "under-predicts" only outside its noise band (``metrics.within``), else "is in line with";
-    ``None`` when the rest has no xG. ``subject`` opens it.
+def model_level(shots: pl.DataFrame, league: pl.DataFrame) -> str | None:
+    """The footer sentence on the model's level over the rest of the league: it "over-" or
+    "under-predicts" only outside its noise band (``metrics.within``), else "in line with the
+    model"; ``None`` when the rest has no xG.
 
     Examples
     --------
     >>> s = _example()
     >>> model_level(s.head(1), s)  # the rest: 0 goals from 0.45 xG, SD 0.6
-    'The model is in line with the rest of the league: 0.00 goals per xG'
+    'Rest of the league: 0.00 goals per xG, in line with the model'
     >>> model_level(s, s) is None
     True
     """
@@ -392,9 +406,9 @@ def model_level(
         return None
     rest = _rest(shots, league)
     gap, sd = metrics.poisson_binomial(rest["is_goal"].to_numpy(), rest["xg"].to_numpy())
-    how = "is in line with" if metrics.within(gap, sd) else (
-        "over-predicts" if gap > 0 else "under-predicts")  # fmt: skip
-    return f"{subject} {how} the rest of the league: {rate:.2f} goals per xG"
+    how = "in line with the model" if metrics.within(gap, sd) else (
+        "the model over-predicts" if gap > 0 else "the model under-predicts")  # fmt: skip
+    return f"Rest of the league: {rate:.2f} goals per xG, {how}"
 
 
 def key(lines: Sequence[Line]) -> tuple[tuple[str, str], ...]:
@@ -407,11 +421,11 @@ def key(lines: Sequence[Line]) -> tuple[tuple[str, str], ...]:
     >>> key([Line("x", 99, 1, 1.0, 1.0, 1.0, 1.0)])
     (('dot', 'Goals'), ('tick', 'xG'))
     >>> key([Line("x", 100, 1, 1.0, 1.0, 1.0, 1.0)])[-1]
-    ('band', 'League rate ±2 SD')
+    ('band', 'Range at league rate')
     """
     items = [("dot", "Goals"), ("tick", "xG")]
     if any(ln.n >= metrics.MIN_JUDGED_SHOTS for ln in lines):
-        items.append(("band", f"League rate ±{metrics.BAND_SDS:g} SD"))
+        items.append(("band", LEAGUE_BAND))
     return tuple(items)
 
 
@@ -455,24 +469,31 @@ def mispriced_zones(shots: pl.DataFrame, league: pl.DataFrame) -> tuple[str, ...
 def unjudged_caption(lines: Sequence[Line], mispriced: Sequence[str]) -> str:
     """The zone panel's sentence on a row that draws no band (under ``metrics.MIN_JUDGED_SHOTS``
     shots) in a zone the model misprices on the rest of the league (:func:`mispriced_zones`):
-    its shots at the league's rate there (``Line.adj_xg``), so the misprice (the PL 2015/16
-    six-yard box) is not read as finishing; ``""`` when there is no such row.
+    which way it misprices and the shots at the league's rate there (``Line.adj_xg``), so the
+    misprice (the PL 2015/16 six-yard box) is not read as finishing; ``""`` when there is no
+    such row.
 
     Examples
     --------
     >>> six = Line("Six-yard box", 48, 9, 15.3, 3.0, 13.62, 3.0)
     >>> unjudged_caption([six], ["Six-yard box"])
-    "Not judged (under 100 shots), at the league's rate in the zone: Six-yard box 13.6 goals."
+    "Six-yard box: the model over-rates this zone this season (at the league's rate: 13.6 goals)."
     >>> unjudged_caption([six], [])
     ''
-    """
+    >>> unjudged_caption([six, Line("Outside the box", 30, 1, 2.0, 1.0, 2.5, 1.0)],
+    ...                  ["Six-yard box", "Outside the box"])
+    "The model misprices these zones this season. At the league's rate: Six-yard box 13.6 goals; Outside the box 2.5 goals."
+    """  # noqa: E501
     least = metrics.MIN_JUDGED_SHOTS
-    parts = [f"{ln.label} {ln.adj_xg:.1f} goals" for ln in lines
-             if ln.n < least and ln.label in mispriced]  # fmt: skip
-    if not parts:
+    found = [ln for ln in lines if ln.n < least and ln.label in mispriced]
+    if len(found) == 1:
+        (ln,) = found
+        return (f"{ln.label}: the model {'over' if ln.adj_xg < ln.xg else 'under'}-rates this zone "
+                f"this season (at the league's rate: {ln.adj_xg:.1f} goals).")  # fmt: skip
+    if not found:
         return ""
-    return (f"Not judged (under {least} shots), at the league's rate in the zone: "
-            f"{'; '.join(parts)}.")  # fmt: skip
+    parts = "; ".join(f"{ln.label} {ln.adj_xg:.1f} goals" for ln in found)
+    return f"The model misprices these zones this season. At the league's rate: {parts}."
 
 
 # --- Layout -----------------------------------------------------------------------------------
@@ -484,7 +505,7 @@ def _panel(heading: str, lines: Sequence[Line], text: str) -> rows.Panel:
     least, b = metrics.MIN_JUDGED_SHOTS, metrics.BAND_SDS
     items = tuple(
         rows.Row(
-            label=ln.label, sublabel=_n(ln.n, "shot") + (" · not judged" if ln.n < least else ""),
+            label=ln.label, sublabel=_n(ln.n, "shot") + (f" · {TOO_FEW}" if ln.n < least else ""),
             value=_n(ln.goals, "goal"), subvalue=f"{ln.xg:.1f} xG", point=float(ln.goals),
             low=max(0.0, ln.adj_xg - b * ln.sd_adj) if ln.n >= least else None,
             high=ln.adj_xg + b * ln.sd_adj if ln.n >= least else None, tick=ln.xg,
@@ -539,7 +560,7 @@ def _place_map(
             mask = viz.crop_pitch(ax, x, y)
         area = viz.ink_scale(float(p[mask].sum()), ax)
         try:
-            need = c.legend_height(viz.shot_keys(area), c.legend_width(ax))
+            need = c.legend_height(shot_keys(area), c.legend_width(ax))
         except ValueError:  # the keys need a third row under this map: the layout fails
             break
         if height + need <= rect[3]:
@@ -547,6 +568,19 @@ def _place_map(
         reserve = need
     ax.remove()
     return None
+
+
+def shot_keys(area_per_xg: float) -> tuple[viz.Key, ...]:
+    """``viz.shot_keys`` with the goal key's label as one word: the size keys say what a marker's
+    area means, and a goal under ``viz.GOAL_MIN_S`` is drawn at that floor.
+
+    Examples
+    --------
+    >>> [k.label for k in shot_keys(400.0)]
+    ['Goal', 'No goal', '0.1 xG', '0.3 xG', '0.6 xG']
+    """
+    return tuple(dataclasses.replace(k, label=GOAL_KEY) if k.kind == "goal" else k
+                 for k in viz.shot_keys(area_per_xg))  # fmt: skip
 
 
 def _layouts(c: viz.Canvas, panel: rows.Panel) -> list[tuple[rows.Measured, rows.Rect, rows.Rect]]:
@@ -595,8 +629,7 @@ def _note(excluded: Sequence[str], hidden: pl.DataFrame | None) -> str | None:
 
 def _with_level(footer: viz.Footer, shots: pl.DataFrame, league: pl.DataFrame) -> viz.Footer:
     """The footer with :func:`model_level` after the model credit: the footer's sentence about
-    the model (the not-shown note is capped at 2 lines by core and can fill them). Its subject
-    is always "The model": on a team chart "It" could be read as the team."""
+    the model (the not-shown note is capped at 2 lines by core and can fill them)."""
     level = model_level(shots, league)
     model = ". ".join(x for x in (footer.model, level) if x)
     return dataclasses.replace(footer, model=model or None)
@@ -606,6 +639,7 @@ def _chart(
     shots: pl.DataFrame,
     *,
     title: str,
+    bare_title: str | None = None,
     subtitle: str,
     strip: Sequence[viz.Stat],
     heading: str,
@@ -623,7 +657,8 @@ def _chart(
     the note leaves: lay out, crop, and redo with the counted note until the note states what
     the map drew (a second pass at most in practice; a third that still differs raises).
     When no layout fits with the stat strip (a square profile with five body-part rows), the
-    chart is laid out without it: the title already states goals, xG and the SD.
+    chart is laid out without it and with ``bare_title`` (``title`` when None), which states
+    the normal range the strip carried.
     """
     if isinstance(excluded, str):
         raise TypeError("excluded must be a sequence of note parts, not a str")
@@ -633,8 +668,8 @@ def _chart(
     except rows.NoLayout:
         if not strip:
             raise
-    return _settle(shots, title, subtitle, (), heading, lines, text, theme, size, footer,
-                   excluded, logo)  # fmt: skip
+    return _settle(shots, bare_title or title, subtitle, (), heading, lines, text, theme, size,
+                   footer, excluded, logo)  # fmt: skip
 
 
 def _settle(
@@ -660,7 +695,7 @@ def _settle(
         if counted == note:
             x, y, p, g = (shots[k].to_numpy() for k in ("x", "y", "xg", "is_goal"))
             viz.draw_shots(ax, x[mask], y[mask], p[mask], g[mask], c.theme, area_per_xg=area)
-            c.legend(viz.shot_keys(area), ax=ax)
+            c.legend(shot_keys(area), ax=ax)
             gid = "zones" if heading == ZONE_HEADING else "body-parts"
             rows.draw_panel(c, panel_rect, measured, scale=_scale(lines), gid=gid)
             return c
@@ -761,7 +796,9 @@ def player_chart(
         raise ValueError(f"shots hold {k} (player_id, team_id) pairs; a profile draws one")
     line = summary(shots, league)
     return _chart(
-        shots, title=player_title(shots, league), subtitle=f"{player} · {team} · {context}",
+        shots, title=player_title(shots, league),
+        bare_title=player_title(shots, league, ranged=True),
+        subtitle=f"{player} · {team} · {context}",
         strip=stats(shots, league, per="goals"), heading=BODY_PART_HEADING,
         lines=table(shots, league, "body_part"),
         text=caption(line if verdict(line) == "zone_bias" else None), theme=theme,

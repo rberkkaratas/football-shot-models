@@ -16,8 +16,8 @@ and on a private WhoScored / Opta event archive, of which only counts and metric
 [![Team shot map: 54 of 57 non-penalty goals came from inside the box, the league's highest share (rest of league: 84%) (Leicester City · Premier League 2015/2016)](assets/charts/team-leicester-city-light-square.png#only-light){ loading=lazy }](charts.md#team-shot-map)
 [![Team shot map: 54 of 57 non-penalty goals came from inside the box, the league's highest share (rest of league: 84%) (Leicester City · Premier League 2015/2016)](assets/charts/team-leicester-city-dark-square.png#only-dark){ loading=lazy }](charts.md#team-shot-map)
 
-[![Keeper GSAx interval chart: After shrinkage, none of 97 keeper-seasons differs clearly from average (Not distinguishable from noise at 100 shots: stepped-up split-half r +0.12 \[−0.28, +0.40\] on the first 100 shots of 111 keepers.)](assets/charts/gsax-keepers-light.png#only-light){ loading=lazy }](charts.md#keeper-gsax-chart)
-[![Keeper GSAx interval chart: After shrinkage, none of 97 keeper-seasons differs clearly from average (Not distinguishable from noise at 100 shots: stepped-up split-half r +0.12 \[−0.28, +0.40\] on the first 100 shots of 111 keepers.)](assets/charts/gsax-keepers-dark.png#only-dark){ loading=lazy }](charts.md#keeper-gsax-chart)
+[![Keeper GSAx interval chart: None of 97 keeper-seasons stands out from average once luck is accounted for (At 100 shots keepers can't be told apart from noise: reliability r +0.12 \[−0.28, +0.40\] on the first 100 shots of 111 keepers)](assets/charts/gsax-keepers-light.png#only-light){ loading=lazy }](charts.md#keeper-gsax-chart)
+[![Keeper GSAx interval chart: None of 97 keeper-seasons stands out from average once luck is accounted for (At 100 shots keepers can't be told apart from noise: reliability r +0.12 \[−0.28, +0.40\] on the first 100 shots of 111 keepers)](assets/charts/gsax-keepers-dark.png#only-dark){ loading=lazy }](charts.md#keeper-gsax-chart)
 
 </div>
 

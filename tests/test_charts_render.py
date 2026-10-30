@@ -162,7 +162,7 @@ def test_holdout_xg_rows(
 
 def test_model_text() -> None:
     text = render.model_text("Premier League 2015/2016")
-    assert text == "xG: own model, not trained on Premier League 2015/2016"
+    assert text == "xG: my own model, trained without Premier League 2015/2016"
     assert "never used to choose" not in text
 
 
@@ -702,7 +702,7 @@ def test_refs_per_provider(xgot_fits: dict[str, Any], monkeypatch: pytest.Monkey
     dev, held = f.frames
     view = render.xg_view(f, cands)
     assert [r.role for r in view.rows] == [
-        "Best logistic regression", "Standard baseline (S0)", "StatsBomb's xG"]  # fmt: skip
+        "Best regression", "Standard baseline (S0)", "StatsBomb's xG"]  # fmt: skip
     best, s0 = cands.baselines
     bench = evaluation.evaluate_benchmark(dev, held, evaluation.cv_folds(dev))
     for row, ref in zip(view.rows, (best, s0, bench), strict=True):
@@ -805,7 +805,7 @@ def test_views_need_no_cache(xgot_fits: dict[str, Any], monkeypatch: pytest.Monk
     assert view.contexts[0] == f"{k} competition-seasons"
     assert held.select("competition_id", "season_id").unique().height == 1  # precondition
     assert "competition-seasons" not in view.contexts[1] and view.contexts[1].strip()
-    assert view.split[0] == "Hold-out" and view.unit == "shots" and view.quantity == "xG"
+    assert view.split[0] == "Hold-out season" and view.unit == "shots" and view.quantity == "xG"
 
 
 def test_benchmark_note_iff_row(xgot_fits: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1165,10 +1165,10 @@ def test_model_card_footers(harness: dict[str, Any], monkeypatch: pytest.MonkeyP
     from football_shot_charts import diagnostics
 
     assert render.model_text("Premier League 2015/2016") == (
-        "xG: own model, not trained on Premier League 2015/2016"
+        "xG: my own model, trained without Premier League 2015/2016"
     )
     assert render.model_text("Test League 2018", "xGOT") == (
-        "xGOT: own model, not trained on Test League 2018"
+        "xGOT: my own model, trained without Test League 2018"
     )
     harness["fake_fits"]()
     seen: list[tuple[str, Any, Any]] = []
@@ -1193,7 +1193,7 @@ def test_model_card_footers(harness: dict[str, Any], monkeypatch: pytest.MonkeyP
     assert {q for q, _, _ in seen} == {"xG", "xGOT"}
     for quantity, footer, logo in seen:
         assert footer.providers == ("whoscored",) and logo is None
-        assert footer.model.startswith(f"{quantity}: own model, not trained on ")
+        assert footer.model.startswith(f"{quantity}: my own model, trained without ")
 
 
 def _sb_label(harness: dict[str, Any]) -> str:

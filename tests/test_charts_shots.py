@@ -198,14 +198,14 @@ def test_lines_property(spec: list[tuple[str, int, float, str | None, bool]]) ->
 
 @pytest.mark.parametrize("n", [99, 100])
 def test_row_judged_at_100(n: int, logo: Path) -> None:
-    """A row of 99 shots is "not judged" and has no band; at 100 the band and its caps are drawn
-    and the row carries no caveat."""
+    """A row of 99 shots is "too few to judge" and has no band; at 100 the band and its caps are
+    drawn and the row carries no caveat."""
     rows = cc.block(n, xg=0.2, goals=n // 5)
     s, league = cc.team_league(rows, others(5))
     c = team(s, league, logo)
     text = cc.all_text(c)
     judged = n >= metrics.MIN_JUDGED_SHOTS
-    assert (f"{n} shots · not judged" in text) is not judged
+    assert (f"{n} shots · too few to judge" in text) is not judged
     assert f"{n} shots" in text
     assert bool(cc.by_gid(c, "band-league")) is judged
     assert bool(cc.by_gid(c, "mark-band")) is judged
@@ -257,7 +257,7 @@ def test_one_reference_per_row(size: str, logo: Path) -> None:
         r = cc.renderer(c)
         labels = cc.by_gid(c, "panel-key")
         assert [t.get_text() for t in labels] == ["Goals", "xG"] + (
-            ["League rate ±2 SD"] if band else [])  # fmt: skip
+            ["Range at league rate"] if band else [])  # fmt: skip
         assert bool(cc.by_gid(c, "band-key")) is band
         centres = [cc.centre_x_px(t, r) for t in labels]
         assert centres == sorted(centres)  # left to right
@@ -273,10 +273,11 @@ def test_one_reference_per_row(size: str, logo: Path) -> None:
 
 
 def test_stat_strip_per_shot(logo: Path) -> None:
-    """Audit A2: the strip is Shots, Goals, xG, Goals − xG (U+2212, note "SD"), then xG per shot
+    """Audit A2: the strip is Shots, Goals, xG, Goals − xG (U+2212, note its normal range ±2 SD),
+    then xG per shot
     on the team chart and goals per shot on the profile, at 2 dp; the league's goals per xG is
     no tile."""
-    rows = cc.block(30, xg=0.5, goals=11)  # 11 goals from 15.0 xG: gap −4.0, SD 2.7
+    rows = cc.block(30, xg=0.5, goals=11)  # 11 goals from 15.0 xG: gap −4.0, SD 2.74
     other = cc.block(20, xg=0.5, goals=9, team=cc.OTHER, player="sb:9001")  # 9 / 10.0 = 0.90
     s, league = cc.team_league(rows, other)
     for chart, last, value in ((team, "xG per shot", "0.50"), (player, "Goals per shot", "0.37")):
@@ -285,7 +286,7 @@ def test_stat_strip_per_shot(logo: Path) -> None:
         assert strip == [*STAT_LABELS, last]
         assert [t.get_text() for t in cc.styled(c, "stat_value")][-1] == value
         text = cc.all_text(c)
-        assert "−4.0" in text and "SD 2.7" in text and "-4.0" not in text  # never a hyphen
+        assert "−4.0" in text and "Normal range ±5.5" in text and "-4.0" not in text  # no hyphen
         assert "League goals per xG" not in text
     with pytest.raises(ValueError):
         shots.stats(s, league, per="shots")  # type: ignore[arg-type]
@@ -293,9 +294,9 @@ def test_stat_strip_per_shot(logo: Path) -> None:
 
 LEVELS = [
     # other team's goals of 40 shots at 0.5 xG (Σ 20.0, SD √10 ≈ 3.16): the sentence
-    (20, "The model is in line with the rest of the league: 1.00 goals per xG"),
-    (13, "The model over-predicts the rest of the league: 0.65 goals per xG"),
-    (27, "The model under-predicts the rest of the league: 1.35 goals per xG"),
+    (20, "Rest of the league: 1.00 goals per xG, in line with the model"),
+    (13, "Rest of the league: 0.65 goals per xG, the model over-predicts"),
+    (27, "Rest of the league: 1.35 goals per xG, the model under-predicts"),
 ]
 
 
@@ -349,10 +350,18 @@ def test_panel_layout(logo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 TEAM_TITLES = [
     # (team goals of 100 at 0.5 xG, title); others convert at exactly 1 goal per xG
-    (61, "61 non-penalty goals, 11.0 more than the model's 50.0 xG (SD 5.0)"),
+    (
+        61,
+        "61 non-penalty goals, 11.0 more than the model's 50.0 xG: beyond its normal range of "
+        "±10.0",
+    ),
     (60, "60 of 60 non-penalty goals came from inside the box (rest of league: 100%)"),
     (40, "40 of 40 non-penalty goals came from inside the box (rest of league: 100%)"),
-    (39, "39 non-penalty goals, 11.0 fewer than the model's 50.0 xG (SD 5.0)"),
+    (
+        39,
+        "39 non-penalty goals, 11.0 fewer than the model's 50.0 xG: beyond its normal range of "
+        "±10.0",
+    ),
 ]
 
 
@@ -425,10 +434,11 @@ def test_box_share_without_other_goals(logo: Path) -> None:
 PLAYER_CASES = [
     # (n shots at 0.5 xG, goals, other team's goals from 5.0 xG, verdict, title)
     (99, 50, 5, "too_few", "50 non-penalty goals from 49.5 xG on 99 shots: too few to judge"),
-    (100, 52, 5, "noise", "52 non-penalty goals from 50.0 xG: in line with the model (SD 5.0)"),
-    (100, 61, 6, "zone_bias", "61 non-penalty goals from 50.0 xG: in line with the league's rate "
-     "from the same zones (SD 4.9)"),
-    (100, 61, 5, "beyond", "61 non-penalty goals, 11.0 more than the model's 50.0 xG (SD 5.0)"),
+    (100, 52, 5, "noise", "52 non-penalty goals from 50.0 xG: in line with the model"),
+    (100, 61, 6, "zone_bias", "61 non-penalty goals from 50.0 xG: in line with the league's zone "
+     "rates"),
+    (100, 61, 5, "beyond", "61 non-penalty goals, 11.0 more than the model's 50.0 xG: beyond its "
+     "normal range of ±10.0"),
 ]  # fmt: skip
 
 
@@ -457,7 +467,7 @@ def test_singulars(logo: Path) -> None:
 
 def test_player_panel_body_part(logo: Path) -> None:
     """Body-part rows in ``BODY_PARTS`` order with labels, "Not recorded" for null last; only
-    groups present; the "not judged" caveat on rows under 100 shots only."""
+    groups present; the "too few to judge" caveat on rows under 100 shots only."""
     rows = (
         cc.block(2, xg=0.1, goals=1, body_part=None, tag="n")
         + cc.block(3, xg=0.2, goals=1, body_part="head", tag="h")
@@ -472,8 +482,8 @@ def test_player_panel_body_part(logo: Path) -> None:
     assert [ln.n for ln in lines] == [100, 3, 2, 2]
     text = cc.all_text(player(s, league, logo))
     assert "Goals and xG by body part" in text
-    assert "100 shots" in text and "100 shots · not judged" not in text
-    assert "3 shots · not judged" in text and "2 shots · not judged" in text
+    assert "100 shots" in text and "100 shots · too few to judge" not in text
+    assert "3 shots · too few to judge" in text and "2 shots · too few to judge" in text
     assert "Left foot" not in text
 
 
@@ -491,7 +501,8 @@ def test_player_two_teams(logo: Path) -> None:
 
 def test_no_skill_words(logo: Path) -> None:
     """No title, subtitle, caption or label says skill, clinical, finish, wasteful, lucky or
-    perform, over every title branch of both charts; every gap printed carries its SD."""
+    perform, over every title branch of both charts; every gap printed carries its normal
+    range."""
     frames = [cc.team_league(cc.block(100, xg=0.5, goals=g), others(o))
               for g, o in ((61, 5), (39, 5), (60, 5), (52, 6), (61, 6))]  # fmt: skip
     frames.append(cc.team_league(cc.block(99, xg=0.5, goals=50), others(5)))
@@ -501,8 +512,8 @@ def test_no_skill_words(logo: Path) -> None:
             text = cc.all_text(chart(s, league, logo))
             assert not cc.BANNED.search(text), cc.BANNED.search(text)
             if " more than the model's " in text or " fewer than the model's " in text:
-                assert "(SD " in text
-            assert "SD " in text  # the strip's Goals − xG note
+                assert "beyond its normal range of ±" in text
+            assert "Normal range ±" in text  # the strip's Goals − xG note
 
 
 # --- Notes, refusals, checks ------------------------------------------------------------------
@@ -690,7 +701,9 @@ def test_worst_case_reaches_every_layout_branch(logo: Path) -> None:
     ):
         theme = "light" if family == "inter" else cc.fallback("light")
         seen |= _layout_branches(_worst_chart(chart, verdict, logo, theme=theme, size=size))
-    assert seen == {"under", "side", "wide", "stacked", "strip", "no-strip", "legend-split"}
+    # "legend-split" is gone: the goal key is one word since the LinkedIn polish, so no key
+    # label is long enough to split; core's split stays covered by its own tests
+    assert seen == {"under", "side", "wide", "stacked", "strip", "no-strip"}
 
 
 # ---- run8-ch1 assessment fixes -----------------------------------------------------------------
@@ -716,8 +729,9 @@ def test_unjudged_row_gets_the_league_rate(
     six = next(ln for ln in shots.table(s, league, "zone") if ln.label == "Six-yard box")
     c = team(s, league, logo)
     assert viz.check(c) == []
-    sentence = f"Six-yard box {six.adj_xg:.1f} goals"
+    sentence = f"(at the league's rate: {six.adj_xg:.1f} goals)"
     assert (sentence in cc.all_text(c)) is shown
     if shown:
         assert six.adj_xg == pytest.approx(0.32 * team_n * rest_goals / 100)
-        assert "Six-yard box 12.3 goals" in cc.all_text(c)
+        assert "Six-yard box: the model over-rates this zone" in cc.all_text(c)
+        assert "(at the league's rate: 12.3 goals)" in cc.all_text(c)

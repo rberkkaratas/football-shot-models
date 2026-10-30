@@ -15,6 +15,7 @@ from typing import Any
 import charts_cases as cc
 import keeper_cases as kc
 import numpy as np
+import polars as pl
 import pytest
 from football_core import viz
 from test_cache_render_only import _imports
@@ -73,35 +74,41 @@ def _norm(s: str) -> str:
 
 
 def test_calibration_title_and_strip(logo: Path) -> None:
-    """Title k per split = bins whose band holds the mean prediction; the subtitle names the
-    unit, bins and level; the strip prints both counts, the CV slope and the split's goals − xG
-    with its SD noted by the split's name; axis titles name the outcome."""
+    """Title k per split = bins that agree (band holds the mean prediction), "well calibrated"
+    at most one miss per split; the subtitle names the unit, bins, level and outcome; the strip
+    prints both counts, the CV slope and the split's goals − xG with its normal range noted by
+    the split's first word; axis titles name the outcome."""
     view = kc.model_view()
     c = _cal(view, logo)
     assert _gtext(c, "title") == (
-        "xG inside the band in 10 of 10 bins in cross-validation, 9 of 10 on the hold-out"
+        "xG is well calibrated: 10 of 10 bins agree in cross-validation, 9 of 10 on the hold-out"
     )
     assert _gtext(c, "subtitle") == (
-        "Out-of-fold and hold-out predictions of shots in 10 equal-count bins · bands: 95% "
-        "match bootstrap of the observed rate"
+        "Shots in 10 equal-size bins · a bin agrees when the 95% match-bootstrap band of its "
+        "goal rate holds the prediction"
     )
     stats = _stats(c)
     assert stats.count("Shots") == 2 and "Calibration slope" in stats
     assert any(s in stats for s in ("89,895", "89895")) and any(
         s in stats for s in ("9,816", "9816")
     )
-    assert "1.01" in stats and "CV fold mean" in stats and "Cross-validation" in stats
-    assert "Goals − xG" in stats and "−50.0" in stats and "SD 26.4 · Hold-out" in stats
+    assert "1.01" in stats and "1.00 is perfect" in stats and "Cross-validation" in stats
+    assert "Goals − xG" in stats and "−50.0" in stats and "Hold-out, normal ±52.8" in stats
     text = cc.all_text(c)
     assert "Predicted goal rate" in text and "Observed goal rate" in text
     ws = _cal(kc.xgot_view(), None)
     assert _gtext(ws, "title") == (
-        "xGOT inside the band in 10 of 10 bins in cross-validation, 10 of 10 on the test season"
+        "xGOT is well calibrated: 10 of 10 bins agree in cross-validation, 10 of 10 on the test "
+        "season"
     )
     stats = _stats(ws)
     assert stats.count("On-target shots") == 2 and "n/a" in stats  # slope None
-    assert "Goals − xGOT" in stats and "+12.5" in stats and "SD 18.0 · Test season" in stats
-    assert "test-season predictions of on-target shots" in _gtext(ws, "subtitle")
+    assert "Goals − xGOT" in stats and "+12.5" in stats and "Test, normal ±36.0" in stats
+    assert _gtext(ws, "subtitle").startswith("On-target shots in 10 equal-size bins")
+    two = kc.model_view(
+        held_bins=view.held_bins.with_columns(inside=pl.Series([False, False] + [True] * 8))
+    )
+    assert _gtext(_cal(two, logo), "title").startswith("xG: 10 of 10 bins agree")
 
 
 @pytest.mark.parametrize("family", ["Inter", "fallback"])
@@ -176,24 +183,28 @@ def test_context_lengths(logo: Path) -> None:
 
 
 def test_comparison_title_counts(logo: Path) -> None:
-    """a, b = references whose CV / split interval has ``low > 0``; ``low == 0`` is not above;
-    CV and the split are counted apart; one reference is singular."""
+    """The split's verdict per reference: "clearly better than" at ``low > 0`` (``low == 0`` is
+    level), "clearly behind" at ``high < 0``, else "level with"; references named when they fit
+    2 lines, else counted; one reference is singular."""
     dg = _dg()
     view = kc.model_view()
-    assert _gtext(_cmp(view, logo), "title") == (
-        "Clearly lower log loss than 3 of 3 references in cross-validation and 1 of 3 on the "
-        "hold-out"
-    )
-    rows = (dataclasses.replace(view.rows[0], cv=(0.0010, 0.0, 0.0020)), *view.rows[1:])
+    named, counted = dg.comparison_titles(view)
+    assert named == ("Hold-out: clearly better than the standard baseline, level with the best "
+                     "logistic regression and StatsBomb's xG")  # fmt: skip
+    assert counted == "Hold-out: clearly better than 1 of 3 references, level with 2"
+    assert _gtext(_cmp(view, logo), "title") == counted  # the names need a third line
+    short = kc.model_view(rows=tuple(dataclasses.replace(r, role=r.role.replace(
+        "Best logistic regression", "Best regression")) for r in view.rows))  # fmt: skip
+    assert _gtext(_cmp(short, logo), "title") == dg.comparison_titles(short)[0]
+    rows = (dataclasses.replace(view.rows[1], held=(0.0010, 0.0, 0.0020)),
+            dataclasses.replace(view.rows[2], held=(-0.003, -0.005, -0.001)))  # fmt: skip
     edge = kc.model_view(rows=rows)
-    assert _gtext(_cmp(edge, logo), "title").startswith(
-        "Clearly lower log loss than 2 of 3 references in cross-validation"
+    assert dg.comparison_titles(edge)[0] == (
+        "Hold-out: level with the standard baseline, clearly behind StatsBomb's xG"
     )
     one = kc.xgot_view()
-    assert _gtext(_cmp(one, None), "title") == (
-        "Clearly lower log loss than 1 of 1 reference in cross-validation and 1 of 1 on the "
-        "test season"
-    )
+    assert _gtext(_cmp(one, None), "title") == ("Test: clearly better than the logistic regression")
+    assert dg.comparison_titles(one)[1] == "Test: clearly better than 1 of 1 reference"
     assert dict(dg.COMPARISON_SIZES) == {"xG": "portrait", "xGOT": "square"}
 
 
@@ -203,11 +214,12 @@ def test_comparison_scale_and_marks(logo: Path) -> None:
     both tracks; a zero line; values signed to 4 dp; headings, key, caption."""
     from football_shot_charts import rows as rw
 
+    dg = _dg()
     view = kc.model_view()
     c = _cmp(view, logo)
     assert viz.check(c) == []
-    cv = [r.cv for r in view.rows]
-    held = [r.held for r in view.rows]
+    cv = [dg.percent(r.cv, view.cv_log_loss) for r in view.rows]
+    held = [dg.percent(r.held, view.held_log_loss) for r in view.rows]
     dots = sorted(
         float(o[0]) for a in cc.by_gid(c, "mark-dot") for o in np.asarray(a.get_offsets())
     )
@@ -226,11 +238,13 @@ def test_comparison_scale_and_marks(logo: Path) -> None:
     assert all(set(np.asarray(z.get_xdata(), dtype=float)) == {0.0} for z in zero)
     text = _norm(cc.all_text(c))
     for g, _, _ in cv + held:
-        assert f"{g:+.4f}" in text
-    assert text.count(": log-loss gain over each reference") == 2
-    assert "Hold-out: log-loss gain over each reference" in text
-    assert "Right of 0: lower log loss than the reference on the same shots." in text
-    assert "Gain" in text and "95% interval" in text
+        assert _norm(rw.signed(g)) + "%" in text
+    assert text.count(": % lower log loss than each reference") == 2
+    assert "Hold-out: % lower log loss than each reference" in text
+    assert ("Right of 0: the xG model predicts the same shots better (lower log loss) than the "
+            "reference.") in text  # fmt: skip
+    assert "Improvement" in text and "95% interval" in text
+    assert "+5%" in text or "+2%" in text  # scale labels carry the unit
     for r in view.rows:
         assert r.role in text and r.title in text
     assert "Log loss" in text and "0.2641" in text and "CV · Hold-out 0.2702" in text
@@ -250,22 +264,28 @@ def test_key_level_patched(logo: Path) -> None:
     view = kc.model_view(level=0.8, n_boot=1234)
     cmp_text = cc.all_text(_cmp(view, logo))
     assert "80% interval" in cmp_text and "95%" not in cmp_text
-    assert "80% intervals from 1,234 match resamples of fixed fits" in cmp_text
-    assert "bands: 80% match bootstrap of the observed rate" in cc.all_text(_cal(view, logo))
+    assert "80% intervals from 1,234 match resamples" in cmp_text
+    assert "the 80% match-bootstrap band" in cc.all_text(_cal(view, logo))
 
 
 def test_xgot_extras_in_strip() -> None:
     """xGOT: the square comparison draws the one reference on the headline's scale; the
-    xG-only and base-rate gains are strip stats ("Gain over …", signed 3 dp, the split's value
-    in the note), not rows."""
+    xG-only and base-rate gains are strip stats ("Better than …", in % of the reference's log
+    loss, the split's value in the note), not rows."""
+    dg = _dg()
     view = kc.xgot_view()
     c = _cmp(view, None)
     assert c.size == "square" and viz.check(c) == []
     stats = _stats(c)
-    assert "Gain over xG only" in stats and "+0.108" in stats and "CV · Test season +0.113" in stats
-    assert "Gain over base rate" in stats and "+0.202" in stats
-    assert "CV · Test season +0.210" in stats
-    assert "Log loss" in stats and "0.4030" in stats and "CV · Test season 0.3997" in stats
+
+    def pct(gain: float, ll: float) -> str:
+        return f"{dg.percent((gain, 0.0, 0.0), ll)[0]:+.1f}%"
+
+    assert "Better than xG only" in stats and pct(0.108, view.cv_log_loss) in stats
+    assert f"CV · Test {pct(0.113, view.held_log_loss)}" in stats
+    assert "Better than base rate" in stats and pct(0.202, view.cv_log_loss) in stats
+    assert f"CV · Test {pct(0.210, view.held_log_loss)}" in stats
+    assert "Log loss" in stats and "0.4030" in stats and "CV · Test 0.3997" in stats
     assert len(stats) == 9  # 3 stats × value, label, note
     assert _n_marks(c, "mark-dot") == 2  # one row per panel
 
@@ -298,8 +318,8 @@ def test_pass_model_renders(logo: Path) -> None:
     assert "Completions − xP" in stats and stats.count("Passes") == 2
     text = cc.all_text(cal)
     assert "Predicted completion rate" in text and "Observed completion rate" in text
-    assert "xP inside the band" in text
-    assert "on the same passes" in cc.all_text(cmp_)
+    assert "xP is well calibrated" in text
+    assert "predicts the same passes better" in cc.all_text(cmp_)
     for c in (cal, cmp_):
         body = " ".join(t.get_text() for t in cc.texts(c) if t.get_gid() not in
                         (viz.TEXT_GID, "prepared-by"))  # fmt: skip
@@ -459,7 +479,7 @@ def test_comparison_caption_once(logo: Path) -> None:
         c = _cmp(view, logo)
         caps = [t for t in cc.texts(c) if t.get_text().startswith("Right of 0")]
         assert len(caps) == 1
-        heading = [t for t in cc.texts(c) if ": log-loss gain over each reference" in t.get_text()]
+        heading = [t for t in cc.texts(c) if ": % lower log loss than each" in t.get_text()]
         assert len(heading) == 2  # precondition: two panels
         last = next(h for h in heading if h.get_text().startswith(view.split[0]))
         assert caps[0].axes is last.axes
@@ -472,33 +492,37 @@ def test_comparison_caption_once(logo: Path) -> None:
 def test_level_shift_through_every_bin_is_named(logo: Path, family: str) -> None:
     """Item 8: every bin inside its band but the split's total outside the band rule
     (``held_level_ok`` False, as the WhoScored xGOT test season: +77.7 goals, SD 26.9): the
-    title says "but not in total" and the strip note "outside 2 SD"; inside the rule, neither."""
+    title says "but not in total" and the strip note "outside"; inside the rule, neither."""
     theme: str | viz.Theme = "light" if family == "inter" else cc.fallback("light")
     view = kc.xgot_view(held_gap=77.7, held_sd=26.9, held_level_ok=False, band_sds=2.0)
     assert bool(view.held_bins["inside"].all()) and bool(view.cv_bins["inside"].all())
     c = _cal(view, None, theme)
     assert viz.check(c) == []
     assert _gtext(c, "title") == (
-        "xGOT inside the band in 10 of 10 bins in CV, 10 of 10 on the test season, but not in total"
+        "xGOT: 10 of 10 bins agree in CV, 10 of 10 on the test season, but not in total"
     )
-    assert "+77.7" in _stats(c) and "SD 26.9, outside 2 SD" in _stats(c)
+    assert "+77.7" in _stats(c) and "Test, outside ±53.8" in _stats(c)
     ok = _cal(dataclasses.replace(view, held_level_ok=True), None, theme)
     assert not _gtext(ok, "title").endswith("not in total")
     assert not any("outside" in s for s in _stats(ok))
 
 
 def test_calibration_key_names_the_cv_band(logo: Path) -> None:
-    """Item 19: the key has a neutral line glyph labelled "Cross-validation band", drawn as the
-    CV bands are (``CV_LW``, ``neutral``), in both themes."""
+    """Item 19: the key's first line has a neutral line glyph for the CV band, drawn as the CV
+    bands are (``CV_LW``, ``neutral``), and its second line the split's band glyph, in both
+    themes."""
     from matplotlib.colors import to_hex
 
     for theme in viz.THEMES:
         c = _cal(kc.model_view(), logo, theme)
-        assert "Cross-validation band" in [t.get_text() for t in cc.by_gid(c, "panel-key")]
+        labels = [t.get_text() for t in cc.by_gid(c, "panel-key")]
+        assert labels == ["Cross-validation · 39 competition-seasons", "95% band",
+                          "Hold-out · Test League 2015/2016", "95% band"]  # fmt: skip
+        assert len(cc.by_gid(c, "band-key")) == 1
         lines = [a for a in cc.by_gid(c, "mark-panel-key") if hasattr(a, "get_xdata")]
         verticals = [a for a in lines if len(set(a.get_xdata())) == 1]
-        assert len(verticals) == 1, verticals
-        (key,) = verticals
+        assert len(verticals) == 3, verticals  # the CV line, then the split band's two caps
+        key = verticals[0]
         assert to_hex(key.get_color()) == viz.THEMES[theme].neutral
         assert key.get_linewidth() == _dg().CV_LW
         assert viz.check(c) == []

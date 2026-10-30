@@ -37,7 +37,7 @@ CAVEAT = (
     "Not distinguishable from noise at 100 shots: stepped-up split-half r +0.32 [+0.01, +0.54] "
     "on all shots of 111 keepers."
 )
-MODEL = "xGOT: own model, fitted without the rated season"
+MODEL = "xGOT: my own model, fitted without the rated season"
 
 
 def _keepers() -> Any:
@@ -251,9 +251,9 @@ def test_marks_drawn(sb_base: Any, logo: Path) -> None:
     [
         ((0, 1, 2, 3, 4), None),  # n = 2N − 1: all rows
         ((0, 1, 2, 3, 4, 5), None),  # n = 2N: all rows, no divider
-        ((0, 1, 2, 4, 5, 6, 7), "1 keeper-season in between, none differs clearly"),
-        ((0, 1, 2, 3, 4, 5, 6), "1 keeper-season in between, 1 differs clearly"),
-        (tuple(range(12)), "6 keeper-seasons in between, {j} {verb} clearly"),
+        ((0, 1, 2, 4, 5, 6, 7), "1 keeper-season in between, none stands out"),
+        ((0, 1, 2, 3, 4, 5, 6), "1 keeper-season in between, 1 stands out"),
+        (tuple(range(12)), "6 keeper-seasons in between, {j} {verb} out"),
     ],
 )
 def test_selection_and_divider(
@@ -292,9 +292,9 @@ def test_selection_and_divider(
     j = int(hidden["clear"].sum())
     if "{j}" in divider:
         assert j == 1  # precondition: sb:g55 is the one hidden clear row
-        divider = divider.format(j=j, verb="differs" if j == 1 else "differ")
+        divider = divider.format(j=j, verb="stands" if j == 1 else "stand")
     else:
-        assert j == (1 if "1 differs" in divider else 0)  # precondition
+        assert j == (1 if "1 stands" in divider else 0)  # precondition
     assert divider in text
     assert text.count("in between") == 1
 
@@ -308,18 +308,20 @@ def _note(c: viz.Canvas) -> str:
 
 @pytest.mark.parametrize(
     ("gap", "tail"),
-    [(4.07, "; the selected sides' keepers sit 4.1 per 100 above it"),
-     (-2.04, "; the selected sides' keepers sit 2.0 per 100 below it"),
+    [(4.07, "; such keepers average +4.1 per 100"),
+     (-2.04, "; such keepers average −2.0 per 100"),
      (None, "")],
 )  # fmt: skip
 def test_flag_note_number(sb_base: Any, logo: Path, gap: float | None, tail: str) -> None:
     """A shown team-selected row is marked ``†`` and the footer note reads the computed
-    sentence with ``team_gap_100`` (its sign picks above / below; None ends the note after
-    "not its league"); no shown team-selected row (sb:g61 hidden): no note."""
+    sentence with ``team_gap_100`` (signed; None ends the note after "not the league"); no
+    shown team-selected row (sb:g61 hidden): no note."""
     g = _fit(sb_base, kc.TWELVE)
     c = _chart(_view(g, team_gap_100=gap), logo)
     note = _note(c)
-    lead = f"{FLAG} team-selected season: rated against the model, not its league"
+    lead = (
+        f"{FLAG} Only the team's own matches in the data: rated against the model, not the league"
+    )
     assert note == lead + tail
     names = kc.names(gsax.keeper_rows(g)["gk_id"].to_list())
     assert f"{kc.name_of(names, 'sb:g12')} {FLAG}" in cc.all_text(c)
@@ -350,8 +352,8 @@ def test_drop_mode(sb_base: Any, logo: Path) -> None:
     assert row["low"][0] == pytest.approx(100 * low / kc.SHOTS, rel=1e-6)
     assert row["high"][0] == pytest.approx(100 * high / kc.SHOTS, rel=1e-6)
     c = _chart(view, logo)
-    assert _note(c) == "2 team-selected keeper-seasons left out"
-    assert "model estimate, SD per 100, without †" in cc.all_text(c)
+    assert _note(c) == "2 keeper-seasons with only their own team's matches left out"
+    assert "SD per 100, without †" in cc.all_text(c)
     with pytest.raises(ValueError):
         keepers.keeper_view(
             dataclasses.replace(g, model_no_team=None),
@@ -375,23 +377,27 @@ def test_title_without_flag(sb_base: Any) -> None:
     only = _view(_fit(sb_base, [("sb:g12", "T18", kc.SHOTS, 18), *near]))
     assert only.k == 1 and only.k_no_team == 0  # precondition
     assert keepers.title(only) == (
-        f"After shrinkage, 1 of 6 keeper-seasons differs clearly from average (0 without {FLAG})"
+        f"1 of 6 keeper-seasons stands out from average once luck is accounted for (0 without "
+        f"{FLAG})"
     )
     both = _view(
         _fit(sb_base, [("sb:g12", "T18", kc.SHOTS, 18), ("sb:g02", "B19", kc.SHOTS, 62), *near])
     )
     assert both.k == 2 and both.k_no_team == 1  # precondition
-    assert keepers.title(both).endswith(f"differ clearly from average (1 without {FLAG})")
+    assert keepers.title(both).endswith(
+        f"stand out from average once luck is accounted for (1 without {FLAG})"
+    )
     plain = _view(_fit(sb_base, [("sb:g02", "B19", kc.SHOTS, 62), *near]))
     assert keepers.title(plain) == (
-        "After shrinkage, 1 of 6 keeper-seasons differs clearly from average"
+        "1 of 6 keeper-seasons stands out from average once luck is accounted for"
     )
 
 
 def test_strip_spread_and_width(sb_base: Any, logo: Path) -> None:
-    """Strip: ``Keeper spread`` = ``g.model.per_100`` (1 dp) with the no-team spread in its note
-    ("n/a" without a no-team model; "at its bound" when τ̂ is); ``Median interval`` = the median
-    of high − low per 100 over *all* rows (not only those shown), note "90% width, per 100
+    """Strip: ``Spread between keepers`` = ``g.model.per_100`` (1 dp) with the no-team spread in
+    its note ("n/a" without a no-team model; "at its bound" when τ̂ is); ``Typical uncertainty``
+    = the median of high − low per 100 over *all* rows (not only those shown), note "90% interval
+    width, per 100
     shots"."""
     g = _fit(sb_base, kc.TWELVE, tau_no_team=0.6)
     view = _view(g)
@@ -404,16 +410,16 @@ def test_strip_spread_and_width(sb_base: Any, logo: Path) -> None:
         view.median_width_100
     )  # precondition: the shown rows alone give another median
     text = cc.all_text(_chart(view, logo))
-    assert f"{g.model.per_100:.1f}" in text and "Keeper spread" in text
-    assert f"model estimate, SD per 100 · {g.model_no_team.per_100:.1f} without {FLAG}" in text
-    assert f"{view.median_width_100:.1f}" in text and "Median interval" in text
-    assert "90% width, per 100 shots" in text
+    assert f"{g.model.per_100:.1f}" in text and "Spread between keepers" in text
+    assert f"SD per 100 · {g.model_no_team.per_100:.1f} without {FLAG}" in text
+    assert f"{view.median_width_100:.1f}" in text and "Typical uncertainty" in text
+    assert "90% interval width, per 100 shots" in text
     none = _view(dataclasses.replace(g, model_no_team=None))
     assert none.spread_100_no_team is None
-    assert f"model estimate, SD per 100 · n/a without {FLAG}" in cc.all_text(_chart(none, logo))
+    assert f"SD per 100 · n/a without {FLAG}" in cc.all_text(_chart(none, logo))
     bound = _view(dataclasses.replace(g, model=dataclasses.replace(g.model, at_bound=True)))
     assert bound.at_bound
-    assert "model estimate at its bound" in cc.all_text(_chart(bound, logo))
+    assert "SD at the model's bound" in cc.all_text(_chart(bound, logo))
 
 
 # ---- title and words --------------------------------------------------------------------------
@@ -426,20 +432,21 @@ def test_title_counts_all_rows(sb_base: Any, monkeypatch: pytest.MonkeyPatch) ->
     none = _view(_fit(sb_base, kc.TWELVE, tau=1e-3))
     assert none.k == 0
     assert keepers.title(none) == (
-        "After shrinkage, none of 12 keeper-seasons differs clearly from average"
+        "None of 12 keeper-seasons stands out from average once luck is accounted for"
     )
     extremes = [(f"sb:g{10 + i}", s, kc.SHOTS, g) for i, (s, g) in
                 enumerate((("A18", 10), ("B18", 12), ("C18", 70), ("A19", 72)))]  # fmt: skip
     every = _view(_fit(sb_base, extremes))
     assert every.k == every.n == 4
     assert (
-        keepers.title(every) == "After shrinkage, 4 of 4 keeper-seasons differ clearly from average"
+        keepers.title(every)
+        == "4 of 4 keeper-seasons stand out from average once luck is accounted for"
     )
     twelve = _view(_fit(sb_base, kc.TWELVE))
     shown = _shown(twelve)
     k_shown = int(shown["clear"].sum())
     assert twelve.k == int(twelve.rows["clear"].sum()) > k_shown  # sb:g55 is hidden and clear
-    assert f" {twelve.k} of 12 keeper-seasons" in keepers.title(twelve)
+    assert keepers.title(twelve).startswith(f"{twelve.k} of 12 keeper-seasons")
     # a band touching 0: not clear
     real = keepers.shrunk_interval
 
@@ -508,10 +515,10 @@ def _caveats() -> list[str]:
         "No keeper reaches 500 shots: keeper reliability cannot be shown.",
         "1,111 keepers reach 500 shots: too few to estimate keeper reliability.",
         f"29 keepers reach 500 shots: too few to judge (split-half r {r}).",
-        f"Not distinguishable from noise at 500 shots: stepped-up split-half r {r} on the first "
-        "500 shots of 1,111 keepers.",
-        "Keeper and defence repeatable at 500 shots: stepped-up "
-        "split-half r +0.11 [+0.01, +0.40] on the first 500 shots of 1,111 keepers.",
+        f"At 500 shots keepers can't be told apart from noise: reliability r {r} on the first "
+        "500 shots of 1,111 keepers",
+        "At 500 shots keeper and defence repeat: reliability r +0.11 [+0.01, +0.40] on the first "
+        "500 shots of 1,111 keepers",
     ]
 
 
@@ -591,9 +598,10 @@ def test_keeper_chart_checks(
     assert cc.collapse(_gtext(c, "subtitle")) == cc.collapse(CAVEAT)
     assert MODEL in _gtext(c, viz.TEXT_GID)
     text = cc.all_text(c)
-    heading = "GSAx per 100 on-target shots · 100+ shots, penalties excluded"
+    heading = ("Goals saved above expected (GSAx) per 100 on-target shots · keepers with 100+ "
+               "shots, penalties excluded")  # fmt: skip
     assert heading in text
-    for item in ("After shrinkage", "Before shrinkage", "90% interval"):
+    for item in ("Luck-adjusted", "Raw", "90% interval"):
         assert item in text
     if not named:
         assert re.search(r"ws:|\b86\d{2,}\b", text) is None
@@ -666,6 +674,6 @@ def test_flag_field_carried(sb_base: Any) -> None:
              keepers.footer_note(view) or "", *view.rows["label"].to_list()]  # fmt: skip
     assert texts[0].endswith("(0 without ‡)")
     assert any("without ‡" in x for x in texts[1:3])
-    assert (texts[3]).startswith("‡ team-selected season")
+    assert (texts[3]).startswith("‡ Only the team's own matches")
     assert sum(x.endswith(" ‡") for x in texts[4:]) == 1
     assert not any(FLAG in x for x in texts)

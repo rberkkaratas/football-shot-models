@@ -122,7 +122,8 @@ class Panel:
 
     ``key`` is ``(glyph, label)`` pairs, glyph one of ``KEY_SLOT_PX``; ``caption`` paragraphs
     are split on ``"\\n"``, each at most ``caption_lines`` lines. ``guide`` ``"zero"`` draws one
-    line at 0 under the marks, ``"rail"`` a line along each row's track.
+    line at 0 under the marks, ``"rail"`` a line along each row's track; ``unit`` follows each
+    scale label.
     """
 
     heading: str
@@ -133,6 +134,7 @@ class Panel:
     guide: Literal["zero", "rail"] = "zero"
     scale_row: bool = False
     gids: Gids = Gids()
+    unit: str = ""  # after each scale label ("%")
 
 
 @dataclass(frozen=True)
@@ -550,7 +552,7 @@ def draw_panel(
         y += step + ROW_GAP_PX
     if p.scale_row:
         ticks = nice_ticks(scale)
-        labels = [tick_label(v, ticks) for v in ticks]
+        labels = [tick_label(v, ticks) + p.unit for v in ticks]
         xs = [x0 + (v - scale[0]) / (scale[1] - scale[0]) * width for v in ticks]
         for i in thin(c, labels, xs):
             c.text(xs[i], y, labels[i], "caption", ax=ax, va="top", ha="center",

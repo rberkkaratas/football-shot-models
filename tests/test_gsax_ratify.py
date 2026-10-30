@@ -605,8 +605,9 @@ def test_pr1_r11_chart_note(
     gsax_census: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """PR1 R11 (amended, CH1 keeper-model-charts §3.2): with a shown team-selected row the
-    keeper chart flags it and its footer note reads "* team-selected season: rated against the
-    model, not its league" (``keepers.FLAG``); without one there is no such note."""
+    keeper chart flags it and its footer note reads "* Only the team's own matches in the data:
+    rated against the model, not the league" (``keepers.FLAG``); without one there is no such
+    note."""
     import charts_cases as cc
     import matplotlib.image as mpimg
     from football_core import viz
@@ -623,7 +624,8 @@ def test_pr1_r11_chart_note(
     from football_shot_charts import keepers
 
     # the chart's flag (run8-ch1 item 17: "†" read as "+"); the card table keeps gsax_cards.FLAG
-    note = f"{keepers.FLAG} team-selected season: rated against the model, not its league"
+    note = (f"{keepers.FLAG} Only the team's own matches in the data: rated against the model, "
+            "not the league")  # fmt: skip
     charts = gsax_cards.keeper_charts(g, names=_census_names(table), logo=logo)
     for c in charts.values():
         text = " ".join(t.get_text() for t in cc.by_gid(c, viz.NOTE_GID))

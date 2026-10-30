@@ -48,7 +48,7 @@ Mode = Literal["flag", "drop"]
 TOP_N: Final = 3  # highest and lowest shown (a3: 4 overflows the portrait body)
 RECON_TOL: Final = 1e-9  # goals: the reconstructed shrunk total against the model's
 SIZE: Final = "portrait"
-MODEL_TEXT: Final = "xGOT: own model, fitted without the rated season"
+MODEL_TEXT: Final = "xGOT: my own model, fitted without the rated season"
 GID: Final = "keepers"
 FLAG: Final = "*"  # a team-selected row; never "†", which reads as "+" beside signed values
 # the one chart writer (``rows.write_all``), here so gsax_cards imports this module only
@@ -269,22 +269,24 @@ def keeper_view(
 
 
 def _verb(k: int) -> str:
-    return "differs" if k == 1 else "differ"
+    return "stands" if k == 1 else "stand"
 
 
 def title(view: KeeperView) -> str:
     """The statement: how many keeper-seasons (of all, not only those drawn) have an interval
-    excluding 0, and how many without the flagged ones when a clear row is flagged.
+    excluding 0 ("stands out"; "once luck is accounted for" names the shrinkage), and how many
+    without the flagged ones when a clear row is flagged.
 
     Examples
     --------
     >>> title(_example_view())
-    'After shrinkage, 1 of 4 keeper-seasons differs clearly from average (0 without *)'
+    '1 of 4 keeper-seasons stands out from average once luck is accounted for (0 without *)'
     """
     if view.k == 0:
-        return f"After shrinkage, none of {view.n} keeper-seasons differs clearly from average"
-    out = (f"After shrinkage, {view.k} of {view.n} keeper-seasons {_verb(view.k)} clearly from "
-           "average")  # fmt: skip
+        return (f"None of {view.n} keeper-seasons stands out from average once luck is "
+                "accounted for")  # fmt: skip
+    out = (f"{view.k} of {view.n} keeper-seasons {_verb(view.k)} out from average once luck is "
+           "accounted for")  # fmt: skip
     flagged = bool((view.rows["clear"] & view.rows["team_selected"]).any())
     return out + (f" ({view.k_no_team} without {view.flag})" if flagged else "")
 
@@ -295,19 +297,19 @@ def strip(view: KeeperView) -> tuple[viz.Stat, ...]:
     Examples
     --------
     >>> [s.note for s in strip(_example_view())]
-    ['model estimate, SD per 100 · n/a without *', '90% width, per 100 shots']
+    ['SD per 100 · n/a without *', '90% interval width, per 100 shots']
     """
-    # at the bound "SD per 100" gives way: the note must fit its column in both fonts
-    est = "model estimate at its bound" if view.at_bound else "model estimate, SD per 100"
+    # the note must fit its column in both fonts
+    est = "SD at the model's bound" if view.at_bound else "SD per 100"
     if view.mode == "drop":
         note = f"{est}, without {view.flag}"
     else:
         other = "n/a" if view.spread_100_no_team is None else f"{view.spread_100_no_team:.1f}"
         note = f"{est} · {other} without {view.flag}"
     return (
-        viz.Stat(f"{view.spread_100:.1f}", "Keeper spread", note),
-        viz.Stat(f"{view.median_width_100:.1f}", "Median interval",
-                 f"{view.level:.0%} width, per 100 shots"),
+        viz.Stat(f"{view.spread_100:.1f}", "Spread between keepers", note),
+        viz.Stat(f"{view.median_width_100:.1f}", "Typical uncertainty",
+                 f"{view.level:.0%} interval width, per 100 shots"),
     )  # fmt: skip
 
 
@@ -319,18 +321,17 @@ def footer_note(view: KeeperView) -> str | None:
     Examples
     --------
     >>> footer_note(_example_view())
-    "* team-selected season: rated against the model, not its league; the selected sides' keepers sit 1.2 per 100 above it"
+    "* Only the team's own matches in the data: rated against the model, not the league; such keepers average +1.2 per 100"
     """  # noqa: E501
     if view.mode == "drop":
-        return f"{view.left_out} team-selected keeper-seasons left out"
+        return f"{view.left_out} keeper-seasons with only their own team's matches left out"
     if not bool(shown(view)["team_selected"].any()):
         return None
-    out = f"{view.flag} team-selected season: rated against the model, not its league"
+    out = (f"{view.flag} Only the team's own matches in the data: rated against the model, not "
+           "the league")  # fmt: skip
     if view.team_gap_100 is None:
         return out
-    side = "above" if view.team_gap_100 >= 0 else "below"
-    return (f"{out}; the selected sides' keepers sit {abs(view.team_gap_100):.1f} per 100 "
-            f"{side} it")  # fmt: skip
+    return f"{out}; such keepers average {rows.signed(view.team_gap_100)} per 100"
 
 
 def shown(view: KeeperView) -> pl.DataFrame:
@@ -342,7 +343,7 @@ def shown(view: KeeperView) -> pl.DataFrame:
 def _divider(hidden: pl.DataFrame) -> rows.Divider:
     m, j = hidden.height, int(hidden["clear"].sum())
     what = "1 keeper-season" if m == 1 else f"{m} keeper-seasons"
-    verdict = "none differs clearly" if j == 0 else f"{j} {_verb(j)} clearly"
+    verdict = "none stands out" if j == 0 else f"{j} {_verb(j)} out"
     return rows.Divider(f"{what} in between, {verdict}")
 
 
@@ -368,13 +369,13 @@ def panel(view: KeeperView) -> tuple[rows.Panel, tuple[float, float]]:
     drawn = shown(view)
     scale = rows.scale_of([*drawn["low"], *drawn["high"], *drawn["unshrunk"]])
     p = rows.Panel(
-        f"GSAx per 100 on-target shots · {view.min_shots}+ shots, penalties excluded",
-        (("dot", "After shrinkage"), ("tick", "Before shrinkage"),
-         ("band", f"{view.level:.0%} interval")),
+        f"Goals saved above expected (GSAx) per 100 on-target shots · keepers with "
+        f"{view.min_shots}+ shots, penalties excluded",
+        (("dot", "Luck-adjusted"), ("tick", "Raw"), ("band", f"{view.level:.0%} interval")),
         tuple(items),
-        caption="Right of 0: fewer open-play goals than the model expects of an average keeper "
-        "facing the same on-target shots.\nBands: keeper-model posterior at the estimated keeper "
-        "spread (its own uncertainty not included).",
+        caption="Right of 0: fewer open-play goals conceded than an average keeper would concede "
+        "from the same on-target shots.\nLuck-adjusted: the raw value pulled toward 0 by how much "
+        "of it is noise. Bands take the spread between keepers as known.",
         scale_row=True,
     )  # fmt: skip
     return p, scale

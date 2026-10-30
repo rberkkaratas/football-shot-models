@@ -1,51 +1,51 @@
 {
  "calibration-xg-dark.png": {
-  "subtitle": "Out-of-fold and hold-out predictions of shots in 10 equal-count bins · bands: 95% match bootstrap of the observed rate",
-  "title": "xG inside the band in 10 of 10 bins in cross-validation, 9 of 10 on the hold-out"
+  "subtitle": "Shots in 10 equal-size bins · a bin agrees when the 95% match-bootstrap band of its goal rate holds the prediction",
+  "title": "xG is well calibrated: 10 of 10 bins agree in cross-validation, 9 of 10 on the hold-out season"
  },
  "calibration-xg-light.png": {
-  "subtitle": "Out-of-fold and hold-out predictions of shots in 10 equal-count bins · bands: 95% match bootstrap of the observed rate",
-  "title": "xG inside the band in 10 of 10 bins in cross-validation, 9 of 10 on the hold-out"
+  "subtitle": "Shots in 10 equal-size bins · a bin agrees when the 95% match-bootstrap band of its goal rate holds the prediction",
+  "title": "xG is well calibrated: 10 of 10 bins agree in cross-validation, 9 of 10 on the hold-out season"
  },
  "calibration-xgot-dark.png": {
-  "subtitle": "Out-of-fold and hold-out predictions of on-target shots in 10 equal-count bins · bands: 95% match bootstrap of the observed rate",
-  "title": "xGOT inside the band in 10 of 10 bins in cross-validation, 10 of 10 on the hold-out"
+  "subtitle": "On-target shots in 10 equal-size bins · a bin agrees when the 95% match-bootstrap band of its goal rate holds the prediction",
+  "title": "xGOT is well calibrated: 10 of 10 bins agree in cross-validation, 10 of 10 on the hold-out season"
  },
  "calibration-xgot-light.png": {
-  "subtitle": "Out-of-fold and hold-out predictions of on-target shots in 10 equal-count bins · bands: 95% match bootstrap of the observed rate",
-  "title": "xGOT inside the band in 10 of 10 bins in cross-validation, 10 of 10 on the hold-out"
+  "subtitle": "On-target shots in 10 equal-size bins · a bin agrees when the 95% match-bootstrap band of its goal rate holds the prediction",
+  "title": "xGOT is well calibrated: 10 of 10 bins agree in cross-validation, 10 of 10 on the hold-out season"
  },
  "comparison-xg-dark.png": {
-  "subtitle": "Log-loss gain of the xG model over each reference · 95% intervals from 2,000 match resamples of fixed fits",
-  "title": "Clearly lower log loss than 3 of 3 references in cross-validation and 1 of 3 on the hold-out"
+  "subtitle": "The xG model against each reference, in % of the reference's log loss · 95% intervals from 2,000 match resamples",
+  "title": "Hold-out: clearly better than the standard baseline, level with the best regression and StatsBomb's xG"
  },
  "comparison-xg-light.png": {
-  "subtitle": "Log-loss gain of the xG model over each reference · 95% intervals from 2,000 match resamples of fixed fits",
-  "title": "Clearly lower log loss than 3 of 3 references in cross-validation and 1 of 3 on the hold-out"
+  "subtitle": "The xG model against each reference, in % of the reference's log loss · 95% intervals from 2,000 match resamples",
+  "title": "Hold-out: clearly better than the standard baseline, level with the best regression and StatsBomb's xG"
  },
  "comparison-xgot-dark.png": {
-  "subtitle": "Log-loss gain of the xGOT model over each reference · 95% intervals from 2,000 match resamples of fixed fits",
-  "title": "Clearly lower log loss than 1 of 1 reference in cross-validation and 1 of 1 on the hold-out"
+  "subtitle": "The xGOT model against each reference, in % of the reference's log loss · 95% intervals from 2,000 match resamples",
+  "title": "Hold-out: clearly better than the logistic regression"
  },
  "comparison-xgot-light.png": {
-  "subtitle": "Log-loss gain of the xGOT model over each reference · 95% intervals from 2,000 match resamples of fixed fits",
-  "title": "Clearly lower log loss than 1 of 1 reference in cross-validation and 1 of 1 on the hold-out"
+  "subtitle": "The xGOT model against each reference, in % of the reference's log loss · 95% intervals from 2,000 match resamples",
+  "title": "Hold-out: clearly better than the logistic regression"
  },
  "gsax-keepers-dark.png": {
-  "subtitle": "Not distinguishable from noise at 100 shots: stepped-up split-half r +0.12 [−0.28, +0.40] on the first 100 shots of 111 keepers.",
-  "title": "After shrinkage, none of 97 keeper-seasons differs clearly from average"
+  "subtitle": "At 100 shots keepers can't be told apart from noise: reliability r +0.12 [−0.28, +0.40] on the first 100 shots of 111 keepers",
+  "title": "None of 97 keeper-seasons stands out from average once luck is accounted for"
  },
  "gsax-keepers-light.png": {
-  "subtitle": "Not distinguishable from noise at 100 shots: stepped-up split-half r +0.12 [−0.28, +0.40] on the first 100 shots of 111 keepers.",
-  "title": "After shrinkage, none of 97 keeper-seasons differs clearly from average"
+  "subtitle": "At 100 shots keepers can't be told apart from noise: reliability r +0.12 [−0.28, +0.40] on the first 100 shots of 111 keepers",
+  "title": "None of 97 keeper-seasons stands out from average once luck is accounted for"
  },
  "player-jamie-vardy-dark-square.png": {
   "subtitle": "Jamie Vardy · Leicester City · Premier League 2015/2016",
-  "title": "19 non-penalty goals from 19.2 xG: in line with the model (SD 3.6)"
+  "title": "19 non-penalty goals from 19.2 xG: in line with the model"
  },
  "player-jamie-vardy-light-square.png": {
   "subtitle": "Jamie Vardy · Leicester City · Premier League 2015/2016",
-  "title": "19 non-penalty goals from 19.2 xG: in line with the model (SD 3.6)"
+  "title": "19 non-penalty goals from 19.2 xG: in line with the model"
  },
  "team-leicester-city-dark-square.png": {
   "subtitle": "Leicester City · Premier League 2015/2016",

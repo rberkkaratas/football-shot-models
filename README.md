@@ -177,7 +177,7 @@ make statsbomb-logo                  # once (network): the logo every StatsBomb 
 make gsax                            # the four goalkeeper cards and the StatsBomb keeper charts
 make charts                          # 18 themed StatsBomb charts into git-ignored outputs/charts
                                      #   (warm cache, no model refitted; after xg-models, xgot, gsax)
-make docs-charts                     # copy the 14 published charts (2.81 MB) into docs/assets/charts
+make docs-charts                     # copy the 14 published charts (2.92 MB) into docs/assets/charts
 make reproduce                       # every card and README block, byte for byte
 ```
 

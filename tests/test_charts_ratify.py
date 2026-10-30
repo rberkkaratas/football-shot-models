@@ -93,7 +93,7 @@ def test_side_panel_takes_the_narrowest_width(logo: Path) -> None:
     assert "side" in tcs._layout_branches(c)  # precondition
     lines = shots.table(s, league, "zone")
     least = metrics.MIN_JUDGED_SHOTS
-    labels = [(ln.label, f"{ln.n} shots" + (" · not judged" if ln.n < least else ""))
+    labels = [(ln.label, f"{ln.n} shots" + (" · too few to judge" if ln.n < least else ""))
               for ln in lines]  # fmt: skip
     values = [(f"{ln.goals} goals", f"{ln.xg:.1f} xG") for ln in lines]
 
@@ -114,7 +114,8 @@ def test_side_panel_takes_the_narrowest_width(logo: Path) -> None:
 
 def test_strip_dropped_when_no_layout_fits(logo: Path) -> None:
     """R10 (and R19, now obsolete): a 5-row zone_bias profile on the square canvas has no layout
-    with the stat strip; it is drawn without it (the title states goals, xG and the SD) and
+    with the stat strip; it is drawn without it (the title states goals, xG and the normal
+    range the strip carried) and
     passes every check. R19's ``NoLayout`` no longer happens since the one-line panel key (A1)."""
     s, league = _five_rows("zone_bias")
     assert shots.verdict(shots.summary(s, league)) == "zone_bias"  # precondition
@@ -123,7 +124,7 @@ def test_strip_dropped_when_no_layout_fits(logo: Path) -> None:
                        team=cc.TEAM_22, **tcs.WORST_KW)  # fmt: skip
         assert "no-strip" in tcs._layout_branches(c)
         assert cc.styled(c, "stat_value") == []
-        assert "(SD " in cc.title(c) and " xG" in cc.title(c)
+        assert "(normal ±" in cc.title(c) and " xG" in cc.title(c)
         assert viz.check(c) == []
     portrait = tcs.player(s, league, logo, size="portrait", player=cc.NAME_22, team=cc.TEAM_22,
                           **tcs.WORST_KW)  # fmt: skip
@@ -175,7 +176,7 @@ def test_singular_counts_and_zero_gap(logo: Path) -> None:
     gap = cc.styled(c, "stat_value")[3].get_text()
     assert gap == "0.0"
     labels = [t.get_text() for t in cc.texts(c)]
-    assert "1 goal" in labels and "1 shot · not judged" in labels
+    assert "1 goal" in labels and "1 shot · too few to judge" in labels
     assert not any(x.startswith(("1 goals", "1 shots")) for x in labels)
     assert "1 shot outside the drawn area (1 goal, 0.3 xG)" in (cc.footer_note(c) or "")
 

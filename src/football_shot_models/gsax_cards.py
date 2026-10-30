@@ -138,7 +138,8 @@ def _r_chart(s: metrics.SplitHalf) -> str:
 
 
 def caveat(tier: Tier) -> str:
-    """The keeper chart's subtitle: :func:`stability_branch`'s verdict with the statistic the
+    """The keeper chart's subtitle in reader words ("reliability r" is the stepped-up
+    split-half r): :func:`stability_branch`'s verdict with the statistic the
     rule read (for "noise" and "repeatable" the binding one: of the stepped-up first-T and
     all-shots r, the one with the smaller lower bound, a missing bound binding).
 
@@ -146,7 +147,7 @@ def caveat(tier: Tier) -> str:
     --------
     >>> s = metrics.SplitHalf(111, 0.06, -0.12, 0.25)
     >>> caveat(Tier(100, 111, s, s, s, metrics.SplitHalf(111, 0.32, 0.01, 0.54)))
-    'Not distinguishable from noise at 100 shots: stepped-up split-half r +0.06 [\u22120.12, +0.25] on the first 100 shots of 111 keepers.'
+    "At 100 shots keepers can't be told apart from noise: reliability r +0.06 [\u22120.12, +0.25] on the first 100 shots of 111 keepers"
     """  # noqa: E501
     t, k = tier.tier, f"{tier.keepers:,}"
     branch = stability_branch(tier)
@@ -161,10 +162,10 @@ def caveat(tier: Tier) -> str:
     a, b = tier.first_sb, tier.all_shots_sb
     first = a.low is None or (b.low is not None and a.low <= b.low)
     s, scope = (a, f"the first {t} shots") if first else (b, "all shots")
-    stat = f"stepped-up split-half r {_r_chart(s)} on {scope} of {k} keepers."
+    stat = f"reliability r {_r_chart(s)} on {scope} of {k} keepers"
     if branch == "repeatable":
-        return f"Keeper and defence repeatable at {t} shots: {stat}"  # fits 2 subtitle lines
-    return f"Not distinguishable from noise at {t} shots: {stat}"
+        return f"At {t} shots keeper and defence repeat: {stat}"  # fits 2 subtitle lines
+    return f"At {t} shots keepers can't be told apart from noise: {stat}"
 
 
 def _above(c: GainCI | None) -> str:

@@ -47,6 +47,7 @@ TICKS: Final = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 0.8, 0.9, 0.95, 0.99)
 LOGIT_PAD: Final = 0.25  # logit units around the drawn values
 P_FLOOR: Final = 1e-3  # an observed rate of 0 or 1 is drawn at P_FLOOR or 1 - P_FLOOR
 COMPARISON_SIZES: Final[Mapping[str, str]] = MappingProxyType({"xG": "portrait", "xGOT": "square"})
+CALIBRATED_MISSES: Final = 1  # bins per split outside the band "well calibrated" allows
 BIN_COLUMNS: Final = ("bin", "shots", "mean_p", "rate", "low", "high", "inside", "clipped")
 MAX_EXTRAS: Final = 2  # a 4-stat comparison strip fails in DejaVu (a2)
 AXIS_GAP_PX: Final = 8
@@ -172,47 +173,50 @@ def _notes(parts: Sequence[str]) -> str | None:
 
 
 def calibration_title(view: ModelView) -> str:
-    """Bins whose band holds the mean prediction, per split; when the split's total fails the
-    band rule (``held_level_ok`` False), ", but not in total" (the strip prints the gap, its SD
-    and "outside"), with "CV" for cross-validation so the title keeps 2 lines.
+    """Bins that agree (their band holds the mean prediction), per split. "Well calibrated"
+    only when each split misses at most ``CALIBRATED_MISSES`` bins and the split's total
+    passes the band rule (``held_level_ok``); when the total fails, ", but not in total" (the
+    strip prints the gap, its range and "outside"), with "CV" so the title keeps 2 lines.
 
     Examples
     --------
     >>> calibration_title(_example_view())
-    'xG inside the band in 3 of 3 bins in cross-validation, 2 of 3 on the hold-out'
+    'xG is well calibrated: 3 of 3 bins agree in cross-validation, 2 of 3 on the hold-out'
     >>> calibration_title(dataclasses.replace(_example_view(), held_level_ok=False))
-    'xG inside the band in 3 of 3 bins in CV, 2 of 3 on the hold-out, but not in total'
+    'xG: 3 of 3 bins agree in CV, 2 of 3 on the hold-out, but not in total'
     """
-    k1, k2 = (int(b["inside"].sum()) for b in (view.cv_bins, view.held_bins))
-    cv, tail = ("cross-validation", "") if view.held_level_ok else ("CV", ", but not in total")
-    return (
-        f"{view.quantity} inside the band in {k1} of {view.cv_bins.height} bins in {cv}, "
-        f"{k2} of {view.held_bins.height} on {view.split[1]}{tail}"
-    )
+    (k1, n1), (k2, n2) = ((int(b["inside"].sum()), b.height)
+                          for b in (view.cv_bins, view.held_bins))  # fmt: skip
+    counts = f"{k2} of {n2} on {view.split[1]}"
+    if not view.held_level_ok:
+        return f"{view.quantity}: {k1} of {n1} bins agree in CV, {counts}, but not in total"
+    good = n1 - k1 <= CALIBRATED_MISSES and n2 - k2 <= CALIBRATED_MISSES
+    head = f"{view.quantity} is well calibrated" if good else view.quantity
+    return f"{head}: {k1} of {n1} bins agree in cross-validation, {counts}"
 
 
 def calibration_strip(view: ModelView) -> tuple[viz.Stat, ...]:
-    """Counts of both splits, the CV calibration slope and the split's outcomes − prediction;
-    when ``held_level_ok`` is False its note reads "outside {band_sds} SD" in place of the
-    split's name (the column's width; the title names the split).
+    """Counts of both splits, the CV calibration slope and the split's outcomes − prediction
+    with its normal range (± ``band_sds`` SD); when ``held_level_ok`` is False the note reads
+    "outside" in place of "normal".
 
     Examples
     --------
-    >>> [(s.value, s.label) for s in calibration_strip(_example_view())][-1]
-    ('−3.2', 'Goals − xG')
+    >>> [(s.value, s.label, s.note) for s in calibration_strip(_example_view())][-1]
+    ('−3.2', 'Goals − xG', 'Hold-out, normal ±5.8')
     >>> calibration_strip(dataclasses.replace(_example_view(), held_level_ok=False))[-1].note
-    'SD 2.9, outside 2 SD'
+    'Hold-out, outside ±5.8'
     """
     unit = view.unit.capitalize()
     slope = "n/a" if view.cv_slope is None else f"{view.cv_slope:.2f}"
     name = view.split[0]
-    where = f" · {name}" if view.held_level_ok else f", outside {view.band_sds:g} SD"
+    where = "normal" if view.held_level_ok else "outside"
     return (
         viz.Stat(f"{view.cv_n:,}", unit, "Cross-validation"),
-        viz.Stat(slope, "Calibration slope", "CV fold mean"),
+        viz.Stat(slope, "Calibration slope", "1.00 is perfect"),
         viz.Stat(f"{view.held_n:,}", unit, name),
         viz.Stat(rows.signed(view.held_gap), f"{view.count_word} − {view.quantity}",
-                 f"SD {view.held_sd:.1f}{where}"),
+                 f"{name.split()[0]}, {where} \u00b1{view.band_sds * view.held_sd:.1f}"),
     )  # fmt: skip
 
 
@@ -240,16 +244,6 @@ def _range(view: ModelView) -> tuple[float, float]:
     if not (0 < lo <= hi < 1):
         raise ValueError(f"calibration values must lie in (0, 1) for a logit axis: {lo}, {hi}")
     return _logit(lo) - LOGIT_PAD, _logit(hi) + LOGIT_PAD
-
-
-def _key_lines(
-    c: viz.Canvas, items: list[tuple[str, str]], width: float
-) -> list[list[tuple[str, str]]]:  # noqa: E501
-    if rows.key_width(c, items) <= width:
-        return [items]
-    if all(rows.key_width(c, [it]) <= width for it in items):
-        return [[it] for it in items]
-    raise rows.NoLayout(f"the calibration key does not fit {width:.0f} px in 2 lines")
 
 
 def _overlaps(a: Box, b: Box) -> bool:
@@ -418,27 +412,31 @@ def calibration_chart(
     []
     """
     _check_view(view)
-    name, _, adjective = view.split
+    name = view.split[0]
     clipped = any(bool(b["clipped"].any()) for b in (view.cv_bins, view.held_bins))
     clip = (f"Open triangle: an observed rate of 0 or 100%, drawn at {P_FLOOR:.1%} / "
             f"{1 - P_FLOOR:.1%}")  # fmt: skip
     note = _notes([clip] if clipped else [])
     c = viz.canvas(
         theme, "portrait", title=calibration_title(view),
-        subtitle=f"Out-of-fold and {adjective} predictions of {view.unit} in "
-        f"{view.cv_bins.height} equal-count bins · bands: {view.level:.0%} match bootstrap of the "
-        "observed rate",
+        subtitle=f"{view.unit.capitalize()} in {view.cv_bins.height} equal-size bins · a bin "
+        f"agrees when the {view.level:.0%} match-bootstrap band of its {view.outcome} rate holds "
+        "the prediction",
         stats=calibration_strip(view), footer=dataclasses.replace(footer, note=note), logo=logo,
     )  # fmt: skip
     bw, bh = rows.body_px(c)
     ax = c.axes((0.0, 0.0, 1.0, 1.0), gid="calibration")
     ax.set_xlim(0.0, bw)
     ax.set_ylim(0.0, bh)
-    items = [("ring", f"Cross-validation · {view.contexts[0]}"), ("line", "Cross-validation band"),
-             ("dot", f"{name} · {view.contexts[1]}")]  # fmt: skip
-    key_h = max(rows.BAND_PX, rows.DOT_PX, *(c.measure(x, "caption")[1] for _, x in items))
+    band = f"{view.level:.0%} band"
+    lines = [[("ring", f"Cross-validation · {view.contexts[0]}"), ("line", band)],
+             [("dot", f"{name} · {view.contexts[1]}"), ("band", band)]]  # fmt: skip
+    if any(rows.key_width(c, line) > bw for line in lines):
+        raise rows.NoLayout(f"the calibration key does not fit {bw:.0f} px in 2 lines")
+    key_h = max(rows.BAND_PX, rows.DOT_PX,
+                *(c.measure(x, "caption")[1] for line in lines for _, x in line))  # fmt: skip
     y = bh
-    for line in _key_lines(c, items, bw):
+    for line in lines:
         rows.draw_key(c, ax, line, 0.0, y - key_h / 2)
         y -= key_h + viz.LINE_GAP_PX
     a = _plot(c, ax, y - viz.GAP_PX, view)
@@ -461,55 +459,98 @@ def calibration_chart(
 # --- Comparison -------------------------------------------------------------------------------
 
 
-def comparison_title(view: ModelView) -> str:
-    """References whose gain interval lies above 0 (``low > 0``), per split: "clearly" names
-    that rule (as the keeper chart's title does), since a row right of 0 with an interval
-    across it is lower but not clearly.
+def _reference(role: str) -> str:
+    """A row's role in a sentence: "the standard baseline"; a possessive ("StatsBomb's xG")
+    stays as it is."""
+    role = role.split(" (")[0]
+    return role if "'" in role else "the " + role[0].lower() + role[1:]
+
+
+def _and(names: Sequence[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def comparison_titles(view: ModelView) -> tuple[str, str]:
+    """The split's verdict on each reference, by its gain interval: "clearly better than" when
+    it lies above 0, "clearly behind" below, "level with" across it (the panels show
+    cross-validation beside it). The first title names the references; the second counts them,
+    for when the names do not fit 2 lines. The split's name is its first word ("Hold-out").
 
     Examples
     --------
-    >>> comparison_title(_example_view())
-    'Clearly lower log loss than 1 of 2 references in cross-validation and 1 of 2 on the hold-out'
+    >>> comparison_titles(_example_view())
+    ('Hold-out: clearly better than the best regression, level with the standard baseline', 'Hold-out: clearly better than 1 of 2 references, level with 1')
+    """  # noqa: E501
+    groups: dict[str, list[str]] = {"clearly better than": [], "level with": [],
+                                    "clearly behind": []}  # fmt: skip
+    for r in view.rows:
+        _, low, high = r.held
+        verdict = ("clearly better than" if low > 0 else "clearly behind" if high < 0
+                   else "level with")  # fmt: skip
+        groups[verdict].append(_reference(r.role))
+    split, k = view.split[0].split()[0], len(view.rows)
+    named = [f"{verdict} {_and(names)}" for verdict, names in groups.items() if names]
+    counted, first = [], True
+    for verdict, names in groups.items():
+        if names:
+            of = f" of {k} reference{'' if k == 1 else 's'}" if first else ""
+            counted.append(f"{verdict} {len(names)}{of}")
+            first = False
+    return f"{split}: {', '.join(named)}", f"{split}: {', '.join(counted)}"
+
+
+def percent(gain: Gain, log_loss: float) -> Gain:
+    """A log-loss gain (and its interval) as a percent of the reference's log loss, the
+    reference being ``log_loss + gain`` (the model's plus the gain); one fixed denominator, so
+    the interval scales with the point.
+
+    Examples
+    --------
+    >>> [round(v, 2) for v in percent((0.01, 0.0, 0.02), 0.24)]
+    [4.0, 0.0, 8.0]
     """
-    k = len(view.rows)
-    a = sum(r.cv[1] > 0 for r in view.rows)
-    b = sum(r.held[1] > 0 for r in view.rows)
-    s = "" if k == 1 else "s"
-    return (f"Clearly lower log loss than {a} of {k} reference{s} in cross-validation and {b} of "
-            f"{k} on {view.split[1]}")  # fmt: skip
+    ref = log_loss + gain[0]
+    return (100 * gain[0] / ref, 100 * gain[1] / ref, 100 * gain[2] / ref)
+
+
+def _signed_pct(v: float) -> str:
+    return rows.signed(v) + "%"
 
 
 def comparison_strip(view: ModelView) -> tuple[viz.Stat, ...]:
-    """The head's log loss, then one stat per ``Extra``.
+    """The head's log loss, then one stat per ``Extra`` (as :func:`percent`).
 
     Examples
     --------
-    >>> [s.note for s in comparison_strip(_example_view())]
-    ['CV · Hold-out 0.2701', 'CV · Hold-out +0.113']
+    >>> [(s.value, s.note) for s in comparison_strip(_example_view())]
+    [('0.2689', 'CV · Hold-out 0.2701'), ('+28.7%', 'CV · Hold-out +29.5%')]
     """
-    name = view.split[0]
+    name = view.split[0].split()[0]  # "Hold-out": the column's width
     return (
         viz.Stat(f"{view.cv_log_loss:.4f}", "Log loss", f"CV · {name} {view.held_log_loss:.4f}"),
-        *(viz.Stat(rows.signed(e.cv, 3), f"Gain over {e.label}",
-                   f"CV · {name} {rows.signed(e.held, 3)}") for e in view.extras),
+        *(viz.Stat(_signed_pct(percent((e.cv, 0.0, 0.0), view.cv_log_loss)[0]),
+                   f"Better than {e.label}",
+                   f"CV · {name} {_signed_pct(percent((e.held, 0.0, 0.0), view.held_log_loss)[0])}")
+          for e in view.extras),
     )  # fmt: skip
 
 
 def _gain_panel(
     view: ModelView, heading: str, pick: Callable[[GainRow], Gain], *, last: bool
 ) -> rows.Panel:
-    """One split's gain rows; the caption (it holds for both panels) under the last only."""
+    """One split's gain rows in percent (``pick`` returns them so); the caption (it holds for
+    both panels) under the last only."""
     items = tuple(
-        rows.Row(label=r.role, sublabel=r.title, value=rows.signed(pick(r)[0], 4),
-                 point=pick(r)[0], low=pick(r)[1], high=pick(r)[2])
+        rows.Row(label=r.role, sublabel=r.title, value=_signed_pct(pick(r)[0]), point=pick(r)[0],
+                 low=pick(r)[1], high=pick(r)[2])
         for r in view.rows
     )  # fmt: skip
     return rows.Panel(
-        f"{heading}: log-loss gain over each reference",
-        (("dot", "Gain"), ("band", f"{view.level:.0%} interval")), items,
-        caption=f"Right of 0: lower log loss than the reference on the same {view.unit}."
-        if last else "",
-        scale_row=True,
+        f"{heading}: % lower log loss than each reference",
+        (("dot", "Improvement"), ("band", f"{view.level:.0%} interval")), items,
+        caption=f"Right of 0: the {view.quantity} model predicts the same {view.unit} better "
+        "(lower log loss) than the reference." if last else "",
+        scale_row=True, unit="%",
     )  # fmt: skip
 
 
@@ -536,17 +577,25 @@ def comparison_chart(
     []
     """
     _check_view(view)
-    c = viz.canvas(
-        theme, size, title=comparison_title(view),
-        subtitle=f"Log-loss gain of the {view.quantity} model over each reference · "
-        f"{view.level:.0%} intervals from {view.n_boot:,} match resamples of fixed fits",
+    named, counted = comparison_titles(view)
+    kw = dict(
+        subtitle=f"The {view.quantity} model against each reference, in % of the reference's log "
+        f"loss · {view.level:.0%} intervals from {view.n_boot:,} match resamples",
         stats=comparison_strip(view), footer=dataclasses.replace(footer, note=_notes(view.notes)),
         logo=logo,
     )  # fmt: skip
+    try:
+        c = viz.canvas(theme, size, title=named, **kw)  # type: ignore[arg-type]
+    except ValueError as e:
+        if not str(e).startswith("title "):
+            raise
+        c = viz.canvas(theme, size, title=counted, **kw)  # type: ignore[arg-type]
     bw, bh = rows.body_px(c)
-    scale = rows.scale_of([v for r in view.rows for g in (r.cv, r.held) for v in g])
-    panels = (_gain_panel(view, "Cross-validation", lambda r: r.cv, last=False),
-              _gain_panel(view, view.split[0], lambda r: r.held, last=True))  # fmt: skip
+    cv = {r.role: percent(r.cv, view.cv_log_loss) for r in view.rows}
+    held = {r.role: percent(r.held, view.held_log_loss) for r in view.rows}
+    scale = rows.scale_of([v for g in (*cv.values(), *held.values()) for v in g])
+    panels = (_gain_panel(view, "Cross-validation", lambda r: cv[r.role], last=False),
+              _gain_panel(view, view.split[0], lambda r: held[r.role], last=True))  # fmt: skip
     measured = [rows.place(c, p, (0.0, 0.0, bw, bh)) for p in panels]
     need = sum(m.height for m in measured) + viz.GAP_PX * (len(measured) - 1)
     if need > bh + viz.EPS_PX:
@@ -578,7 +627,7 @@ def _example_view() -> ModelView:
         _example_bins((0.032, 0.095, 0.36), (True, True, True)),
         _example_bins((0.031, 0.104, 0.25), (True, True, False)), 9000, 900, 1.02, -3.2, 2.9,
         True, 2.0, 0.2689, 0.2701,
-        (GainRow("Best logistic regression", "LR splines", (0.002, 0.001, 0.003),
+        (GainRow("Best regression", "LR splines", (0.002, 0.001, 0.003),
                  (0.004, 0.0005, 0.007)),
          GainRow("Standard baseline (S0)", "LR distance + angle", (0.010, -0.001, 0.02),
                  (0.012, -0.002, 0.03))),

@@ -182,7 +182,7 @@ def test_keeper_charts_themes_logo_deterministic(
         gap = cards.team_gap_100(g)
         assert gap is not None and gap > 0  # precondition: a selected-side row
         note = cc.collapse(" ".join(t.get_text() for t in cc.by_gid(c, viz.NOTE_GID)))
-        assert f"sit {gap:.1f} per 100 above it" in note
+        assert f"such keepers average +{gap:.1f} per 100" in note
     # integration census: a "noise" verdict at TABLE_MIN_SHOTS (the real-data branch) reaches
     # the subtitle through keeper_charts, chosen over an "empty" tier below the threshold
     noise = _tier(gsax_fits, gsax.TABLE_MIN_SHOTS, 111, (0.06, -0.12, 0.25), (0.2, 0.05, 0.4))
@@ -274,21 +274,21 @@ def test_caveat_branches(gsax_fits: dict[str, Any]) -> None:
     assert first.first_sb.low < first.all_shots_sb.low  # precondition: first_sb binds
     assert cards.stability_branch(first) == "noise"
     assert cards.caveat(first) == (
-        f"Not distinguishable from noise at 100 shots: stepped-up split-half r "
-        f"{_fmt_r(first.first_sb)} on the first 100 shots of 1,111 keepers."
+        f"At 100 shots keepers can't be told apart from noise: reliability r "
+        f"{_fmt_r(first.first_sb)} on the first 100 shots of 1,111 keepers"
     )
     assert cards.stability_sentence(first) == "not distinguishable from noise at 100 shots"
     alls = _tier(gsax_fits, 100, 111, (0.3, 0.05, 0.5), (0.2, -0.1, 0.4))
     assert alls.all_shots_sb.low < alls.first_sb.low  # precondition: all_shots_sb binds
     assert cards.caveat(alls).endswith(
-        f"split-half r {_fmt_r(alls.all_shots_sb)} on all shots of 111 keepers."
+        f"reliability r {_fmt_r(alls.all_shots_sb)} on all shots of 111 keepers"
     )
     assert "−" in _fmt_r(alls.all_shots_sb)  # precondition: a negative low prints U+2212
     rep = _tier(gsax_fits, 250, 1111, (0.6, 0.3, 0.8), (0.5, 0.2, 0.7))
     assert cards.stability_branch(rep) == "repeatable"
     assert cards.caveat(rep) == (
-        "Keeper and defence repeatable at 250 shots: stepped-up "
-        f"split-half r {_fmt_r(rep.all_shots_sb)} on all shots of 1,111 keepers."
+        "At 250 shots keeper and defence repeat: reliability r "
+        f"{_fmt_r(rep.all_shots_sb)} on all shots of 1,111 keepers"
     )
     assert cards.stability_sentence(rep) == (
         "keeper records are repeatable beyond chance at 250 shots; this measures the keeper "

@@ -81,10 +81,10 @@ NOTE_PARTS: Final[Mapping[str, tuple[str, str, bool]]] = {
 
 BEST_LR: Final = "best-lr"  # the headline rule's comparison (``models.select_headline``)
 XG_REFS: Final[Mapping[str, tuple[tuple[str, str], ...]]] = MappingProxyType({
-    "statsbomb": ((BEST_LR, "Best logistic regression"),
+    "statsbomb": ((BEST_LR, "Best regression"),
                   ("xg-lr-distance-angle-body-part", "Standard baseline (S0)"),
                   (evaluation.BENCHMARK.name, "StatsBomb's xG")),
-    "whoscored": ((BEST_LR, "Best logistic regression"), (v1.DISTANCE_ANGLE, "Distance and angle")),
+    "whoscored": ((BEST_LR, "Best regression"), (v1.DISTANCE_ANGLE, "Distance and angle")),
 })  # fmt: skip
 XGOT_REFS: Final = (("{prefix}lr", "Logistic regression"),)
 # on a shared axis their +0.108 / +0.202 gains flatten the +0.0097 headline row (d1): the strip
@@ -98,7 +98,7 @@ HEADS: Final[Mapping[str, str]] = MappingProxyType(
     {"statsbomb": models.GBM.name, "whoscored": v1.GBM.name}
 )
 SPLITS: Final[Mapping[str, tuple[str, str, str]]] = MappingProxyType({
-    "hold-out": ("Hold-out", "the hold-out", "hold-out"),
+    "hold-out": ("Hold-out season", "the hold-out season", "hold-out"),
     "test": ("Test season", "the test season", "test-season"),
 })  # fmt: skip
 COLD_HINT: Final[Mapping[str, str]] = MappingProxyType({
@@ -273,9 +273,9 @@ def model_text(context: str, quantity: str = "xG") -> str:
     Examples
     --------
     >>> model_text("Premier League 2015/2016")
-    'xG: own model, not trained on Premier League 2015/2016'
+    'xG: my own model, trained without Premier League 2015/2016'
     """
-    return f"{quantity}: own model, not trained on {context}"
+    return f"{quantity}: my own model, trained without {context}"
 
 
 def write(c: viz.Canvas, path: StrPath, *, private: bool = False) -> Path:
