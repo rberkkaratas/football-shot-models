@@ -8,10 +8,13 @@ them for xP (``quantity="xP"``, ``outcome="completion"``); nothing here reads
 axes (on linear axes 7 of 10 xG bins crowd into the bottom fifth), both splits overlaid so a
 hold-out miss shows against its cross-validation ring. Each bin is a marker at (mean
 prediction, observed rate) with the match-bootstrap band of the observed rate; the title counts
-the bins whose band holds the mean prediction. Draw order keeps every mark visible: the dashed
-diagonal, the cross-validation bands and hollow rings (neutral), the split's bands with caps,
-its dots (accent) last. A bin outside its band gets a halo and a computed label; an observed
-rate of 0 or 1 cannot sit on a logit axis, so it is an open triangle at ``P_FLOOR``.
+the bins whose band holds the mean prediction and, since a level shift through every bin passes
+every bin's band, adds "but not in total" when the split's outcomes − Σ prediction fails the
+project's band rule (``held_level_ok``, judged by the caller). Draw order keeps every mark
+visible: the dashed diagonal, the cross-validation bands (thin neutral lines, keyed) and hollow
+rings (neutral), the split's bands with caps, its dots (accent) last. A bin outside its band
+gets a halo and a computed label; an observed rate of 0 or 1 cannot sit on a logit axis, so it
+is an open triangle at ``P_FLOOR``.
 
 **Comparison** (:func:`comparison_chart`): the log-loss gain over each reference with its
 interval against 0, cross-validation and the split in two panels on one scale (the row panel
@@ -50,7 +53,7 @@ AXIS_GAP_PX: Final = 8
 HALO_PX: Final = rows.DOT_PX + 8
 LABEL_GAP_PX: Final = 6
 DASH_PX: Final = (8.0, 6.0)  # the diagonal's dash and gap: short artists, so its box is small
-CV_LW: Final = 1.5
+CV_LW: Final = rows.CAP_LW  # as the key's "line" glyph
 GRID_LW: Final = 0.8
 DIAGONAL_LW: Final = 1.2
 
@@ -94,6 +97,11 @@ class ModelView:
         The calibration slope, cross-validation fold mean.
     held_gap, held_sd : float
         Outcomes − Σ prediction on the split and its Poisson-binomial SD.
+    held_level_ok : bool
+        ``held_gap`` within the band rule (``metrics.within``, judged by the caller, so this
+        module reads nothing from ``football_shot_models``).
+    band_sds : float
+        The band rule's width in SDs (``metrics.BAND_SDS``), printed when the level fails.
     cv_log_loss, held_log_loss : float
     rows : tuple of GainRow
         At least one reference drawn.
@@ -120,6 +128,8 @@ class ModelView:
     cv_slope: float | None
     held_gap: float
     held_sd: float
+    held_level_ok: bool
+    band_sds: float
     cv_log_loss: float
     held_log_loss: float
     rows: tuple[GainRow, ...]
@@ -162,37 +172,47 @@ def _notes(parts: Sequence[str]) -> str | None:
 
 
 def calibration_title(view: ModelView) -> str:
-    """Bins whose band holds the mean prediction, per split.
+    """Bins whose band holds the mean prediction, per split; when the split's total fails the
+    band rule (``held_level_ok`` False), ", but not in total" (the strip prints the gap, its SD
+    and "outside"), with "CV" for cross-validation so the title keeps 2 lines.
 
     Examples
     --------
     >>> calibration_title(_example_view())
     'xG inside the band in 3 of 3 bins in cross-validation, 2 of 3 on the hold-out'
+    >>> calibration_title(dataclasses.replace(_example_view(), held_level_ok=False))
+    'xG inside the band in 3 of 3 bins in CV, 2 of 3 on the hold-out, but not in total'
     """
     k1, k2 = (int(b["inside"].sum()) for b in (view.cv_bins, view.held_bins))
+    cv, tail = ("cross-validation", "") if view.held_level_ok else ("CV", ", but not in total")
     return (
-        f"{view.quantity} inside the band in {k1} of {view.cv_bins.height} bins in "
-        f"cross-validation, {k2} of {view.held_bins.height} on {view.split[1]}"
+        f"{view.quantity} inside the band in {k1} of {view.cv_bins.height} bins in {cv}, "
+        f"{k2} of {view.held_bins.height} on {view.split[1]}{tail}"
     )
 
 
 def calibration_strip(view: ModelView) -> tuple[viz.Stat, ...]:
-    """Counts of both splits, the CV calibration slope and the split's outcomes − prediction.
+    """Counts of both splits, the CV calibration slope and the split's outcomes − prediction;
+    when ``held_level_ok`` is False its note reads "outside {band_sds} SD" in place of the
+    split's name (the column's width; the title names the split).
 
     Examples
     --------
     >>> [(s.value, s.label) for s in calibration_strip(_example_view())][-1]
     ('−3.2', 'Goals − xG')
+    >>> calibration_strip(dataclasses.replace(_example_view(), held_level_ok=False))[-1].note
+    'SD 2.9, outside 2 SD'
     """
     unit = view.unit.capitalize()
     slope = "n/a" if view.cv_slope is None else f"{view.cv_slope:.2f}"
     name = view.split[0]
+    where = f" · {name}" if view.held_level_ok else f", outside {view.band_sds:g} SD"
     return (
         viz.Stat(f"{view.cv_n:,}", unit, "Cross-validation"),
         viz.Stat(slope, "Calibration slope", "CV fold mean"),
         viz.Stat(f"{view.held_n:,}", unit, name),
         viz.Stat(rows.signed(view.held_gap), f"{view.count_word} − {view.quantity}",
-                 f"SD {view.held_sd:.1f} · {name}"),
+                 f"SD {view.held_sd:.1f}{where}"),
     )  # fmt: skip
 
 
@@ -414,7 +434,7 @@ def calibration_chart(
     ax = c.axes((0.0, 0.0, 1.0, 1.0), gid="calibration")
     ax.set_xlim(0.0, bw)
     ax.set_ylim(0.0, bh)
-    items = [("ring", f"Cross-validation · {view.contexts[0]}"),
+    items = [("ring", f"Cross-validation · {view.contexts[0]}"), ("line", "Cross-validation band"),
              ("dot", f"{name} · {view.contexts[1]}")]  # fmt: skip
     key_h = max(rows.BAND_PX, rows.DOT_PX, *(c.measure(x, "caption")[1] for _, x in items))
     y = bh
@@ -442,19 +462,21 @@ def calibration_chart(
 
 
 def comparison_title(view: ModelView) -> str:
-    """References whose gain interval lies above 0 (``low > 0``), per split.
+    """References whose gain interval lies above 0 (``low > 0``), per split: "clearly" names
+    that rule (as the keeper chart's title does), since a row right of 0 with an interval
+    across it is lower but not clearly.
 
     Examples
     --------
     >>> comparison_title(_example_view())
-    'Lower log loss than 1 of 2 references in cross-validation and 1 of 2 on the hold-out'
+    'Clearly lower log loss than 1 of 2 references in cross-validation and 1 of 2 on the hold-out'
     """
     k = len(view.rows)
     a = sum(r.cv[1] > 0 for r in view.rows)
     b = sum(r.held[1] > 0 for r in view.rows)
     s = "" if k == 1 else "s"
-    return (f"Lower log loss than {a} of {k} reference{s} in cross-validation and {b} of {k} on "
-            f"{view.split[1]}")  # fmt: skip
+    return (f"Clearly lower log loss than {a} of {k} reference{s} in cross-validation and {b} of "
+            f"{k} on {view.split[1]}")  # fmt: skip
 
 
 def comparison_strip(view: ModelView) -> tuple[viz.Stat, ...]:
@@ -555,7 +577,7 @@ def _example_view() -> ModelView:
         ("12 competition-seasons", "Test League 2015/2016"),
         _example_bins((0.032, 0.095, 0.36), (True, True, True)),
         _example_bins((0.031, 0.104, 0.25), (True, True, False)), 9000, 900, 1.02, -3.2, 2.9,
-        0.2689, 0.2701,
+        True, 2.0, 0.2689, 0.2701,
         (GainRow("Best logistic regression", "LR splines", (0.002, 0.001, 0.003),
                  (0.004, 0.0005, 0.007)),
          GainRow("Standard baseline (S0)", "LR distance + angle", (0.010, -0.001, 0.02),

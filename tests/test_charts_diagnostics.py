@@ -181,16 +181,18 @@ def test_comparison_title_counts(logo: Path) -> None:
     dg = _dg()
     view = kc.model_view()
     assert _gtext(_cmp(view, logo), "title") == (
-        "Lower log loss than 3 of 3 references in cross-validation and 1 of 3 on the hold-out"
+        "Clearly lower log loss than 3 of 3 references in cross-validation and 1 of 3 on the "
+        "hold-out"
     )
     rows = (dataclasses.replace(view.rows[0], cv=(0.0010, 0.0, 0.0020)), *view.rows[1:])
     edge = kc.model_view(rows=rows)
     assert _gtext(_cmp(edge, logo), "title").startswith(
-        "Lower log loss than 2 of 3 references in cross-validation"
+        "Clearly lower log loss than 2 of 3 references in cross-validation"
     )
     one = kc.xgot_view()
     assert _gtext(_cmp(one, None), "title") == (
-        "Lower log loss than 1 of 1 reference in cross-validation and 1 of 1 on the test season"
+        "Clearly lower log loss than 1 of 1 reference in cross-validation and 1 of 1 on the "
+        "test season"
     )
     assert dict(dg.COMPARISON_SIZES) == {"xG": "portrait", "xGOT": "square"}
 
@@ -461,3 +463,42 @@ def test_comparison_caption_once(logo: Path) -> None:
         assert len(heading) == 2  # precondition: two panels
         last = next(h for h in heading if h.get_text().startswith(view.split[0]))
         assert caps[0].axes is last.axes
+
+
+# ---- run8-ch1 assessment fixes -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("family", ["inter", "fallback"])
+def test_level_shift_through_every_bin_is_named(logo: Path, family: str) -> None:
+    """Item 8: every bin inside its band but the split's total outside the band rule
+    (``held_level_ok`` False, as the WhoScored xGOT test season: +77.7 goals, SD 26.9): the
+    title says "but not in total" and the strip note "outside 2 SD"; inside the rule, neither."""
+    theme: str | viz.Theme = "light" if family == "inter" else cc.fallback("light")
+    view = kc.xgot_view(held_gap=77.7, held_sd=26.9, held_level_ok=False, band_sds=2.0)
+    assert bool(view.held_bins["inside"].all()) and bool(view.cv_bins["inside"].all())
+    c = _cal(view, None, theme)
+    assert viz.check(c) == []
+    assert _gtext(c, "title") == (
+        "xGOT inside the band in 10 of 10 bins in CV, 10 of 10 on the test season, but not in total"
+    )
+    assert "+77.7" in _stats(c) and "SD 26.9, outside 2 SD" in _stats(c)
+    ok = _cal(dataclasses.replace(view, held_level_ok=True), None, theme)
+    assert not _gtext(ok, "title").endswith("not in total")
+    assert not any("outside" in s for s in _stats(ok))
+
+
+def test_calibration_key_names_the_cv_band(logo: Path) -> None:
+    """Item 19: the key has a neutral line glyph labelled "Cross-validation band", drawn as the
+    CV bands are (``CV_LW``, ``neutral``), in both themes."""
+    from matplotlib.colors import to_hex
+
+    for theme in viz.THEMES:
+        c = _cal(kc.model_view(), logo, theme)
+        assert "Cross-validation band" in [t.get_text() for t in cc.by_gid(c, "panel-key")]
+        lines = [a for a in cc.by_gid(c, "mark-panel-key") if hasattr(a, "get_xdata")]
+        verticals = [a for a in lines if len(set(a.get_xdata())) == 1]
+        assert len(verticals) == 1, verticals
+        (key,) = verticals
+        assert to_hex(key.get_color()) == viz.THEMES[theme].neutral
+        assert key.get_linewidth() == _dg().CV_LW
+        assert viz.check(c) == []

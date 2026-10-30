@@ -293,3 +293,70 @@ def test_thin_y_axis() -> None:
     assert rw.thin(c, ("10%",) * 3, ys, axis="y") == (0, 1, 2)
     assert rw.thin(c, ("10%",) * 3, ys, axis="x") != (0, 1, 2)
     assert rw.thin(c, ("10%",) * 3, (100.0, 101.0, 100.0 + gap), axis="y") == (0, 2)
+
+
+# ---- run8-ch1 assessment fixes: one writer, the font refusal, providers, tick decimals ---------
+
+
+def test_guard_refuses_the_fallback_font(
+    repo: Path, logo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Item 3: a chart drawn in the DejaVu fallback (a fallback theme, or Inter not registered
+    at import) is refused by every writer, naming the font files; nothing is written."""
+    from football_shot_models import gsax_cards
+
+    rw = _rows()
+    fallback = _canvas(cc.fallback("light"), provider="statsbomb", logo=logo)
+    out = Path("outputs/charts")
+    with pytest.raises(ValueError, match="Inter-Regular.ttf"):
+        rw.guard_write(fallback, out / "a.png", private=False)
+    with pytest.raises(ValueError, match="drawn in DejaVu Sans"):
+        gsax_cards.write_charts({"a.png": fallback}, chart_dir=out)
+    inter = _canvas(provider="statsbomb", logo=logo)
+    assert rw.guard_write(inter, out / "b.png", private=False)  # precondition: Inter passes
+    monkeypatch.setattr(viz, "FAMILY", viz.FALLBACK_FAMILY)
+    with pytest.raises(ValueError, match="did not register"):
+        rw.write_all({"b.png": inter}, out, private=False)
+    assert list(repo.rglob("*.png")) == []
+
+
+def test_guard_reads_providers_and_every_text(repo: Path, logo: Path) -> None:
+    """Item 6: a WhoScored chart is refused without ``private`` when ``Canvas.providers`` names
+    WhoScored (a canvas built directly, no credit drawn), and when the credit is drawn on an
+    axes of a canvas whose providers do not name it (the text scan covers axes texts)."""
+    rw = _rows()
+    out = Path("outputs/charts/ws.png")
+    sb = _canvas(provider="statsbomb", logo=logo)
+    direct = viz.Canvas(sb.fig, sb.theme, sb.size, sb.body, ("whoscored",))
+    with pytest.raises(ValueError, match="WhoScored chart is private"):
+        rw.guard_write(direct, out, private=False)
+    ax = sb.axes((0.1, 0.1, 0.5, 0.5), gid="credit")
+    sb.text(0.1, 0.5, viz.ATTRIBUTION["whoscored"], "caption", ax=ax)
+    assert sb.providers == ("statsbomb",) and viz.ATTRIBUTION["whoscored"] not in " ".join(
+        t.get_text() for t in sb.fig.texts
+    )  # precondition: only an axes holds the credit
+    with pytest.raises(ValueError, match="WhoScored chart is private"):
+        rw.guard_write(sb, out, private=False)
+
+
+def test_write_all_all_or_nothing(repo: Path, logo: Path) -> None:
+    """Item 5: ``write_all`` guards every chart before writing any: one refused chart leaves
+    nothing on disk; clean charts are all written, paths returned in order."""
+    rw = _rows()
+    out = Path("outputs/charts")
+    good = {"a.png": _canvas(provider="statsbomb", logo=logo),
+            "b.png": _canvas("dark", provider="statsbomb", logo=logo)}  # fmt: skip
+    with pytest.raises(ValueError, match="ws.png"):
+        rw.write_all({**good, "ws.png": _canvas(provider="whoscored")}, out, private=False)
+    assert list(repo.rglob("*.png")) == []
+    paths = rw.write_all(good, out, private=False)
+    assert [p.name for p in paths] == ["a.png", "b.png"] and all(p.is_file() for p in paths)
+
+
+def test_tick_label_decimals_from_the_step() -> None:
+    """Item 16: decimals come from the step's own decimal places, not its order of magnitude."""
+    rw = _rows()
+    assert rw.tick_label(0.25, (0.0, 0.25, 0.5)) == "+0.25"
+    assert rw.tick_label(-2.5, (-2.5, 0.0, 2.5)) == "−2.5"
+    assert rw.tick_label(20.0, (0.0, 20.0, 40.0)) == "+20"
+    assert rw.tick_label(0.0, (0.0, 0.25, 0.5)) == "0"

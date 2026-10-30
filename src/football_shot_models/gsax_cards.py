@@ -913,7 +913,9 @@ def keeper_charts(
 
     StatsBomb (``NAMED``) is named, credited and carries ``logo``; WhoScored is unnamed with
     rank-prefixed labels and no logo (Rule 1). The subtitle is :func:`caveat` of the tier at
-    ``gsax.TABLE_MIN_SHOTS``, the † number :func:`team_gap_100` (the card's row).
+    ``gsax.TABLE_MIN_SHOTS``, the flag's number :func:`team_gap_100` (the card's row). The
+    chart flags team-selected rows with ``keepers.FLAG``, not the card's ``FLAG`` (†), which
+    reads as "+" at chart size.
 
     Raises
     ------
@@ -932,7 +934,8 @@ def keeper_charts(
     if (p in NAMED) != (names is not None):
         raise ValueError(f"keeper_charts: {p} charts {'need' if p in NAMED else 'take no'} names")
     view = keepers.keeper_view(
-        g, names=names, caveat=caveat(chart_tier(g.tiers)), flag=FLAG, team_gap_100=team_gap_100(g),
+        g, names=names, caveat=caveat(chart_tier(g.tiers)), flag=keepers.FLAG,
+        team_gap_100=team_gap_100(g),
         team_selected=team_selected,
     )  # fmt: skip
     footer = viz.Footer((p,))
@@ -959,25 +962,21 @@ def keeper_names(g: GsaxFit, raw: StrPath) -> pl.DataFrame:
 
 
 def write_charts(charts: Mapping[str, viz.Canvas], *, chart_dir: StrPath) -> tuple[Path, ...]:
-    """Write every chart to ``chart_dir/<name>`` after every one passes ``keepers.guard_write``
-    (public, git-ignored, no check problem): nothing is written when one fails.
+    """Write every chart to ``chart_dir/<name>`` through ``keepers.write_all``
+    (``rows.write_all``): every one must pass the guard (drawn in Inter, public, git-ignored, no
+    check problem) before any is written.
 
     Raises
     ------
     ValueError
-        From ``keepers.guard_write`` (a WhoScored canvas among them included).
+        From ``rows.guard_write`` (a WhoScored canvas, or the DejaVu fallback, included).
 
     Examples
     --------
     >>> write_charts(keeper_charts(g, names=names, logo=logo), chart_dir=CHART_DIR)
     ... # doctest: +SKIP
     """
-    paths = [keepers.guard_write(c, Path(chart_dir) / name, private=False)
-             for name, c in charts.items()]  # fmt: skip
-    for path, c in zip(paths, charts.values(), strict=True):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        viz.save(c, path)
-    return tuple(paths)
+    return keepers.write_all(charts, chart_dir, private=False)
 
 
 # ---- README block, write and run -----------------------------------------------------------

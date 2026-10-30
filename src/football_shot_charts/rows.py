@@ -13,9 +13,10 @@ Rows go **wide** (label | track | value) when the widest label and value leave t
 rows line up. :func:`measure` returns ``None`` when a part cannot fit the width (a layout
 search reads that), :func:`place` raises :class:`NoLayout` naming the width or the height.
 
-:func:`guard_write` is the one check before any chart file is written (``render.write``,
-``gsax_cards.write_charts``): git must ignore the path, a WhoScored chart must be private and
-under ``PRIVATE_DIR``, and ``viz.check`` must find nothing.
+:func:`write_all` is the one way a chart file is written (``render`` and
+``gsax_cards.write_charts`` both call it): every chart passes :func:`guard_write` before any is
+written. The guard refuses a chart drawn in another font than Inter, a WhoScored chart that is
+not private and under ``PRIVATE_DIR``, a path git would track, and any ``viz.check`` problem.
 
 This module reads nothing from ``football_shot_models``: its inputs are plain values, so it can
 move into ``football_core.viz`` with the passing models as a file move.
@@ -36,6 +37,7 @@ from football_core import viz
 from football_core.io import snapshot
 from matplotlib.axes import Axes
 from matplotlib.patches import Rectangle
+from matplotlib.text import Text
 
 StrPath = viz.StrPath
 Rect = tuple[float, float, float, float]  # body px: left, bottom, width, height
@@ -49,7 +51,7 @@ TRACK_GAP_PX: Final = 4  # value blocks to the track below them (stacked rows)
 TRACK_PX: Final = 20  # the track's height: the tall tick
 BAND_PX: Final = 14
 KEY_SLOT_PX: Final[Mapping[str, float]] = MappingProxyType(
-    {"dot": 12.0, "tick": 12.0, "band": 24.0, "ring": 12.0}
+    {"dot": 12.0, "tick": 12.0, "band": 24.0, "ring": 12.0, "line": 12.0}
 )  # glyph widths in a key
 KEY_TEXT_GAP_PX: Final = 8
 KEY_GID: Final = "mark-panel-key"
@@ -218,9 +220,11 @@ def tick_label(v: float, ticks: Sequence[float]) -> str:
     --------
     >>> [tick_label(t, (-0.5, 0.0, 0.5)) for t in (-0.5, 0.0, 0.5)]
     ['−0.5', '0', '+0.5']
+    >>> tick_label(0.25, (0.0, 0.25, 0.5)), tick_label(20.0, (0.0, 20.0, 40.0))
+    ('+0.25', '+20')
     """
     step = min((b - a for a, b in zip(ticks, ticks[1:], strict=False)), default=1.0)
-    digits = max(0, -math.floor(math.log10(step) + 1e-9)) if step > 0 else 0
+    digits = next((d for d in range(13) if abs(round(step, d) - step) <= 1e-9 * abs(step)), 12)
     return "0" if round(v, digits) == 0 else signed(v, digits)
 
 
@@ -446,7 +450,8 @@ def draw_key(
     c: viz.Canvas, ax: Axes, items: Sequence[tuple[str, str]], x: float, cy: float
 ) -> None:
     """The key's glyphs (as the rows draw them; gids ``band-key`` and ``KEY_GID``) and their
-    labels, in one line from ``x``, centred on ``cy`` (``ax`` in px, y down or up)."""
+    labels, in one line from ``x``, centred on ``cy`` (``ax`` in px, y down or up). ``"line"``
+    is a neutral vertical hairline (the calibration chart's cross-validation band)."""
     t = c.theme
     for glyph, label in items:
         slot = KEY_SLOT_PX[glyph]
@@ -456,6 +461,9 @@ def draw_key(
             tick(ax, x + slot / 2, cy, BAND_PX, t, KEY_GID)
         elif glyph == "ring":
             ring(ax, x + slot / 2, cy, t.neutral, KEY_GID)
+        elif glyph == "line":
+            ax.plot([x + slot / 2] * 2, [cy - BAND_PX / 2, cy + BAND_PX / 2], color=t.neutral,
+                    lw=CAP_LW, solid_capstyle="butt", zorder=3, gid=KEY_GID)  # fmt: skip
         else:
             dot(ax, x + slot / 2, cy, t, KEY_GID)
         x += slot + KEY_TEXT_GAP_PX
@@ -557,16 +565,20 @@ def _private(path: Path) -> bool:
 def guard_write(c: viz.Canvas, path: StrPath, *, private: bool) -> Path:
     """Every check before a chart file is written; writes nothing.
 
+    A WhoScored chart is recognised by ``c.providers`` (set by ``viz.canvas``) and, as a second
+    check, by ``viz.ATTRIBUTION["whoscored"]`` in any text of the figure (axes texts included).
+
     Raises
     ------
     ValueError
-        A WhoScored chart without ``private``; a private chart outside ``PRIVATE_DIR``
-        (``normpath(abspath)``, never resolved); a path git would track, or git not answering;
-        a chart ``viz.check`` finds problems in (listed). Each message names the path.
+        A chart not drawn in ``viz.FONT_FAMILY`` (the vendored Inter did not register, so the
+        DejaVu fallback drew it); a WhoScored chart without ``private``; a private chart outside
+        ``PRIVATE_DIR`` (``normpath(abspath)``, never resolved); a path git would track, or git
+        not answering; a chart ``viz.check`` finds problems in (listed). Each message names the
+        path.
 
     Examples
     --------
-    >>> import tempfile
     >>> c = viz.canvas("light", "square", title="T", subtitle="S",
     ...                footer=viz.Footer(("whoscored",)))
     >>> guard_write(c, "outputs/charts/ws.png", private=False)
@@ -575,8 +587,15 @@ def guard_write(c: viz.Canvas, path: StrPath, *, private: bool) -> Path:
     ValueError: outputs/charts/ws.png: a WhoScored chart is private: pass private=True and a ...
     """
     path = Path(path)
-    texts = " ".join(" ".join(t.get_text().split()) for t in c.fig.texts)
-    if viz.ATTRIBUTION["whoscored"] in texts and not private:
+    if viz.FAMILY != viz.FONT_FAMILY or c.theme.family != viz.FONT_FAMILY:
+        files = ", ".join(viz.FONT_FILES.values())
+        raise ValueError(
+            f"{path}: drawn in {c.theme.family}, not {viz.FONT_FAMILY}: the vendored fonts "
+            f"({files} in {viz.FONT_DIR}) did not register (see the import warning)"
+        )
+    texts = " ".join(" ".join(t.get_text().split()) for t in c.fig.findobj(Text))
+    whoscored = "whoscored" in c.providers or viz.ATTRIBUTION["whoscored"] in texts
+    if whoscored and not private:
         raise ValueError(
             f"{path}: a WhoScored chart is private: pass private=True and a path under "
             f"{PRIVATE_DIR}"
@@ -587,3 +606,28 @@ def guard_write(c: viz.Canvas, path: StrPath, *, private: bool) -> Path:
     if problems := viz.check(c):
         raise ValueError(f"{path}: {len(problems)} chart check(s) failed: " + "; ".join(problems))
     return path
+
+
+def write_all(charts: Mapping[str, viz.Canvas], out: StrPath, *, private: bool) -> tuple[Path, ...]:
+    """Write every chart to ``out/<name>`` after every one passes :func:`guard_write`: nothing
+    is written when one fails. Returns the paths in ``charts`` order.
+
+    Raises
+    ------
+    ValueError
+        From :func:`guard_write`.
+
+    Examples
+    --------
+    >>> c = viz.canvas("light", "square", title="T", subtitle="S",
+    ...                footer=viz.Footer(("whoscored",)))
+    >>> write_all({"ws.png": c}, "outputs/charts", private=False)
+    Traceback (most recent call last):
+    ...
+    ValueError: outputs/charts/ws.png: a WhoScored chart is private: pass private=True and a ...
+    """
+    paths = [guard_write(c, Path(out) / name, private=private) for name, c in charts.items()]
+    for path, c in zip(paths, charts.values(), strict=True):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        viz.save(c, path)
+    return tuple(paths)

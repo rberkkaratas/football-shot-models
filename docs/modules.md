@@ -50,7 +50,8 @@ src/football_shot_models/
 
 src/football_shot_charts/   # CH1 render-only charts, a sibling package outside the cache hash
 ├── rows.py        # the row panel all charts share (dot, tick, band with caps), scale and tick
-│                  #   helpers, guard_write (git-ignored path, WhoScored private, viz.check)
+│                  #   helpers, write_all: the one writer (Inter, git-ignored path, WhoScored
+│                  #   private, viz.check)
 ├── shots.py       # team shot chart and player shot profile: zones, goals against xG with the
 │                  #   league-rate band, computed statement titles, stat strip, model level
 ├── keepers.py     # keeper (GSAx) chart: top and bottom keeper-seasons with intervals

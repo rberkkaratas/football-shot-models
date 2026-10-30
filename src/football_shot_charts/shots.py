@@ -65,20 +65,10 @@ NULLABLE: Final = frozenset({"body_part"})
 MIN_PITCH_PX: Final = 400
 PANEL_STEP_PX: Final = 8
 CAPTION_LINES: Final = 4  # the player's zone_bias sentence under the rows
-# the row panel lives in ``rows`` (one engine for every CH1 chart); its constants re-exported
-PANEL_PAD_PX: Final = rows.PANEL_PAD_PX
-MIN_TRACK_PX: Final = rows.MIN_TRACK_PX
-INNER_GAP_PX: Final = rows.INNER_GAP_PX
-KEY_SLOT_PX: Final = rows.KEY_SLOT_PX
-KEY_TEXT_GAP_PX: Final = rows.KEY_TEXT_GAP_PX
-KEY_GID: Final = rows.KEY_GID
-KEY_ITEM_GAP_PX: Final = rows.KEY_ITEM_GAP_PX
+# the row panel lives in ``rows`` (one engine for every CH1 chart)
 GIDS: Final = rows.Gids(band="band-league", cap="mark-band", tick="mark-xg", dot="mark-goals-dot")
-NoLayout = rows.NoLayout
-signed = rows.signed
 ZONE_HEADING: Final = "Goals and xG by zone"
 BODY_PART_HEADING: Final = "Goals and xG by body part"
-Rect = rows.Rect
 
 
 # --- Frames, lines and verdicts ---------------------------------------------------------------
@@ -377,7 +367,7 @@ def stats(
         viz.Stat(str(line.n), "Shots"),
         viz.Stat(str(line.goals), "Goals"),
         viz.Stat(f"{line.xg:.1f}", "xG"),
-        viz.Stat(signed(line.gap), "Goals \u2212 xG", f"SD {line.sd:.1f}"),
+        viz.Stat(rows.signed(line.gap), "Goals \u2212 xG", f"SD {line.sd:.1f}"),
         last,
     )
 
@@ -387,7 +377,7 @@ def model_level(
 ) -> str | None:
     """The footer sentence on the model's level over the rest of the league: "over-" or
     "under-predicts" only outside its noise band (``metrics.within``), else "is in line with";
-    ``None`` when the rest has no xG. ``subject`` opens it ("It" right after the model credit).
+    ``None`` when the rest has no xG. ``subject`` opens it.
 
     Examples
     --------
@@ -441,6 +431,50 @@ def caption(line: Line | None = None) -> str:
     return f"At the league's rate per zone these shots are worth {line.adj_xg:.1f} goals."
 
 
+def mispriced_zones(shots: pl.DataFrame, league: pl.DataFrame) -> tuple[str, ...]:
+    """The ``ZONE_LABELS`` of the zones where the rest of the league's goals fall outside the
+    model's band (``metrics.within`` on its Poisson-binomial SD), in ``ZONES`` order.
+
+    Examples
+    --------
+    >>> s = _example()
+    >>> mispriced_zones(s.head(1), s)  # the rest: 0 goals from 0.45 xG outside the box
+    ()
+    """
+    check_inputs(shots, league)
+    rest = _rest(shots, league).with_columns(zone())
+    out = []
+    for z in ZONES:
+        r = rest.filter(pl.col("zone") == z)
+        if not metrics.within(*metrics.poisson_binomial(r["is_goal"].to_numpy(),
+                                                        r["xg"].to_numpy())):  # fmt: skip
+            out.append(ZONE_LABELS[z])
+    return tuple(out)
+
+
+def unjudged_caption(lines: Sequence[Line], mispriced: Sequence[str]) -> str:
+    """The zone panel's sentence on a row that draws no band (under ``metrics.MIN_JUDGED_SHOTS``
+    shots) in a zone the model misprices on the rest of the league (:func:`mispriced_zones`):
+    its shots at the league's rate there (``Line.adj_xg``), so the misprice (the PL 2015/16
+    six-yard box) is not read as finishing; ``""`` when there is no such row.
+
+    Examples
+    --------
+    >>> six = Line("Six-yard box", 48, 9, 15.3, 3.0, 13.62, 3.0)
+    >>> unjudged_caption([six], ["Six-yard box"])
+    "Not judged (under 100 shots), at the league's rate in the zone: Six-yard box 13.6 goals."
+    >>> unjudged_caption([six], [])
+    ''
+    """
+    least = metrics.MIN_JUDGED_SHOTS
+    parts = [f"{ln.label} {ln.adj_xg:.1f} goals" for ln in lines
+             if ln.n < least and ln.label in mispriced]  # fmt: skip
+    if not parts:
+        return ""
+    return (f"Not judged (under {least} shots), at the league's rate in the zone: "
+            f"{'; '.join(parts)}.")  # fmt: skip
+
+
 # --- Layout -----------------------------------------------------------------------------------
 
 
@@ -469,14 +503,14 @@ def _scale(lines: Sequence[Line]) -> tuple[float, float]:
     return (0.0, top)
 
 
-def _on_figure(c: viz.Canvas, rect: Rect) -> Rect:
+def _on_figure(c: viz.Canvas, rect: rows.Rect) -> rows.Rect:
     left, bottom, width, height = c.body
     f = rows.fraction(c, rect)
     return (left + f[0] * width, bottom + f[1] * height, f[2] * width, f[3] * height)
 
 
 def _place_map(
-    c: viz.Canvas, rect: Rect, f: pl.DataFrame
+    c: viz.Canvas, rect: rows.Rect, f: pl.DataFrame
 ) -> tuple[Axes, npt.NDArray[np.bool_], float] | None:
     """Pitch, crop and marker scale at the top of the map block, the legend's room under it;
     ``None`` (nothing left drawn) when the pitch axes would be under ``MIN_PITCH_PX``.
@@ -505,7 +539,7 @@ def _place_map(
             mask = viz.crop_pitch(ax, x, y)
         area = viz.ink_scale(float(p[mask].sum()), ax)
         try:
-            need = c.legend_height(viz.shot_keys(area, t), c.legend_width(ax))
+            need = c.legend_height(viz.shot_keys(area), c.legend_width(ax))
         except ValueError:  # the keys need a third row under this map: the layout fails
             break
         if height + need <= rect[3]:
@@ -515,23 +549,23 @@ def _place_map(
     return None
 
 
-def _layouts(c: viz.Canvas, panel: rows.Panel) -> list[tuple[rows.Measured, Rect, Rect]]:
+def _layouts(c: viz.Canvas, panel: rows.Panel) -> list[tuple[rows.Measured, rows.Rect, rows.Rect]]:
     """Where the panel may go, in order: under the map (portrait only) when the map keeps
     ``MIN_PITCH_PX`` of height, then beside it at the narrowest inner width (``PANEL_STEP_PX``
     steps) at which the panel fits the body. Rects are body px ``(left, bottom, w, h)``."""
     w, h = viz.SIZES[c.size]
     bw, bh = c.body[2] * w, c.body[3] * h
-    out: list[tuple[rows.Measured, Rect, Rect]] = []
+    out: list[tuple[rows.Measured, rows.Rect, rows.Rect]] = []
     if c.size == "portrait":
-        under = rows.measure(c, panel, bw - 2 * PANEL_PAD_PX)
+        under = rows.measure(c, panel, bw - 2 * rows.PANEL_PAD_PX)
         if under is not None and bh - under.height - viz.GAP_PX >= MIN_PITCH_PX:
             top = under.height + viz.GAP_PX
             out.append((under, (0.0, 0.0, bw, under.height), (0.0, top, bw, bh - top)))
-    inner = float(MIN_TRACK_PX)
-    while inner <= bw - MIN_PITCH_PX - viz.GAP_PX - 2 * PANEL_PAD_PX:
+    inner = float(rows.MIN_TRACK_PX)
+    while inner <= bw - MIN_PITCH_PX - viz.GAP_PX - 2 * rows.PANEL_PAD_PX:
         side = rows.measure(c, panel, inner)
         if side is not None and side.height <= bh:
-            pw = inner + 2 * PANEL_PAD_PX
+            pw = inner + 2 * rows.PANEL_PAD_PX
             map_rect = (0.0, 0.0, bw - pw - viz.GAP_PX, bh)
             out.append((side, (bw - pw, bh - side.height, pw, side.height), map_rect))
             break
@@ -541,12 +575,12 @@ def _layouts(c: viz.Canvas, panel: rows.Panel) -> list[tuple[rows.Measured, Rect
 
 def _arrange(
     c: viz.Canvas, panel: rows.Panel, shots: pl.DataFrame
-) -> tuple[rows.Measured, Rect, tuple[Axes, npt.NDArray[np.bool_], float]]:
+) -> tuple[rows.Measured, rows.Rect, tuple[Axes, npt.NDArray[np.bool_], float]]:
     """The first layout whose map keeps its pitch, with the map placed."""
     for measured, panel_rect, map_rect in _layouts(c, panel):
         if (placed := _place_map(c, map_rect, shots)) is not None:
             return measured, panel_rect, placed
-    raise NoLayout(f"no layout fits the {c.size} canvas (pitch >= {MIN_PITCH_PX} px)")
+    raise rows.NoLayout(f"no layout fits the {c.size} canvas (pitch >= {MIN_PITCH_PX} px)")
 
 
 def _note(excluded: Sequence[str], hidden: pl.DataFrame | None) -> str | None:
@@ -561,8 +595,9 @@ def _note(excluded: Sequence[str], hidden: pl.DataFrame | None) -> str | None:
 
 def _with_level(footer: viz.Footer, shots: pl.DataFrame, league: pl.DataFrame) -> viz.Footer:
     """The footer with :func:`model_level` after the model credit: the footer's sentence about
-    the model (the not-shown note is capped at 2 lines by core and can fill them)."""
-    level = model_level(shots, league, "It" if footer.model else "The model")
+    the model (the not-shown note is capped at 2 lines by core and can fill them). Its subject
+    is always "The model": on a team chart "It" could be read as the team (audit A2)."""
+    level = model_level(shots, league)
     model = ". ".join(x for x in (footer.model, level) if x)
     return dataclasses.replace(footer, model=model or None)
 
@@ -595,7 +630,7 @@ def _chart(
     try:
         return _settle(shots, title, subtitle, strip, heading, lines, text, theme, size, footer,
                        excluded, logo)  # fmt: skip
-    except NoLayout:
+    except rows.NoLayout:
         if not strip:
             raise
     return _settle(shots, title, subtitle, (), heading, lines, text, theme, size, footer,
@@ -625,7 +660,7 @@ def _settle(
         if counted == note:
             x, y, p, g = (shots[k].to_numpy() for k in ("x", "y", "xg", "is_goal"))
             viz.draw_shots(ax, x[mask], y[mask], p[mask], g[mask], c.theme, area_per_xg=area)
-            c.legend(viz.shot_keys(area, c.theme), ax=ax)
+            c.legend(viz.shot_keys(area), ax=ax)
             gid = "zones" if heading == ZONE_HEADING else "body-parts"
             rows.draw_panel(c, panel_rect, measured, scale=_scale(lines), gid=gid)
             return c
@@ -684,7 +719,8 @@ def team_chart(
     lines = table(shots, league, "zone")
     return _chart(
         shots, title=team_title(shots, league), subtitle=f"{team} · {context}",
-        strip=stats(shots, league, per="xg"), heading=ZONE_HEADING, lines=lines, text=caption(),
+        strip=stats(shots, league, per="xg"), heading=ZONE_HEADING, lines=lines,
+        text=unjudged_caption(lines, mispriced_zones(shots, league)),
         theme=theme, size=size, footer=_with_level(footer, shots, league), excluded=excluded,
         logo=logo,
     )  # fmt: skip

@@ -50,11 +50,12 @@ def keeper_view(named: bool = True) -> Any:
     team = [False, True, False, False, False, False, False, False, False]
     comp = ["Alpha League 2015/2016", "Tango Cup 2018", "Bravo Cup 2019"] * 3
     rank = list(range(1, 10))
+    flag = f" {keepers.FLAG}"
     if named:
-        label = [f"Keeper {chr(65 + i)}{' †' if t else ''}" for i, t in enumerate(team)]
+        label = [f"Keeper {chr(65 + i)}{flag if t else ''}" for i, t in enumerate(team)]
         sub = comp
     else:
-        label = [f"#{r} · {c}{' †' if t else ''}" for r, c, t in zip(rank, comp, team, strict=True)]
+        label = [f"#{r} · {c}{flag if t else ''}" for r, c, t in zip(rank, comp, team, strict=True)]
         sub = [f"{n} shots" for n in shots_]
     low = [s - h for s, h in zip(shrunk, half, strict=True)]
     high = [s + h for s, h in zip(shrunk, half, strict=True)]
@@ -137,8 +138,8 @@ def _charmap(t: Any) -> set[int]:
              "xgotcomparison-light"],
 )  # fmt: skip
 def test_glyphs_in_font(case: str, family: str, tmp_path: Path) -> None:
-    """Every character of every text (titles, †, U+2212, ·, ş in the footer) is in the font the
-    text is drawn with: no missing-glyph boxes in Inter or the fallback."""
+    """Every character of every text (titles, the flag, U+2212, ·, ş in the footer) is in the
+    font the text is drawn with: no missing-glyph boxes in Inter or the fallback."""
     logo = cc.write_logo(tmp_path / "logo.png")
     theme = case.split("-")[1]
     t = viz.THEMES[theme] if family == "Inter" else cc.fallback(theme)
@@ -151,6 +152,8 @@ def test_glyphs_in_font(case: str, family: str, tmp_path: Path) -> None:
         seen += text.get_text()
     assert "ş" in seen and "·" in seen  # precondition: the footer and a separator were checked
     if case.startswith("keepers"):
-        assert "†" in seen
+        from football_shot_charts import keepers
+
+        assert keepers.FLAG in seen
     if case.startswith(("comparison", "keepers")):
         assert "−" in seen

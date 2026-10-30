@@ -828,15 +828,16 @@ def test_benchmark_note_iff_row(xgot_fits: dict[str, Any], monkeypatch: pytest.M
 
 
 def test_benchmark_note_not_on_calibration(
-    xgot_fits: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    xgot_fits: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Result audit A1: a benchmark view's calibration chart draws no StatsBomb xG, so its footer
     does not carry ``BENCHMARK_NOTE``; the comparison chart, which draws the row, does (both
-    themes, through ``model_charts``)."""
+    themes, through ``model_charts``). The synthetic logo, so a fresh clone passes (run8-ch1
+    item 14: ``logo=None`` read the git-ignored real logo)."""
     _forced_head(monkeypatch)
     f, cands = _sb_candidates(xgot_fits)
     assert render.BENCHMARK_NOTE in render.xg_view(f, cands).notes  # precondition
-    charts = render.model_charts(f, cands, logo=None)
+    charts = render.model_charts(f, cands, logo=cc.write_logo(tmp_path / "logo.png"))
     for theme in viz.THEMES:
         cal = " ".join(t.get_text() for t in cc.by_gid(charts[f"calibration-xg-{theme}.png"],
                                                          viz.NOTE_GID))  # fmt: skip
@@ -1288,3 +1289,32 @@ def test_manifest_digest_order_and_message(
     rc, _, err = _run(argv)
     assert rc == 1 and len(calls) == 1 and harness["fits_called"] == []
     assert other[:16] in err and theirs[:16] in err, err
+
+
+# ---- run8-ch1 assessment fixes -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [None, float("nan")])
+def test_bins_refuse_a_null_match(bad: object) -> None:
+    """Item 12 (R3): a null or NaN group is refused by name, never resampled as one more match
+    (it would narrow the band the title counts against)."""
+    y, p, groups = _bin_inputs()
+    g = groups.astype(object)
+    g[4] = bad
+    with pytest.raises(ValueError, match="1 null or NaN key"):
+        render.calibration_bins(y.astype(np.int64), p, g)
+
+
+def test_view_judges_the_level_by_the_band_rule(
+    xgot_fits: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Item 8: ``_view`` carries ``held_level_ok = metrics.within(gap, SD)`` of the split's
+    outcomes against Σ prediction and ``band_sds = metrics.BAND_SDS``, both read when called."""
+    f = xgot_fits["fits"]["statsbomb"]
+    view = render.xgot_view(f)
+    assert view.held_level_ok is metrics.within(view.held_gap, view.held_sd)
+    assert view.band_sds == metrics.BAND_SDS
+    assert view.held_gap != 0  # precondition: a zero-width band fails it
+    monkeypatch.setattr(metrics, "BAND_SDS", 0.0)
+    tight = render.xgot_view(f)
+    assert tight.held_level_ok is False and tight.band_sds == 0.0

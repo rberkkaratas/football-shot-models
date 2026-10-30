@@ -19,7 +19,8 @@ drawn; the subtitle is the card's reliability verdict (``gsax_cards.caveat``); t
 the keeper spread beside the median interval width, which is why nothing clears 0.
 
 Team-selected seasons are rated against the model, not their league (δ = 0, PM 2026-10-28):
-they are flagged (``team_selected="flag"``) with the card's selected-side gap in the footer,
+they are flagged (``team_selected="flag"``, with ``FLAG``: the card's † reads as "+" at chart
+size, beside signed values) with the card's selected-side gap in the footer,
 or left out and rated by the keeper model fitted without them (``"drop"``, Berk's publishing
 switch). Keeper names appear only on StatsBomb charts (Rule 1): a WhoScored view is unnamed,
 its labels rank-prefixed competition-seasons.
@@ -48,8 +49,9 @@ RECON_TOL: Final = 1e-9  # goals: the reconstructed shrunk total against the mod
 SIZE: Final = "portrait"
 MODEL_TEXT: Final = "xGOT: own model, fitted without the rated season"
 GID: Final = "keepers"
-# the one pre-write guard (``rows.guard_write``), here so gsax_cards imports this module only
-guard_write = rows.guard_write
+FLAG: Final = "*"  # a team-selected row; never "†", which reads as "+" beside signed values
+# the one chart writer (``rows.write_all``), here so gsax_cards imports this module only
+write_all = rows.write_all
 _ROW_SCHEMA: Final = pl.Schema({
     "rank": pl.Int64(), "label": pl.String(), "sublabel": pl.String(),
     "team_selected": pl.Boolean(), "shots": pl.Int64(), "shrunk": pl.Float64(),
@@ -88,7 +90,7 @@ class KeeperView:
     left_out : int
         Team-selected rows left out (drop mode).
     flag : str
-        The mark of a team-selected row.
+        The mark of a team-selected row (``FLAG``).
     """
 
     rows: pl.DataFrame
@@ -106,7 +108,7 @@ class KeeperView:
     named: bool
     mode: Mode
     left_out: int
-    flag: str = "†"
+    flag: str = FLAG
 
 
 def shrunk_interval(model: KeeperModel, rated: pl.DataFrame) -> pl.DataFrame:
@@ -275,7 +277,7 @@ def title(view: KeeperView) -> str:
     Examples
     --------
     >>> title(_example_view())
-    'After shrinkage, 1 of 4 keeper-seasons differs clearly from average (0 without †)'
+    'After shrinkage, 1 of 4 keeper-seasons differs clearly from average (0 without *)'
     """
     if view.k == 0:
         return f"After shrinkage, none of {view.n} keeper-seasons differs clearly from average"
@@ -291,7 +293,7 @@ def strip(view: KeeperView) -> tuple[viz.Stat, ...]:
     Examples
     --------
     >>> [s.note for s in strip(_example_view())]
-    ['model estimate, SD per 100 · n/a without †', '90% width, per 100 shots']
+    ['model estimate, SD per 100 · n/a without *', '90% width, per 100 shots']
     """
     # at the bound "SD per 100" gives way: the note must fit its column in both fonts
     est = "model estimate at its bound" if view.at_bound else "model estimate, SD per 100"
@@ -308,13 +310,14 @@ def strip(view: KeeperView) -> tuple[viz.Stat, ...]:
 
 
 def footer_note(view: KeeperView) -> str | None:
-    """The † sentence when a drawn row is team-selected (flag mode), the left-out count (drop
-    mode), else none.
+    """The flag's sentence when a drawn row is team-selected (flag mode), the left-out count
+    (drop mode), else none. The gap is the selected sides' keepers over every team-selected
+    season (``gsax_cards.team_gap_100``), so the sentence names that group, not the drawn rows.
 
     Examples
     --------
     >>> footer_note(_example_view())
-    '† team-selected season: rated against the model, not its league; as a group these keepers sit 1.2 per 100 above it'
+    "* team-selected season: rated against the model, not its league; the selected sides' keepers sit 1.2 per 100 above it"
     """  # noqa: E501
     if view.mode == "drop":
         return f"{view.left_out} team-selected keeper-seasons left out"
@@ -324,7 +327,8 @@ def footer_note(view: KeeperView) -> str | None:
     if view.team_gap_100 is None:
         return out
     side = "above" if view.team_gap_100 >= 0 else "below"
-    return f"{out}; as a group these keepers sit {abs(view.team_gap_100):.1f} per 100 {side} it"
+    return (f"{out}; the selected sides' keepers sit {abs(view.team_gap_100):.1f} per 100 "
+            f"{side} it")  # fmt: skip
 
 
 def shown(view: KeeperView) -> pl.DataFrame:
@@ -350,16 +354,13 @@ def panel(view: KeeperView) -> tuple[rows.Panel, tuple[float, float]]:
     (['Row', 'Row', 'Row', 'Row'], '+1.5')
     """
 
-    def row(r: dict[str, object]) -> rows.Row:
-        shrunk = float(r["shrunk"])  # type: ignore[arg-type]
-        return rows.Row(
-            label=str(r["label"]), sublabel=str(r["sublabel"]), value=rows.signed(shrunk),
-            point=shrunk, low=float(r["low"]), high=float(r["high"]),  # type: ignore[arg-type]
-            tick=float(r["unshrunk"]),  # type: ignore[arg-type]
-        )  # fmt: skip
-
+    cols = ("label", "sublabel", "shrunk", "low", "high", "unshrunk")
+    items: list[rows.Row | rows.Divider] = [
+        rows.Row(label=str(label), sublabel=str(sub), value=rows.signed(float(shrunk)),
+                 point=float(shrunk), low=float(low), high=float(high), tick=float(raw))
+        for label, sub, shrunk, low, high, raw in shown(view).select(cols).iter_rows()
+    ]  # fmt: skip
     r = view.rows
-    items: list[rows.Row | rows.Divider] = [row(x) for x in shown(view).iter_rows(named=True)]
     if r.height > 2 * TOP_N:
         items.insert(TOP_N, _divider(r.slice(TOP_N, r.height - 2 * TOP_N)))
     drawn = shown(view)

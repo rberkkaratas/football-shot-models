@@ -308,8 +308,8 @@ def _note(c: viz.Canvas) -> str:
 
 @pytest.mark.parametrize(
     ("gap", "tail"),
-    [(4.07, "; as a group these keepers sit 4.1 per 100 above it"),
-     (-2.04, "; as a group these keepers sit 2.0 per 100 below it"),
+    [(4.07, "; the selected sides' keepers sit 4.1 per 100 above it"),
+     (-2.04, "; the selected sides' keepers sit 2.0 per 100 below it"),
      (None, "")],
 )  # fmt: skip
 def test_flag_note_number(sb_base: Any, logo: Path, gap: float | None, tail: str) -> None:

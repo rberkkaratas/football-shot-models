@@ -191,7 +191,7 @@ E2's minimum applies to every league-level offset (PM E3), not to a keeper's own
 with penalties minus GSAx without is the keeper's penalty GSAx; shoot-outs are not rated. Keeper totals sum to the
 league sum exactly; each keeper-season has the analytic SD √Σ q(1 − q) and a 90% match-bootstrap
 interval. Team-selected seasons (one club's matches) rate the selected keeper against the
-opponents' finishing, so the StatsBomb table and chart flag them (†).
+opponents' finishing, so the StatsBomb table flags them (†) and the chart (*).
 
 **goal_z sensitivity (StatsBomb, PR1).** A projected save's `goal_z` is where the keeper met the
 ball, not its height at the line. The GSAx card prints two sensitivities beside the headline,

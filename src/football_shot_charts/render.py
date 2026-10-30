@@ -4,18 +4,22 @@
 spec is evaluated through the prediction cache with an estimator that refuses to fit. The
 keeper and model-card charts read what the existing public functions return
 (:func:`fits`: ``xgot.fit`` and ``gsax.fit``; :func:`candidates`: the xG candidates) inside
-:func:`read_only`, which turns every cache miss and every cache write into an error. The one
-fit that guard cannot see is existing behaviour: ``xgot.fit`` fits the shoot-out penalty xGOT
-LR once per provider, uncached, on every call (as every warm ``make xgot`` / ``make gsax`` /
-``make reproduce`` does); no chart draws it (PM E1 (a); cached in the maintenance round).
+:func:`read_only`, which turns every cache miss and every cache write into an error. Two
+estimations that guard cannot see are existing behaviour, run on every call as every warm
+``make xgot`` / ``make gsax`` / ``make reproduce`` runs them: ``xgot.fit`` fits the shoot-out
+penalty xGOT LR once per provider, uncached (drawn by no chart; PM E1 (a)), and ``gsax.fit``
+re-estimates the keeper model (τ̂ by ``fit_keeper_model``, plus the ``next_season`` rolling
+fits), which the keeper chart draws. Both are deterministic, so no number moves; caching them is
+in the maintenance round.
 
 This is the only module that reads ``football_shot_models`` types for the model-card charts:
 :func:`calibration_bins`, :func:`xg_view` and :func:`xgot_view` turn evaluations into the
-plain :class:`~football_shot_charts.diagnostics.ModelView`. :func:`write` refuses a WhoScored
-chart outside the private folder, any path git would track, and any chart that fails
-``viz.check``. ``python -m football_shot_charts.render`` (``make charts``) writes the 18
-StatsBomb charts into the git-ignored ``outputs/charts``; ``--private`` (``make
-charts-private``) writes the 10 WhoScored ones into ``data/charts/private``.
+plain :class:`~football_shot_charts.diagnostics.ModelView`. Every file goes through
+``rows.write_all``, which refuses a chart not drawn in Inter, a WhoScored chart outside the
+private folder, any path git would track, and any chart that fails ``viz.check``.
+``python -m football_shot_charts.render`` (``make charts``) writes the 18 StatsBomb charts into
+the git-ignored ``outputs/charts``; ``--private`` (``make charts-private``) writes the 10
+WhoScored ones into ``data/charts/private``.
 """
 
 from __future__ import annotations
@@ -38,7 +42,7 @@ import polars as pl
 from football_core import viz
 from football_core.io import snapshot, statsbomb
 
-from football_shot_charts import diagnostics, rows
+from football_shot_charts import diagnostics, keepers, rows
 from football_shot_charts import shots as charts
 from football_shot_charts.diagnostics import GainRow, ModelView
 from football_shot_models import (
@@ -254,8 +258,8 @@ def model_text(context: str, quantity: str = "xG") -> str:
 
 
 def write(c: viz.Canvas, path: StrPath, *, private: bool = False) -> Path:
-    """Write a chart only where it may go, and only when it passes every machine check
-    (``rows.guard_write``).
+    """One chart through ``rows.write_all``: written only where it may go, and only when it
+    passes every machine check.
 
     Raises
     ------
@@ -272,9 +276,8 @@ def write(c: viz.Canvas, path: StrPath, *, private: bool = False) -> Path:
     ...
     ValueError: ...: a WhoScored chart is private: pass private=True and a path under data/...
     """
-    path = rows.guard_write(c, path, private=private)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return viz.save(c, path)
+    path = Path(path)
+    return rows.write_all({path.name: c}, path.parent, private=private)[0]
 
 
 def slug(name: str) -> str:
@@ -338,8 +341,10 @@ def _hinted(provider: str, e: CacheMiss) -> CacheMiss:
 
 def fits(provider: str, *, cache: StrPath | None) -> tuple[xgot.XgotFit, gsax.GsaxFit]:
     """``xgot.fit`` and ``gsax.fit`` of one provider from the warm cache, inside
-    :func:`read_only`: no xG, xGOT or GSAx estimator is fitted (only ``xgot.fit``'s uncached
-    shoot-out penalty LR, PM E1 (a)).
+    :func:`read_only`: no xG or xGOT prediction is refitted. Not cached, and run on every call
+    as every warm ``make gsax`` runs them: ``xgot.fit``'s shoot-out penalty LR (PM E1 (a)) and
+    ``gsax.fit``'s keeper-model estimation (τ̂ and the ``next_season`` rolling fits), which the
+    keeper chart draws; both deterministic.
 
     Raises
     ------
@@ -537,14 +542,16 @@ def _view(
     notes: tuple[str, ...],
 ) -> ModelView:
     yd, yh = evaluation.labels(dev), evaluation.labels(held)
-    gap = metrics.poisson_binomial(yh, head.holdout_p)
+    gap = metrics.poisson_binomial(yh, head.holdout_p)  # (Σ p − goals, SD)
     return ModelView(
         quantity=quantity, outcome="goal", unit=unit, split=SPLITS[f.setup.split],
         contexts=contexts(dev, held, f.xg.matches),
         cv_bins=calibration_bins(yd, head.oof, dev["match_id"].to_numpy()),
         held_bins=calibration_bins(yh, head.holdout_p, held["match_id"].to_numpy()),
         cv_n=dev.height, held_n=held.height, cv_slope=head.cv.cal_slope, held_gap=-gap[0],
-        held_sd=gap[1], cv_log_loss=head.cv.log_loss, held_log_loss=head.holdout.log_loss,
+        held_sd=gap[1], held_level_ok=metrics.within(gap[0], gap[1]),
+        band_sds=metrics.BAND_SDS, cv_log_loss=head.cv.log_loss,
+        held_log_loss=head.holdout.log_loss,
         rows=tuple(r for r, _ in drawn),
         extras=tuple(diagnostics.Extra(label, c.cv.gain, c.holdout.gain) for label, c in extras),
         level=metrics.GAIN_LEVEL,
@@ -689,15 +696,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _write_all(charts_: Mapping[str, viz.Canvas], out: Path, *, private: bool) -> None:
-    """Guard every chart, then write them all: nothing is written when one fails."""
-    paths = [rows.guard_write(c, out / name, private=private) for name, c in charts_.items()]
-    for path, c in zip(paths, charts_.values(), strict=True):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        print(f"chart: {viz.save(c, path)}")
+    """``rows.write_all`` (nothing is written when one chart fails), then the printed lines."""
+    for path in rows.write_all(charts_, out, private=private):
+        print(f"chart: {path}")
     print("checks: 0 problems")
 
 
-def _mode(args: argparse.Namespace) -> Any:
+def _mode(args: argparse.Namespace) -> keepers.Mode:
     return "drop" if args.drop_team_selected else "flag"
 
 

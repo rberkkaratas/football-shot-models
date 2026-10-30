@@ -14,6 +14,7 @@ import test_charts_shots as tcs
 from football_core import viz
 
 from football_shot_charts import render, shots
+from football_shot_charts import rows as rw
 from football_shot_models import metrics
 
 REPO = Path(__file__).resolve().parents[1]
@@ -100,13 +101,13 @@ def test_side_panel_takes_the_narrowest_width(logo: Path) -> None:
         return max(max(c.measure(a, "label")[0], c.measure(b, "caption")[0]) for a, b in pairs)
 
     items = shots.key(lines)
-    key_w = sum(shots.KEY_SLOT_PX[g] + shots.KEY_TEXT_GAP_PX + c.measure(t, "caption")[0]
-                for g, t in items) + shots.KEY_ITEM_GAP_PX * (len(items) - 1)  # fmt: skip
+    key_w = sum(rw.KEY_SLOT_PX[g] + rw.KEY_TEXT_GAP_PX + c.measure(t, "caption")[0]
+                for g, t in items) + rw.KEY_ITEM_GAP_PX * (len(items) - 1)  # fmt: skip
     need = max(c.measure(shots.ZONE_HEADING, "heading")[0], key_w,
-               block(labels) + shots.INNER_GAP_PX + block(values), shots.MIN_TRACK_PX)  # fmt: skip
+               block(labels) + rw.INNER_GAP_PX + block(values), rw.MIN_TRACK_PX)  # fmt: skip
     r = cc.renderer(c)
-    inner = _panel(c).get_window_extent(r).width - 2 * shots.PANEL_PAD_PX  # type: ignore[attr-defined]
-    steps = (inner - shots.MIN_TRACK_PX) / shots.PANEL_STEP_PX
+    inner = _panel(c).get_window_extent(r).width - 2 * rw.PANEL_PAD_PX  # type: ignore[attr-defined]
+    steps = (inner - rw.MIN_TRACK_PX) / shots.PANEL_STEP_PX
     assert steps == pytest.approx(round(steps), abs=0.01)  # on the step grid
     assert inner - shots.PANEL_STEP_PX < need <= inner
 

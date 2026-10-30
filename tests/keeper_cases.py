@@ -208,7 +208,8 @@ def model_view(**over: Any) -> Any:
         "contexts": ("39 competition-seasons", "Test League 2015/2016"),
         "cv_bins": band_bins(XG_MEANS), "held_bins": band_bins(XG_MEANS, outside=(9,)),
         "cv_n": 89_895, "held_n": 9_816, "cv_slope": 1.0086, "held_gap": -50.0,
-        "held_sd": 26.4, "cv_log_loss": 0.2641, "held_log_loss": 0.2702, "rows": rows,
+        "held_sd": 26.4, "held_level_ok": True, "band_sds": 2.0, "cv_log_loss": 0.2641,
+        "held_log_loss": 0.2702, "rows": rows,
         "extras": (), "level": 0.95, "n_boot": 2000, "notes": (),
     }  # fmt: skip
     return dg.ModelView(**{**base, **over})

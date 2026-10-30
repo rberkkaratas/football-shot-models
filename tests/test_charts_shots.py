@@ -17,6 +17,7 @@ import pytest
 from football_core import pitch, viz
 from hypothesis import given, settings
 
+from football_shot_charts import rows as rw
 from football_shot_charts import shots
 from football_shot_models import metrics
 
@@ -234,7 +235,7 @@ def test_band_centres_on_league_rate(logo: Path) -> None:
     assert cc.centre_x_px(xg_tick, r) == pytest.approx(cc.data_x_px(band, 50.0), abs=2.0)
     assert cc.centre_x_px(dot, r) == pytest.approx(cc.data_x_px(band, 61.0), abs=2.0)
     track = {"band-league", "mark-band", "mark-xg", "mark-goals-dot"}
-    key = {"mark-shots", "mark-goals", "mark-key", shots.KEY_GID, "band-key"}
+    key = {"mark-shots", "mark-goals", "mark-key", rw.KEY_GID, "band-key"}
     drawn = (cc.gids(c, "mark-") | cc.gids(c, "band-")) - key
     assert drawn <= track, drawn - track
 
@@ -302,14 +303,14 @@ LEVELS = [
 def test_model_level_note(goals: int, expected: str, logo: Path) -> None:
     """Audit A2: the model's level on the rest of the league is a footer sentence after the
     model credit on both charts, its verb from ``metrics.within`` (7 goals off: outside 2 SD);
-    no rest, no sentence. The not-shown note stays as it was."""
+    no rest, no sentence. The not-shown note stays as it was. Its subject is "The model" after
+    the credit too (run8-ch1 item 20: "It" could be read as the team)."""
     other = cc.block(40, xg=0.5, goals=goals, team=cc.OTHER, player="sb:9001")
     s, league = cc.team_league(cc.block(10, xg=0.3, goals=3), other)
     assert shots.model_level(s, league) == expected
-    after_credit = expected.replace("The model ", "It ", 1)  # right after the model credit
     for chart in (team, player):
         c = chart(s, league, logo)
-        assert credit(c) == f"Data: StatsBomb · {cc.FOOTER.model}. {after_credit}"
+        assert credit(c) == f"Data: StatsBomb · {cc.FOOTER.model}. {expected}"
         assert cc.footer_note(c) is None
     assert credit(team(s, league, logo, footer=viz.Footer(("statsbomb",)))) == (
         f"Data: StatsBomb · {expected}"  # no model credit: the sentence names the model
@@ -674,7 +675,7 @@ def _layout_branches(c: viz.Canvas) -> set[str]:
     box = panel.get_window_extent(r)
     return {
         "under" if box.y1 <= pitch_ax.y0 else "side",
-        "wide" if track.x0 > box.x0 + shots.PANEL_PAD_PX + 1 else "stacked",
+        "wide" if track.x0 > box.x0 + rw.PANEL_PAD_PX + 1 else "stacked",
         "strip" if cc.styled(c, "stat_value") else "no-strip",
         *(["legend-split"] if any("\n" in t.get_text() for t in cc.styled(c, "legend")) else []),
     }
@@ -690,3 +691,33 @@ def test_worst_case_reaches_every_layout_branch(logo: Path) -> None:
         theme = "light" if family == "inter" else cc.fallback("light")
         seen |= _layout_branches(_worst_chart(chart, verdict, logo, theme=theme, size=size))
     assert seen == {"under", "side", "wide", "stacked", "strip", "no-strip", "legend-split"}
+
+
+# ---- run8-ch1 assessment fixes -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("rest_goals", "team_n", "shown"), [(80, 48, True), (98, 48, False),
+                                                             (80, 100, False)])  # fmt: skip
+def test_unjudged_row_gets_the_league_rate(
+    rest_goals: int, team_n: int, shown: bool, logo: Path
+) -> None:
+    """Item 9: a zone row under ``MIN_JUDGED_SHOTS`` (no band) in a zone the model misprices on
+    the rest of the league gets a caption with its shots at the league's rate there
+    (``Line.adj_xg``: 15.36 xG x 80/100 = 12.3 goals, Leicester's six-yard case); none when the
+    rest is inside its band (98 of 100) or the row is judged."""
+    team_rows = cc.block(team_n, xg=0.32, goals=9, zone="six_yard") + cc.block(
+        120, xg=0.1, goals=12, zone="rest_of_box")  # fmt: skip
+    rest = cc.block(200, xg=0.5, goals=rest_goals, team=cc.OTHER, player="sb:9001",
+                    zone="six_yard") + cc.block(100, xg=0.1, goals=10, team=cc.OTHER,
+                                               player="sb:9001")  # fmt: skip
+    s, league = cc.team_league(team_rows, rest)
+    # precondition: the rest's six-yard gap is outside 2 SD at 80 goals (z 2.8), inside at 98
+    assert (shots.mispriced_zones(s, league) == ("Six-yard box",)) is (rest_goals == 80)
+    six = next(ln for ln in shots.table(s, league, "zone") if ln.label == "Six-yard box")
+    c = team(s, league, logo)
+    assert viz.check(c) == []
+    sentence = f"Six-yard box {six.adj_xg:.1f} goals"
+    assert (sentence in cc.all_text(c)) is shown
+    if shown:
+        assert six.adj_xg == pytest.approx(0.32 * team_n * rest_goals / 100)
+        assert "Six-yard box 12.3 goals" in cc.all_text(c)
