@@ -20,6 +20,10 @@ football-core = { path = "../football-core", editable = true }
 requires = ["uv_build>=0.11.16,<0.12.0"]
 build-backend = "uv_build"
 
+[tool.uv.build-backend]
+# football_shot_charts sits outside the prediction cache's hash (render-only, PM CH1 E3)
+module-name = ["football_shot_models", "football_shot_charts"]
+
 [dependency-groups]
 dev = [
     "hypothesis>=6.100.0",

@@ -100,3 +100,8 @@ nav:
       - season_out: api/season_out.md
       - gsax: api/gsax.md
       - gsax_cards: api/gsax_cards.md
+      - charts.shots: api/charts_shots.md
+      - charts.render: api/charts_render.md
+      - charts.rows: api/charts_rows.md
+      - charts.keepers: api/charts_keepers.md
+      - charts.diagnostics: api/charts_diagnostics.md

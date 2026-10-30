@@ -45,8 +45,17 @@ src/football_shot_models/
 │                  #   match-bootstrap CI, hierarchical keeper model, next-season test, stability;
 │                  #   pure gsax.fit -> GsaxFit; PR1: penalty δ per source, team-selected
 │                  #   seasons at δ = 0, goal_z sensitivity (1 yd line subset, z-free refit)
-└── gsax_cards.py  # MS6 render-only: GSAx and keeper-model cards, StatsBomb keeper chart (git-
-                   #   ignored, with the logo), README block, CLI
+└── gsax_cards.py  # MS6 render-only: GSAx and keeper-model cards, README block, CLI; CH1: the
+                   #   keeper charts (light, dark; git-ignored, with the logo) and their digests
+
+src/football_shot_charts/   # CH1 render-only charts, a sibling package outside the cache hash
+├── rows.py        # the row panel all charts share (dot, tick, band with caps), scale and tick
+│                  #   helpers, guard_write (git-ignored path, WhoScored private, viz.check)
+├── shots.py       # team shot chart and player shot profile: zones, goals against xG with the
+│                  #   league-rate band, computed statement titles, stat strip, model level
+├── keepers.py     # keeper (GSAx) chart: top and bottom keeper-seasons with intervals
+├── diagnostics.py # model-card visuals: calibration diagram, log-loss gain comparison
+└── render.py      # warm-cache reads (no fit), views, file names, `make charts` CLI
 ```
 
 | Module | Status | Milestone |
@@ -72,7 +81,12 @@ src/football_shot_models/
 | `season_out` | ✅ Done (moved from `xgot`; competition-season folds for both providers, z-free refit) | MS6, PR1 |
 | `xgot_cards` | ✅ Done (render-only, split from `xgot`) | MS6 |
 | `gsax` | ✅ Done | P3.1–P3.3 (MS6); PR1 (penalty δ per source, team-selected seasons at δ = 0, goal_z sensitivity, `assemble`, `season_flags`) |
-| `gsax_cards` | ✅ Done (render-only) | P3.1–P3.3 (MS6), PR1 (card v2) |
+| `gsax_cards` | ✅ Done (render-only) | P3.1–P3.3 (MS6), PR1 (card v2), CH1 (keeper charts in both themes, PNG digests on the card) |
+| `football_shot_charts.rows` | ✅ Done (outside the hash) | CH1 |
+| `football_shot_charts.shots` | ✅ Done (outside the hash) | CH1 |
+| `football_shot_charts.keepers` | ✅ Done (outside the hash) | CH1 |
+| `football_shot_charts.diagnostics` | ✅ Done (outside the hash) | CH1 |
+| `football_shot_charts.render` | ✅ Done (outside the hash; `make charts`, `make charts-private`) | CH1 |
 
 Shared loading, the canonical shot table, snapshots and charts come from `football-core`
 (`io.statsbomb`, `schema`, `io.snapshot`, `viz`).
@@ -97,7 +111,13 @@ make statsbomb-logo  # once (needs the network): the logo every StatsBomb chart 
                      # into the git-ignored data/raw cache
 make gsax            # uv run python -m football_shot_models.gsax_cards --provider both -> four
                      # goalkeeper cards, the README block and the git-ignored StatsBomb keeper
-                     # chart data/charts/gsax-keepers.svg; run after xgot
+                     # charts data/charts/gsax-keepers-{light,dark}.png; run after xgot
+make charts          # CH1: 18 StatsBomb charts (team shot chart and player profile of
+                     # CHART_TEAM / --team-name, keeper chart, xG and xGOT calibration and
+                     # comparison; light and dark) into the git-ignored outputs/charts, from the
+                     # warm cache only (no fit); run after xg-models, xgot and gsax
+make charts-private  # CH1, private: the 10 WhoScored charts (unnamed, no logo) into the
+                     # git-ignored data/charts/private; never committed or published
 make reproduce       # regenerate every card and the README blocks and compare them byte for
                      # byte (fails, rather than skips, without either snapshot or v0); the xGOT
                      # tests run last and reuse the xG entries the earlier files cached

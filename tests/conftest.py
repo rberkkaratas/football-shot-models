@@ -20,6 +20,47 @@ import polars as pl
 import pytest
 import xg_cases as xc
 
+EXPECT_WARM = "FSM_EXPECT_WARM"  # CH1 keeper-model-charts §6: a render-only round is warm
+
+
+def expect_warm_guard(mp: pytest.MonkeyPatch, root: Path | None = None) -> None:
+    """Make every ``PredictionCache.save`` into the real cache (``root``, default the repo's
+    ``data/cache``) fail with an ``AssertionError`` naming the entry: with ``FSM_EXPECT_WARM=1``
+    the reproduce session asserts that no real-data fit writes the cache (``cache.written ==
+    []`` after each fit), i.e. that no hashed module changed. Tmp caches of tests are left
+    alone."""
+    from football_shot_models import cache
+
+    real = cache.PredictionCache.save
+    guarded = Path(root if root is not None else REPO / "data" / "cache").resolve()
+
+    def refuse(self: Any, name: str, *args: Any, **kwargs: Any) -> None:
+        if Path(self.dir).resolve().is_relative_to(guarded):
+            raise AssertionError(
+                f"{EXPECT_WARM}=1: a fit wrote the cache entry {name!r}; the run is not warm (a "
+                "hashed module changed, or the cache is stale)"
+            )
+        real(self, name, *args, **kwargs)
+
+    mp.setattr(cache.PredictionCache, "save", refuse)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _expect_warm() -> Any:
+    """``FSM_EXPECT_WARM=1`` (the CH1 gate's ``make reproduce``): no fit may write the
+    prediction cache; refused with ``FSM_CACHE=off``, which has no cache to be warm."""
+    import os
+
+    if os.environ.get(EXPECT_WARM) != "1":
+        yield
+        return
+    if os.environ.get("FSM_CACHE") == "off":
+        raise RuntimeError(f"{EXPECT_WARM}=1 with FSM_CACHE=off: a warm run needs the cache")
+    mp = pytest.MonkeyPatch()
+    expect_warm_guard(mp)
+    yield
+    mp.undo()
+
 
 @pytest.fixture(scope="session")
 def fixture_root(tmp_path_factory: pytest.TempPathFactory) -> Path:

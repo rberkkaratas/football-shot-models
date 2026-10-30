@@ -30,6 +30,16 @@ Building, evaluating and documenting **shot models** for football from first pri
 > headline GBM is trained without team-selected seasons after a hold-out level decomposition
 > ([card](docs/models/xg-gbm.md), section "Hold-out level"). Results are the generated blocks
 > below; none is typed here.
+>
+> **Chart round 1 (CH1), render only:** themed charts on football-core's `viz` theme layer
+> (light and dark, Inter, statement titles, stat strip, credited footer, 1080 × 1350 and
+> 1080 × 1080 px): a team shot chart, a player shot profile, a keeper (GSAx) chart and the
+> model-card visuals (calibration, log-loss gain over each reference), in the sibling package
+> `football_shot_charts` outside the prediction cache's hash. `make charts` reads the warm cache
+> and fits nothing; every chart passes `viz.check` (text overlap and clipping, WCAG contrast)
+> before it is written to a git-ignored folder. No chart of real data is committed; StatsBomb
+> charts carry the logo, WhoScored charts are private only (`make charts-private`). Charts go to
+> LinkedIn only after Berk approves them.
 
 ### Results (MS3, every model and StatsBomb xG on the same shots)
 
@@ -166,7 +176,12 @@ Part of the `football-*-models` family; shared loaders and pitch conventions com
 | `xgot_cards` | The xGOT cards and README block from an `XgotFit` (render-only) | ✅ MS6 |
 | `season_out` | Season-out xGOT refits on competition-season folds (both providers), the z-free refit | ✅ MS6, PR1 |
 | `gsax` | GSAx rated against the league sum, keeper tables with SD and CI, hierarchical keeper model, next-season test, stability; goal_z sensitivity | ✅ P3.1–P3.3, PR1 |
-| `gsax_cards` | The goalkeeper cards, README block and StatsBomb keeper chart (render-only) | ✅ P3.1–P3.3 |
+| `gsax_cards` | The goalkeeper cards, README block and the StatsBomb keeper charts with their digests (render-only) | ✅ P3.1–P3.3, CH1 |
+| `football_shot_charts.rows` | The row panel every chart shares, scale helpers, the write guard | ✅ CH1 |
+| `football_shot_charts.shots` | Team shot chart and player shot profile (zones, goals against xG, league-rate band) | ✅ CH1 |
+| `football_shot_charts.keepers` | Keeper (GSAx) chart: top and bottom keeper-seasons with intervals | ✅ CH1 |
+| `football_shot_charts.diagnostics` | Calibration diagram and log-loss gain comparison of a model | ✅ CH1 |
+| `football_shot_charts.render` | Warm-cache reads (no fit), views and the `make charts` CLI | ✅ CH1 |
 
 ```bash
 make snapshot && make xg-baselines   # freeze StatsBomb open data, write the M1.1 cards
@@ -177,7 +192,9 @@ make xg-v1                           # the WhoScored v1 card (about 8-10 min col
 make xg-v2                           # the WhoScored v2 card (PR1; after xg-v1)
 make xgot                            # the six xGOT cards (after xg-models and xg-v1)
 make statsbomb-logo                  # once (network): the logo every StatsBomb chart carries
-make gsax                            # the four goalkeeper cards and the StatsBomb keeper chart
+make gsax                            # the four goalkeeper cards and the StatsBomb keeper charts
+make charts                          # CH1: 18 themed StatsBomb charts into git-ignored outputs/charts
+                                     #   (warm cache, no fit; after xg-models, xgot and gsax)
 make reproduce                       # every card and README block, byte for byte
 ```
 
@@ -186,6 +203,8 @@ make reproduce                       # every card and README block, byte for byt
 src/football_shot_models/   # data, features, metrics, evaluation, cards, baselines, ablation,
                             #   models, level, gbm, penalties, cache, legacy, v1, release,
                             #   v2, v2_cards, xgot, xgot_cards, season_out, gsax, gsax_cards
+src/football_shot_charts/   # CH1 render-only charts (outside the cache hash): rows, shots,
+                            #   keepers, diagnostics, render
 notebooks/                  # exploration & narrative
 docs/                       # methodology, model cards, roadmap (Zensical site)
 data/                       # git-ignored

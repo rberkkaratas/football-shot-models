@@ -21,8 +21,9 @@ def test_no_sibling_paths() -> None:
     banned = ("football_core.__file__", "../football-core")
     assert any(b in "root = Path(football_core.__file__).parent" for b in banned)
     assert any(b in 'RAW = "../football-core/data/raw"' for b in banned)
-    files = sorted(SRC.rglob("*.py"))
-    assert files  # precondition: the package is there
+    charts = SRC.parent / "football_shot_charts"  # CH1.style-shots §9: the charts package too
+    files = sorted(SRC.rglob("*.py")) + sorted(charts.rglob("*.py"))
+    assert files and any(p.parent == charts for p in files)  # precondition: both packages
     for path in files:
         text = path.read_text(encoding="utf-8")
         found = [b for b in banned if b in text]

@@ -1,6 +1,6 @@
 .PHONY: check lint format typecheck test docs docs-notebooks docs-serve snapshot xg-baselines xg-models reproduce \
 	reproduce-cold reproduce-public reproduce-public-cold snapshot-whoscored legacy-v0 xg-v1 xg-v2 xgot \
-	statsbomb-logo gsax
+	statsbomb-logo gsax charts charts-private
 
 ## Run every quality gate (CI runs the same target)
 check: lint typecheck test docs
@@ -100,7 +100,8 @@ xgot:
 
 ## Rate the goalkeepers (MS6 P3.1-P3.3) of both providers from season-out xGOT refits; write
 ## docs/models/gsax.md, gk-model.md, ws-gsax.md, ws-gk-model.md and the git-ignored StatsBomb
-## chart data/charts/gsax-keepers.svg. Run after `make xgot` (the xGOT fits come from the cache).
+## keeper charts data/charts/gsax-keepers-light.png and -dark.png (CH1). Run after `make xgot`
+## (the xGOT fits come from the cache).
 ## GSAX_DOCS=<dir> writes the cards elsewhere, so the chart can be made (e.g. on a fresh clone)
 ## without touching the committed cards; the StatsBomb card carries the chart's SHA-256.
 GSAX_DOCS ?= docs/models
@@ -144,3 +145,27 @@ reproduce-cold:
 ## The public reproduction of record (no private data): reproduce-public with every fit run
 reproduce-public-cold:
 	FSM_CACHE=off $(MAKE) reproduce-public
+
+## CH1: the themed team shot chart and player shot profile of CHART_TEAM (PL 2015/16 hold-out,
+## both themes and sizes; the player is the team's most-shooting one, PM E2), the keeper (GSAx)
+## chart and the xG / xGOT calibration and model-comparison charts, both themes: 18 StatsBomb
+## PNGs into the git-ignored outputs/charts. Everything is read from the warm cache, never
+## fitted: run make xg-models xgot gsax first.
+CHART_TEAM ?= sb:22
+CHART_TEAM_NAME ?= Leicester City
+charts:
+	$(NEED_STATSBOMB_EXTRAS)
+	uv run python -m football_shot_charts.render --team "$(CHART_TEAM)" --team-name "$(CHART_TEAM_NAME)" \
+		--statsbomb-raw "$(STATSBOMB_RAW)" --out outputs/charts
+
+## CH1, private: the WhoScored keeper, calibration and comparison charts (10 PNGs, unnamed) into
+## the git-ignored data/charts/private; never committed or published. Run after make xg-v1 xgot
+## gsax (warm cache).
+charts-private:
+	@test -d data/snapshots/whoscored-v1 && test -f manifests/whoscored-v1.json || { \
+		echo "charts-private: no WhoScored snapshot (data/snapshots/whoscored-v1 and its \
+		manifest); run make snapshot-whoscored first" >&2; exit 1; }
+	@git check-ignore -q data/charts/private; rc=$$?; test $$rc -eq 0 || { echo \
+	"charts-private: data/charts/private is not git-ignored (git check-ignore exit $$rc); \
+	refusing to write there" >&2; exit 1; }
+	uv run python -m football_shot_charts.render --private

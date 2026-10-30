@@ -2,9 +2,10 @@
 
 ``gsax_cards.run_from`` runs on the session ``XgotRun`` per provider (``conftest.real_xgot``, the
 one ``test_xgot_run`` uses), so ``make reproduce`` adds only the season-out fits. The cards
-must come back byte for byte; the StatsBomb chart, git-ignored under ``data/charts/`` (PM E3
-(b)), is written to a tmp path here, and its SHA-256 is on the committed GSAx card, so the
-card's byte check covers the chart without any local copy (run6-ms6 architect A2); the README
+must come back byte for byte; the StatsBomb keeper charts (PNG, both themes; CH1), git-ignored
+under ``data/charts/`` (PM E3 (b)), are written to a tmp folder here, and each one's SHA-256 is
+on the committed GSAx card, so the card's byte check covers the charts without any local copy
+(run6-ms6 architect A2); the README
 block (both providers) must match. A second ``gsax.fit`` on the same fit reads every season-out
 fit from the cache (0 entries written); a cold run has no cache, which the test names.
 """
@@ -45,10 +46,10 @@ def _run(state: dict[str, Any], p: str) -> dict[str, Any]:
 
         f = real_xgot(state["real"], p)["run"]
         docs = state["tmp"] / p / "models"
-        chart = state["tmp"] / p / "gsax-keepers.svg"
+        chart = state["tmp"] / p / "charts"
         out = io.StringIO()
         with pytest.MonkeyPatch.context() as mp, contextlib.redirect_stdout(out):
-            mp.setattr(gsax_cards, "CHART_PATH", chart)
+            mp.setattr(gsax_cards, "CHART_DIR", chart)
             r = gsax_cards.run_from(f, docs_dir=docs, raw=_raw())
         state[p] = {"run": r, "fit": f, "docs": docs, "chart": chart, "stdout": out.getvalue()}
     return dict(state[p])
@@ -81,15 +82,19 @@ def _readme_block() -> str:
 
 @pytest.mark.slow
 def test_reproduce_statsbomb(gsax_real: dict[str, Any]) -> None:
-    """The StatsBomb GSAx and keeper-model cards and the keeper chart come back byte for byte;
+    """The StatsBomb GSAx and keeper-model cards and the keeper charts come back byte for byte;
     checks 1-4 and 6 met, check 5 met or n/a; a second fit writes no cache entry."""
     sb = _run(gsax_real, "statsbomb")
     for name in CARDS["statsbomb"]:
         committed = (REPO / "docs" / "models" / f"{name}.md").read_bytes()
         assert (sb["docs"] / f"{name}.md").read_bytes() == committed, name
-    digest = hashlib.sha256(sb["chart"].read_bytes()).hexdigest()
     committed = (REPO / "docs" / "models" / "gsax.md").read_text(encoding="utf-8")
-    assert f"its SHA-256 is `{digest}`" in committed, "the chart differs from the committed card's"
+    charts = sb["run"].charts
+    assert sorted(charts) == ["gsax-keepers-dark.png", "gsax-keepers-light.png"]
+    for name, path in charts.items():
+        assert Path(path).parent == sb["chart"]
+        digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        assert f"`{name}` (SHA-256 `{digest}`)" in committed, f"{name} differs from the card's"
     _checks(sb["run"])
     _warm_refit(sb["fit"])
 
@@ -106,7 +111,7 @@ def test_reproduce_whoscored(gsax_real: dict[str, Any]) -> None:
     for name in CARDS["whoscored"]:
         committed = (REPO / "docs" / "models" / f"{name}.md").read_bytes()
         assert (ws["docs"] / f"{name}.md").read_bytes() == committed, name
-    assert not ws["chart"].exists()
+    assert not ws["chart"].exists() and dict(ws["run"].charts) == {}
     assert sorted(x.name for x in ws["docs"].iterdir()) == sorted(
         f"{n}.md" for n in CARDS["whoscored"]
     )

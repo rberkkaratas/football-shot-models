@@ -1,17 +1,21 @@
-"""Render and write the goalkeeper cards (P3.1-P3.3) and the StatsBomb keeper chart.
+"""Render and write the goalkeeper cards (P3.1-P3.3) and the StatsBomb keeper charts.
 
 :func:`render` turns one provider's :class:`~football_shot_models.gsax.GsaxFit` into its two
 cards (``gsax`` and ``gk-model``, ``ws-`` prefixed for WhoScored) as Markdown: no fit, no
-write, no print. :func:`chart` draws the StatsBomb keeper forest plot (with the StatsBomb logo)
-as SVG text. :func:`run_from` is fit, names, render, write and the printed summary; ``python -m
+write, no print. :func:`keeper_charts` draws the keeper chart (``football_shot_charts.keepers``,
+CH1) in both themes; :func:`caveat` is its subtitle, the reliability verdict worded here with
+:func:`stability_sentence`, so keeper wording stays in this module. :func:`run_from` is fit,
+names, charts, render, write and the printed summary; ``python -m
 football_shot_models.gsax_cards --provider both`` (``make gsax``) runs it after ``make xgot``.
 
 Rule 1: the WhoScored cards and the README block hold counts and metrics only (no keeper, no
-id); keeper names appear only on the StatsBomb card and chart (``NAMED``), from the lineup
-files. The chart embeds the StatsBomb logo, which is never committed, so it is written to the
-git-ignored ``CHART_PATH`` (PM E3 (b)) and checked by ``make reproduce``.
+id); keeper names appear only on the StatsBomb card and charts (``NAMED``), from the lineup
+files. The charts embed the StatsBomb logo, which is never committed, so they are written to
+the git-ignored ``CHART_DIR`` (PM E3 (b)) and checked by ``make reproduce`` through the
+SHA-256 of each file on the card.
 
-Render-only for the prediction cache (``cache.RENDER_ONLY``): no other module imports it.
+Render-only for the prediction cache (``cache.RENDER_ONLY``): no other module under the hash
+imports it; it imports ``football_shot_charts.keepers``, which is outside the hash.
 """
 
 from __future__ import annotations
@@ -19,7 +23,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import hashlib
-import io
 import math
 import os
 import sys
@@ -27,16 +30,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final
+from typing import Final, Literal
 
-import matplotlib
 import numpy as np
 import polars as pl
 from football_core import viz
 from football_core.io import snapshot, statsbomb
-from matplotlib.backends.backend_agg import FigureCanvasAgg
-from matplotlib.figure import Figure
 
+from football_shot_charts import keepers
 from football_shot_models import gsax, metrics, season_out, xgot, xgot_cards
 from football_shot_models.cards import fmt, signed
 from football_shot_models.gsax import (
@@ -58,8 +59,9 @@ StrPath = str | os.PathLike[str]
 
 CARD_PREFIX: Final[Mapping[str, str]] = MappingProxyType({"statsbomb": "", "whoscored": "ws-"})
 NAMED: Final[frozenset[str]] = frozenset({"statsbomb"})  # providers whose cards name keepers
-CHART_FILE: Final[str] = "data/charts/gsax-keepers.svg"  # git-ignored: it embeds the logo
-CHART_PATH: StrPath = CHART_FILE  # where run_from writes it, read when called (tests move it)
+CHART_FOLDER: Final[str] = "data/charts"  # printed on the card; git-ignored: logo inside
+CHART_DIR: StrPath = CHART_FOLDER  # where run_from writes them, read when called (tests move it)
+CHART_NAME: Final[str] = "gsax-keepers-{theme}.png"
 # the open-data cache holding the lineups; this repo's own by default (core's loader default),
 # so src assumes no sibling checkout: the Makefile passes football-core's (STATSBOMB_RAW)
 STATSBOMB_RAW: Final[str] = statsbomb.DEFAULT_CACHE
@@ -70,7 +72,6 @@ CHANGELOG: Final[tuple[str, ...]] = (
     "source; team-selected competition-seasons at δ = 0 (flagged); goal_z sensitivity "
     "(StatsBomb).",
 )
-SALT: Final[str] = "gsax-keepers"  # svg.hashsalt: the SVG's element ids, so its bytes repeat
 FLAG: Final[str] = "†"  # marks a team-selected keeper-season in the table and the chart
 
 
@@ -79,6 +80,31 @@ FLAG: Final[str] = "†"  # marks a team-selected keeper-season in the table and
 
 def _r(s: metrics.SplitHalf) -> str:
     return split_half_cell(s, 2)
+
+
+Branch = Literal["empty", "estimate", "few", "repeatable", "noise"]
+
+
+def stability_branch(tier: Tier) -> Branch:
+    """Which verdict a reliability tier allows: the one rule behind :func:`stability_sentence`
+    (the cards) and :func:`caveat` (the keeper chart).
+
+    Examples
+    --------
+    >>> none = metrics.SplitHalf(0, None, None, None)
+    >>> stability_branch(Tier(500, 0, none, none, none, none))
+    'empty'
+    """
+    a, b = tier.first_sb, tier.all_shots_sb
+    if tier.keepers == 0:
+        return "empty"
+    if tier.first.r is None:
+        return "estimate"
+    if tier.keepers < MIN_TIER_KEEPERS:
+        return "few"
+    if a.low is not None and b.low is not None and a.low > 0 and b.low > 0:
+        return "repeatable"
+    return "noise"
 
 
 def stability_sentence(tier: Tier) -> str:
@@ -90,19 +116,54 @@ def stability_sentence(tier: Tier) -> str:
     >>> stability_sentence(Tier(500, 0, none, none, none, none))
     'no keeper reaches 500 shots (empty tier)'
     """
-    t, k, a, b = tier.tier, tier.keepers, tier.first_sb, tier.all_shots_sb
-    if k == 0:
-        return f"no keeper reaches {t} shots (empty tier)"
-    if tier.first.r is None:
-        return f"{k} keepers reach {t} shots: too few to estimate"
-    if k < MIN_TIER_KEEPERS:
-        return f"{k} keepers reach {t} shots: too few to judge (r {_r(tier.first)})"
-    if a.low is not None and b.low is not None and a.low > 0 and b.low > 0:
-        return (
-            f"keeper records are repeatable beyond chance at {t} shots; this measures "
-            "the keeper and the defence in front of him, not the keeper alone"
-        )
+    t, k = tier.tier, tier.keepers
+    match stability_branch(tier):
+        case "empty":
+            return f"no keeper reaches {t} shots (empty tier)"
+        case "estimate":
+            return f"{k} keepers reach {t} shots: too few to estimate"
+        case "few":
+            return f"{k} keepers reach {t} shots: too few to judge (r {_r(tier.first)})"
+        case "repeatable":
+            return (
+                f"keeper records are repeatable beyond chance at {t} shots; this measures "
+                "the keeper and the defence in front of him, not the keeper alone"
+            )
     return f"not distinguishable from noise at {t} shots"
+
+
+def _r_chart(s: metrics.SplitHalf) -> str:
+    return _r(s).replace("-", "\u2212")
+
+
+def caveat(tier: Tier) -> str:
+    """The keeper chart's subtitle: :func:`stability_branch`'s verdict with the statistic the
+    rule read (for "noise" and "repeatable" the binding one: of the stepped-up first-T and
+    all-shots r, the one with the smaller lower bound, a missing bound binding).
+
+    Examples
+    --------
+    >>> s = metrics.SplitHalf(111, 0.06, -0.12, 0.25)
+    >>> caveat(Tier(100, 111, s, s, s, metrics.SplitHalf(111, 0.32, 0.01, 0.54)))
+    'Not distinguishable from noise at 100 shots: stepped-up split-half r +0.06 [\u22120.12, +0.25] on the first 100 shots of 111 keepers.'
+    """  # noqa: E501
+    t, k = tier.tier, f"{tier.keepers:,}"
+    branch = stability_branch(tier)
+    if branch == "empty":
+        return f"No keeper reaches {t} shots: keeper reliability cannot be shown."
+    if branch == "estimate":
+        return f"{k} keepers reach {t} shots: too few to estimate keeper reliability."
+    if branch == "few":
+        return (
+            f"{k} keepers reach {t} shots: too few to judge (split-half r {_r_chart(tier.first)})."
+        )
+    a, b = tier.first_sb, tier.all_shots_sb
+    first = a.low is None or (b.low is not None and a.low <= b.low)
+    s, scope = (a, f"the first {t} shots") if first else (b, "all shots")
+    stat = f"stepped-up split-half r {_r_chart(s)} on {scope} of {k} keepers."
+    if branch == "repeatable":
+        return f"Keeper and defence repeatable at {t} shots: {stat}"  # fits 2 subtitle lines
+    return f"Not distinguishable from noise at {t} shots: {stat}"
 
 
 def _above(c: GainCI | None) -> str:
@@ -344,9 +405,15 @@ def _line_lines(g: GsaxFit) -> list[str]:
     return out
 
 
-def _team_lines(g: GsaxFit) -> list[str]:
-    """The team-selected competition-seasons with a fitted δ before PR1 (team-selected, not
-    E2-small) by side (``gsax.team_selected_split``), counts only; none without such rows."""
+def team_split(g: GsaxFit) -> pl.DataFrame:
+    """``gsax.team_selected_split`` of the team-selected competition-seasons with a fitted δ
+    before PR1 (team-selected, not E2-small): the card's rows and the chart's † number.
+
+    Examples
+    --------
+    >>> team_split(g)["side"].to_list()  # doctest: +SKIP
+    ['selected side', 'opponents']
+    """
     groups = gsax.rating_groups(gsax.variant(g.rated, WITHOUT))
     seasons = groups.filter(pl.col("zero_family") & ~pl.col("small"))
     keys = (
@@ -355,7 +422,29 @@ def _team_lines(g: GsaxFit) -> list[str]:
         .select(SEASON_KEY)
         .unique()
     )
-    split = gsax.team_selected_split(g.keepers[WITHOUT].join(keys, on=SEASON_KEY, how="semi"))
+    return gsax.team_selected_split(g.keepers[WITHOUT].join(keys, on=SEASON_KEY, how="semi"))
+
+
+def team_gap_100(g: GsaxFit) -> float | None:
+    """The selected side's GSAx per 100 shots (:func:`team_split`), None without that row.
+
+    Examples
+    --------
+    >>> team_gap_100(g)  # doctest: +SKIP
+    4.8
+    """
+    side = team_split(g).filter(pl.col("side") == "selected side")
+    if side.height == 0:
+        return None
+    return 100 * float(side["gsax"][0]) / int(side["shots"][0])
+
+
+def _team_lines(g: GsaxFit) -> list[str]:
+    """The team-selected competition-seasons with a fitted δ before PR1 (team-selected, not
+    E2-small) by side (:func:`team_split`), counts only; none without such rows."""
+    groups = gsax.rating_groups(gsax.variant(g.rated, WITHOUT))
+    seasons = groups.filter(pl.col("zero_family") & ~pl.col("small"))
+    split = team_split(g)
     if split.height == 0:
         return []
     sides = "; ".join(
@@ -477,7 +566,21 @@ def _ci_lines(g: GsaxFit) -> list[str]:
     ]
 
 
-def _keeper_table(g: GsaxFit, names: pl.DataFrame, chart_sha256: str | None) -> list[str]:
+def _chart_sentence(charts: Mapping[str, str] | None) -> str:
+    """The card's sentence on the keeper charts: what they show, where ``make gsax`` writes
+    them and, with ``charts`` (file name → SHA-256), each digest, sorted by name."""
+    out = (
+        f"The chart shows the highest and lowest {keepers.TOP_N} keeper-seasons by shrunken GSAx "
+        f"per 100 shots with {CI_LEVEL:.0%} keeper-model intervals; `make gsax` writes them to "
+        f"`{CHART_FOLDER}/` (git-ignored: they embed the StatsBomb logo, PM E3)"
+    )
+    if not charts:
+        return out + "."
+    files = " and ".join(f"`{n}` (SHA-256 `{charts[n]}`)" for n in sorted(charts))
+    return f"{out} as {files}, so `make reproduce` checks the charts through this card."
+
+
+def _keeper_table(g: GsaxFit, names: pl.DataFrame, charts: Mapping[str, str] | None) -> list[str]:
     rows = gsax.keeper_rows(g)
     named = rows.join(names.select(gk_id="player_id", name="player_name"), on="gk_id",
                       how="left")  # fmt: skip
@@ -489,14 +592,7 @@ def _keeper_table(g: GsaxFit, names: pl.DataFrame, chart_sha256: str | None) -> 
         "",
         f"{rows.height:,} keeper-seasons. Names are the lineup display names (the nickname when "
         f"StatsBomb gives one); {int((conflicts['names'] > 1).sum()):,} table keeper(s) appear "
-        "under two spellings, resolved to the latest match. The chart is written by `make "
-        f"gsax` to `{CHART_FILE}` (git-ignored: it embeds the StatsBomb logo, PM E3)"
-        + (
-            "."
-            if chart_sha256 is None
-            else f"; its SHA-256 is `{chart_sha256}`, so `make "
-            "reproduce` checks the chart through this card."
-        ),
+        "under two spellings, resolved to the latest match. " + _chart_sentence(charts),
         "",
         "| # | Keeper | Family | Competition season | Shots | Goals | Open goals | Open-goal "
         f"GSAx | GSAx raw | GSAx | SD | {CI_LEVEL:.0%} CI | Shrunken GSAx | GSAx with penalties |",
@@ -541,7 +637,9 @@ def _distribution(g: GsaxFit) -> list[str]:
     return [*out, ""]
 
 
-def _gsax_card(g: GsaxFit, names: pl.DataFrame | None, name: str, chart_sha256: str | None) -> str:
+def _gsax_card(
+    g: GsaxFit, names: pl.DataFrame | None, name: str, charts: Mapping[str, str] | None
+) -> str:
     f = g.xgot
     text = f.setup.text
     lines = [
@@ -595,7 +693,7 @@ def _gsax_card(g: GsaxFit, names: pl.DataFrame | None, name: str, chart_sha256: 
         "",
         *_tier_rows(g.tiers),
         *_team_lines(g),
-        *(_keeper_table(g, names, chart_sha256) if names is not None else _distribution(g)),
+        *(_keeper_table(g, names, charts) if names is not None else _distribution(g)),
         "## Columns",
         "",
         "- `goals`: goals from rated shots only (own goals, direct corners and shoot-outs are "
@@ -746,13 +844,13 @@ def _saw_test_text(saw: tuple[int, int, int]) -> str:
 
 
 def render(
-    g: GsaxFit, *, names: pl.DataFrame | None, chart_sha256: str | None = None
+    g: GsaxFit, *, names: pl.DataFrame | None, charts: Mapping[str, str] | None = None
 ) -> Mapping[str, str]:
     """The two cards of one provider, card name → Markdown; pure.
 
-    ``chart_sha256`` (StatsBomb) is the SHA-256 of the keeper chart's bytes, printed beside
-    ``CHART_FILE``: the chart is git-ignored (PM E3 (b)), so the committed card carries its
-    digest and the card's byte check covers the chart.
+    ``charts`` (StatsBomb) maps each keeper chart's file name to the SHA-256 of its bytes,
+    printed beside ``CHART_FOLDER``: the charts are git-ignored (PM E3 (b)), so the committed
+    card carries their digests and the card's byte check covers the charts.
 
     Raises
     ------
@@ -772,76 +870,114 @@ def render(
         raise ValueError(f"render: {p} cards {'need' if p in NAMED else 'take no'} keeper names")
     pre = CARD_PREFIX[p]
     return MappingProxyType({
-        f"{pre}gsax": _gsax_card(g, names, f"{pre}gsax", chart_sha256),
+        f"{pre}gsax": _gsax_card(g, names, f"{pre}gsax", charts),
         f"{pre}gk-model": _model_card(g, f"{pre}gk-model"),
     })  # fmt: skip
 
 
-# ---- chart ---------------------------------------------------------------------------------
+# ---- charts --------------------------------------------------------------------------------
 
 
-def chart(table: pl.DataFrame, *, names: pl.DataFrame, logo: StrPath) -> str:
-    """The StatsBomb keeper forest plot as SVG text: GSAx with its CI, the shrunken GSAx hollow.
-
-    ``table`` is :func:`gsax.keeper_rows` output. Deterministic bytes (``svg.hashsalt``, no
-    date).
+def chart_tier(tiers: Sequence[Tier]) -> Tier:
+    """The reliability tier the keeper chart's caveat reads: the one at
+    ``gsax.TABLE_MIN_SHOTS`` (read when called), else the first above it (a verdict at more
+    shots bounds the rows' reliability from above), else the largest.
 
     Raises
     ------
     ValueError
-        A ``gk_id`` that is not ``sb:`` (Rule 1) or is missing from ``names``.
-    FileNotFoundError
-        No logo file (``viz`` refuses an uncredited StatsBomb chart).
+        No tier.
 
     Examples
     --------
-    >>> svg = chart(gsax.keeper_rows(g), names=names, logo=statsbomb.logo_file())
-    ... # doctest: +SKIP
-    >>> viz.LOGO_GID in svg  # doctest: +SKIP
-    True
+    >>> none = metrics.SplitHalf(0, None, None, None)
+    >>> chart_tier([Tier(t, 0, none, none, none, none) for t in (100, 250)]).tier
+    100
     """
-    if bad := table.filter(~pl.col("gk_id").str.starts_with("sb:")).height:
-        raise ValueError(f"chart: {bad} keeper id(s) are not StatsBomb ('sb:'); Rule 1")
-    rows = table.join(names.select(gk_id="player_id", name="player_name"), on="gk_id", how="left")
-    if missing := rows.filter(pl.col("name").is_null()).height:
-        raise ValueError(f"chart: {missing} keeper(s) are missing from names")
-    n = rows.height
-    w, h = 9.0, 1.6 + 0.22 * max(n, 1)
-    fig = Figure(figsize=(w, h), dpi=100, facecolor=viz.SURFACE)
-    FigureCanvasAgg(fig)
-    ax = fig.add_axes((3.6 / w, 1.0 / h, 1 - 3.9 / w, 1 - 1.3 / h))
-    if n == 0:
-        ax.text(0.5, 0.5, f"no keeper-season reaches {gsax.TABLE_MIN_SHOTS} shots", ha="center",
-                va="center", transform=ax.transAxes)  # fmt: skip
-        ax.set_yticks([])
-    else:
-        y = np.arange(n)[::-1].astype(np.float64)
-        lo, hi = rows["ci_low"].fill_null(np.nan), rows["ci_high"].fill_null(np.nan)
-        gs = rows["gsax"].to_numpy()
-        ax.hlines(y, lo.to_numpy(), hi.to_numpy(), color=viz.LINE_COLOUR, lw=1.2)
-        ax.plot(gs, y, "o", color=viz.GOAL_COLOUR, ms=4, label="GSAx")
-        ax.plot(rows["gsax_shrunk"].fill_null(np.nan).to_numpy(), y, "o", mfc="none",
-                color=viz.SHOT_COLOUR, ms=5, label="shrunken GSAx")  # fmt: skip
-        labels = [
-            f"{r['name']} · {r['competition_name']} {r['season_name']}"
-            + (f" · {_family(r['family'])}" if r["family"] == TEAM_SELECTED else "")
-            for r in rows.iter_rows(named=True)
-        ]
-        ax.set_yticks(y, labels, fontsize=7)
-        ax.set_ylim(-1, n)
-        ax.legend(loc="lower right", fontsize=7, frameon=False)
-    ax.axvline(0.0, color=viz.INK, lw=0.6)
-    note = (f"\n{FLAG} {TEAM_SELECTED}: rated at δ = 0, no league shift (PM 2026-10-28; see "
-            "the card)"
-            if (rows["family"] == TEAM_SELECTED).any() else "")  # fmt: skip
-    ax.set_xlabel(f"Goals saved above expected ({WITHOUT}; {CI_LEVEL:.0%} match-bootstrap CI)"
-                  + note, fontsize=8)  # fmt: skip
-    ax.set_title(f"Keeper-seasons with >= {gsax.TABLE_MIN_SHOTS} on-target shots faced", fontsize=9)
-    viz.add_attribution(ax, "statsbomb", logo=logo)
-    buf = io.StringIO()
-    with matplotlib.rc_context({"svg.hashsalt": SALT}):
-        fig.savefig(buf, format="svg", metadata={"Date": None})
-    return buf.getvalue()
+    if not tiers:
+        raise ValueError("no reliability tier: the keeper chart's caveat has nothing to read")
+    least = gsax.TABLE_MIN_SHOTS
+    above = sorted((t for t in tiers if t.tier >= least), key=lambda t: t.tier)
+    return above[0] if above else max(tiers, key=lambda t: t.tier)
+
+
+def keeper_charts(
+    g: GsaxFit,
+    *,
+    names: pl.DataFrame | None,
+    logo: StrPath | None,
+    team_selected: keepers.Mode = "flag",
+) -> Mapping[str, viz.Canvas]:
+    """The keeper chart in every ``viz.THEMES`` theme, file name → canvas (``CHART_NAME``;
+    ``-no-team`` before the theme in drop mode); pure.
+
+    StatsBomb (``NAMED``) is named, credited and carries ``logo``; WhoScored is unnamed with
+    rank-prefixed labels and no logo (Rule 1). The subtitle is :func:`caveat` of the tier at
+    ``gsax.TABLE_MIN_SHOTS``, the † number :func:`team_gap_100` (the card's row).
+
+    Raises
+    ------
+    ValueError
+        StatsBomb without ``names``, WhoScored with names; no tier at ``TABLE_MIN_SHOTS``;
+        from ``keepers.keeper_view`` and ``keepers.keeper_chart``.
+    FileNotFoundError
+        A StatsBomb chart without its logo file.
+
+    Examples
+    --------
+    >>> sorted(keeper_charts(g, names=names, logo=statsbomb.logo_file()))  # doctest: +SKIP
+    ['gsax-keepers-dark.png', 'gsax-keepers-light.png']
+    """
+    p = g.xgot.provider
+    if (p in NAMED) != (names is not None):
+        raise ValueError(f"keeper_charts: {p} charts {'need' if p in NAMED else 'take no'} names")
+    view = keepers.keeper_view(
+        g, names=names, caveat=caveat(chart_tier(g.tiers)), flag=FLAG, team_gap_100=team_gap_100(g),
+        team_selected=team_selected,
+    )  # fmt: skip
+    footer = viz.Footer((p,))
+    prefix = "no-team-" if team_selected == "drop" else ""
+    return MappingProxyType({
+        CHART_NAME.format(theme=prefix + theme): keepers.keeper_chart(
+            view, theme=theme, footer=footer, logo=logo if p in NAMED else None)
+        for theme in viz.THEMES
+    })  # fmt: skip
+
+
+def keeper_names(g: GsaxFit, raw: StrPath) -> pl.DataFrame:
+    """The lineup display names of the table keepers, from the synced checkout under ``raw``
+    (read, never synced: a missing file is an error, not a download).
+
+    Examples
+    --------
+    >>> keeper_names(g, STATSBOMB_RAW).columns[:2]  # doctest: +SKIP
+    ['player_id', 'player_name']
+    """
+    ids = g.xgot.xg.matches.sort("match_date", "match_id")["match_id"].to_list()
+    checkout = Path(raw) / statsbomb.OPEN_DATA_COMMIT
+    return statsbomb.player_names(checkout, ids, player_ids=gsax.keeper_rows(g)["gk_id"].to_list())
+
+
+def write_charts(charts: Mapping[str, viz.Canvas], *, chart_dir: StrPath) -> tuple[Path, ...]:
+    """Write every chart to ``chart_dir/<name>`` after every one passes ``keepers.guard_write``
+    (public, git-ignored, no check problem): nothing is written when one fails.
+
+    Raises
+    ------
+    ValueError
+        From ``keepers.guard_write`` (a WhoScored canvas among them included).
+
+    Examples
+    --------
+    >>> write_charts(keeper_charts(g, names=names, logo=logo), chart_dir=CHART_DIR)
+    ... # doctest: +SKIP
+    """
+    paths = [keepers.guard_write(c, Path(chart_dir) / name, private=False)
+             for name, c in charts.items()]  # fmt: skip
+    for path, c in zip(paths, charts.values(), strict=True):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        viz.save(c, path)
+    return tuple(paths)
 
 
 # ---- README block, write and run -----------------------------------------------------------
@@ -878,50 +1014,36 @@ def summary_block(fits: Sequence[GsaxFit]) -> str:
 @dataclass(frozen=True, eq=False)
 class GsaxRun(GsaxFit):
     """A :class:`~football_shot_models.gsax.GsaxFit` plus what :func:`run_from` wrote: ``cards``
-    (card name → Markdown), the StatsBomb chart ``svg`` and its ``chart_path`` (None for
+    (card name → Markdown) and the StatsBomb keeper ``charts`` (file name → path; empty for
     WhoScored)."""
 
     cards: Mapping[str, str]
-    svg: str | None
-    chart_path: Path | None
+    charts: Mapping[str, Path]
 
 
-def write(
-    written: Mapping[str, str], svg: str | None, *, docs_dir: StrPath, chart_path: StrPath
-) -> Path | None:
-    """Write each card to ``docs_dir/<name>.md`` and the SVG (if any) to ``chart_path``, which
-    must be git-ignored when it lies in a work tree (fail closed).
+def write(written: Mapping[str, str], *, docs_dir: StrPath) -> Path:
+    """Write each card to ``docs_dir/<name>.md``; the directory is returned.
 
     Examples
     --------
     >>> import tempfile
     >>> with tempfile.TemporaryDirectory() as tmp:
-    ...     write({"gsax": "# x\\n"}, None, docs_dir=tmp, chart_path=Path(tmp) / "c.svg") is None
+    ...     (write({"gsax": "# x\\n"}, docs_dir=tmp) / "gsax.md").is_file()
     True
     """
     out = Path(docs_dir)
     out.mkdir(parents=True, exist_ok=True)
     for name, card in written.items():
         (out / f"{name}.md").write_text(card, encoding="utf-8", newline="\n")
-    if svg is None:
-        return None
-    path = Path(chart_path)
-    snapshot.check_ignored(
-        Path(os.path.abspath(path)),
-        "keeper chart",
-        "keep it under the git-ignored data/ (it embeds the StatsBomb logo)",
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(svg, encoding="utf-8", newline="\n")
-    return path
+    return out
 
 
 def run_from(f: xgot.XgotFit, *, docs_dir: StrPath, raw: StrPath) -> GsaxRun:
-    """Fit, name (StatsBomb), render, write and print one provider's goalkeeper results.
+    """Fit, name (StatsBomb), chart, render, write and print one provider's goalkeeper results.
 
-    The chart goes to ``CHART_PATH``, read when called, and its SHA-256 onto the StatsBomb GSAx
-    card; ``raw`` is the StatsBomb open-data cache whose ``<commit>`` checkout holds the lineups
-    (read, never synced: a missing file is an error, not a download).
+    The StatsBomb keeper charts go to ``CHART_DIR``, read when called, and the SHA-256 of each
+    file's bytes onto the StatsBomb GSAx card; ``raw`` is the StatsBomb open-data cache whose
+    ``<commit>`` checkout holds the lineups (:func:`keeper_names`).
 
     Examples
     --------
@@ -930,22 +1052,19 @@ def run_from(f: xgot.XgotFit, *, docs_dir: StrPath, raw: StrPath) -> GsaxRun:
     dict_keys(['ws-gsax', 'ws-gk-model'])
     """
     g = gsax.fit(f)
-    names, svg = None, None
+    names: pl.DataFrame | None = None
+    paths: tuple[Path, ...] = ()
     if f.provider in NAMED:
-        ids = f.xg.matches.sort("match_date", "match_id")["match_id"].to_list()
-        table = gsax.keeper_rows(g)
-        # the synced checkout itself, never statsbomb.sync: a missing file must fail, not download
-        checkout = Path(raw) / statsbomb.OPEN_DATA_COMMIT
-        names = statsbomb.player_names(checkout, ids,
-                                       player_ids=table["gk_id"].to_list())  # fmt: skip
-        svg = chart(table, names=names, logo=statsbomb.logo_file())
-    sha = None if svg is None else hashlib.sha256(svg.encode("utf-8")).hexdigest()
-    written = render(g, names=names, chart_sha256=sha)
-    path = write(written, svg, docs_dir=docs_dir, chart_path=CHART_PATH)
+        names = keeper_names(g, raw)
+        charts = keeper_charts(g, names=names, logo=statsbomb.logo_file())
+        paths = write_charts(charts, chart_dir=CHART_DIR)
+    shas = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+    written = render(g, names=names, charts=shas or None)
+    write(written, docs_dir=docs_dir)
     print(*(f"check | {c.target} | {c.measured} | {c.result}" for c in g.checks), sep="\n")
-    print(f"cards: {Path(docs_dir)}" + ("" if path is None else f"; chart: {path}"))
+    print(f"cards: {Path(docs_dir)}" + "".join(f"; chart: {p}" for p in paths))
     fields = {field.name: getattr(g, field.name) for field in dataclasses.fields(g)}
-    return GsaxRun(**fields, cards=written, svg=svg, chart_path=path)
+    return GsaxRun(**fields, cards=written, charts=MappingProxyType({p.name: p for p in paths}))
 
 
 def run(provider: str, *, docs_dir: StrPath, cache: StrPath | None, raw: StrPath) -> GsaxRun:

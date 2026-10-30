@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import dataclasses
 import math
-import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -270,17 +268,20 @@ def test_run_from_reads_checkout_and_chart_path(
     gsax_fits: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """R13: ``run_from`` reads the lineups from ``<raw>/<OPEN_DATA_COMMIT>`` and never calls
-    ``statsbomb.sync``. R14: the chart goes to ``CHART_PATH`` read when called; the result is a
-    ``GsaxRun``, a ``GsaxFit`` with the cards, SVG and chart path; the card still names
-    ``CHART_FILE`` (R20) and carries the SHA-256 of the chart's bytes (run6-ms6 architect A2:
-    the committed card checks the git-ignored chart)."""
+    ``statsbomb.sync``. R14 (amended, CH1 keeper-model-charts §3.3): the charts go to
+    ``CHART_DIR`` read when called; the result is a ``GsaxRun``, a ``GsaxFit`` with the cards
+    and ``charts`` (file name → path); the card names ``CHART_FOLDER`` (never the moved folder)
+    and carries the SHA-256 of each chart's bytes (run6-ms6 architect A2: the committed card
+    checks the git-ignored charts)."""
     import hashlib
 
     import matplotlib.image as mpimg
     from football_core.io import statsbomb
+    from test_gsax_cards import at_table_min
 
-    g, f = gsax_fits["fits"]["statsbomb"], gsax_fits["xgot"]["statsbomb"]
+    f = gsax_fits["xgot"]["statsbomb"]
     monkeypatch.setattr(gsax, "TABLE_MIN_SHOTS", 5)
+    g = at_table_min(gsax_fits["fits"]["statsbomb"])
     logo = tmp_path / "logo.png"
     mpimg.imsave(logo, np.ones((4, 8, 4)))
     seen: list[Path] = []
@@ -298,37 +299,28 @@ def test_run_from_reads_checkout_and_chart_path(
     monkeypatch.setattr(statsbomb, "sync", no_sync)
     monkeypatch.setattr(statsbomb, "player_names", names)
     monkeypatch.setattr(statsbomb, "logo_file", lambda *a, **k: logo)
-    chart = tmp_path / "elsewhere" / "k.svg"
-    monkeypatch.setattr(gsax_cards, "CHART_PATH", chart)
+    folder = tmp_path / "elsewhere"
+    monkeypatch.setattr(gsax_cards, "CHART_DIR", folder)
     raw = tmp_path / "raw"
     run = gsax_cards.run_from(f, docs_dir=tmp_path / "docs", raw=raw)
     assert seen == [raw / statsbomb.OPEN_DATA_COMMIT]
     assert isinstance(run, gsax_cards.GsaxRun) and isinstance(run, gsax.GsaxFit)
-    assert run.chart_path == chart and chart.read_text(encoding="utf-8") == run.svg
+    assert {Path(p).parent for p in run.charts.values()} == {folder} and run.charts
     assert sorted(p.name for p in (tmp_path / "docs").iterdir()) == ["gk-model.md", "gsax.md"]
-    assert (
-        f"`{gsax_cards.CHART_FILE}`" in run.cards["gsax"] and "elsewhere" not in run.cards["gsax"]
-    )
-    digest = hashlib.sha256(chart.read_bytes()).hexdigest()
-    assert f"its SHA-256 is `{digest}`" in run.cards["gsax"]
-    assert (tmp_path / "docs" / "gsax.md").read_text(encoding="utf-8") == run.cards["gsax"]
+    card = run.cards["gsax"]
+    assert f"`{gsax_cards.CHART_FOLDER}/`" in card and "elsewhere" not in card
+    for name, path in run.charts.items():
+        digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        assert f"`{name}` (SHA-256 `{digest}`)" in card
+    assert (tmp_path / "docs" / "gsax.md").read_text(encoding="utf-8") == card
 
 
-@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
-def test_write_refuses_tracked_chart_path(tmp_path: Path) -> None:
-    """R14: ``write`` refuses a chart path git would track (nothing written there) and writes
-    one that the work tree ignores."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    (repo / ".gitignore").write_text("data/\n", encoding="utf-8")
-    tracked = repo / "charts" / "k.svg"
-    with pytest.raises(ValueError, match="would not be git-ignored"):
-        gsax_cards.write({}, "<svg/>", docs_dir=tmp_path / "docs", chart_path=tracked)
-    assert not tracked.exists()
-    ignored = repo / "data" / "charts" / "k.svg"
-    out = gsax_cards.write({}, "<svg/>", docs_dir=tmp_path / "docs", chart_path=ignored)
-    assert out == ignored and ignored.read_text(encoding="utf-8") == "<svg/>"
+def test_write_cards_only(tmp_path: Path) -> None:
+    """R14 (amended, CH1 §3.3): ``write`` writes the cards only (``docs_dir/<name>.md``, LF);
+    the chart guard is ``write_charts``' (``test_write_charts_all_or_nothing``)."""
+    gsax_cards.write({"gsax": "# x\n", "gk-model": "# y\n"}, docs_dir=tmp_path / "docs")
+    assert sorted(p.name for p in (tmp_path / "docs").iterdir()) == ["gk-model.md", "gsax.md"]
+    assert (tmp_path / "docs" / "gsax.md").read_bytes() == b"# x\n"
 
 
 # ---- R16, R18: coarse-grid table and the ruled-out reconciliation row on the cards ----------
@@ -612,20 +604,33 @@ def test_pr1_r10_keeper_rows_column_order(gsax_census: dict[str, Any]) -> None:
 def test_pr1_r11_chart_note(
     gsax_census: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """PR1 R11: with a team-selected row, the chart's note reads "† team-selected: rated at
-    δ = 0, no league shift"; without one there is no note."""
+    """PR1 R11 (amended, CH1 keeper-model-charts §3.2): with a shown team-selected row the
+    keeper chart flags it and its footer note reads "† team-selected season: rated against the
+    model, not its league"; without one there is no such note."""
+    import charts_cases as cc
     import matplotlib.image as mpimg
+    from football_core import viz
 
     logo = tmp_path / "logo.png"
     mpimg.imsave(logo, np.full((10, 60, 4), 0.5))
-    monkeypatch.setattr(gsax, "TABLE_MIN_SHOTS", 20)
-    table = gsax.keeper_rows(gsax_census["g"])
+    from test_gsax_cards import at_table_min
+
+    monkeypatch.setattr(gsax, "TABLE_MIN_SHOTS", 40)  # 4 rows, all shown: 2 team-selected
+    g = at_table_min(gsax_census["g"])
+    table = gsax.keeper_rows(g)
     team = pl.col("family").cast(pl.String) == gsax.TEAM_SELECTED
-    assert 0 < table.filter(team).height < table.height  # precondition
-    names = _census_names(table)
-    note = f"{gsax_cards.FLAG} {gsax.TEAM_SELECTED}: rated at δ = 0, no league shift"
-    assert note in gsax_cards.chart(table, names=names, logo=logo)
-    assert "no league shift" not in gsax_cards.chart(table.filter(~team), names=names, logo=logo)
+    assert 0 < table.filter(team).height < table.height <= 6  # precondition
+    note = f"{gsax_cards.FLAG} team-selected season: rated against the model, not its league"
+    charts = gsax_cards.keeper_charts(g, names=_census_names(table), logo=logo)
+    for c in charts.values():
+        text = " ".join(t.get_text() for t in cc.by_gid(c, viz.NOTE_GID))
+        assert note in cc.collapse(text)
+    monkeypatch.setattr(gsax, "TABLE_MIN_SHOTS", 120)  # sb:g01 A18 alone: not team-selected
+    g = at_table_min(g)
+    plain = gsax.keeper_rows(g)
+    assert plain.height == 1 and not plain.filter(team).height  # precondition
+    for c in gsax_cards.keeper_charts(g, names=_census_names(plain), logo=logo).values():
+        assert "team-selected season" not in cc.all_text(c)
 
 
 def test_pr1_population_season_without_line_rows_is_at_zero(

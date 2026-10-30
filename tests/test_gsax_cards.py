@@ -136,28 +136,290 @@ def test_render_statsbomb_needs_names(sb: dict[str, Any]) -> None:
         cards.render(sb["g"], names=missing)
 
 
-def test_chart_logo_and_provider(sb: dict[str, Any], logo: Path, tmp_path: Path) -> None:
-    """``chart`` returns the same SVG bytes twice, carrying the logo (``viz.LOGO_GID``); a ``ws:``
-    row, a keeper missing from ``names`` and a missing logo raise; 0 rows still render."""
+def at_table_min(g: Any) -> Any:
+    """``g`` with its first reliability tier moved to the (patched) ``TABLE_MIN_SHOTS``, so the
+    keeper chart's caveat tier exists when a test lowers the threshold for the fixture."""
+    gsax = _gsax()
+    first = dataclasses.replace(g.tiers[0], tier=gsax.TABLE_MIN_SHOTS)
+    return dataclasses.replace(g, tiers=(first, *g.tiers[1:]))
+
+
+def _keeper_fit(gsax_fits: dict[str, Any], provider: str = "statsbomb") -> Any:
+    """A ``keeper_cases`` fit (12 keeper-seasons of 150 shots, 2 team-selected) on the
+    provider's session fit; WhoScored ids are ``ws:``."""
+    import keeper_cases as kc
+
+    specs = kc.TWELVE if provider == "statsbomb" else [
+        (f"ws:86{s[0][4:]}", *s[1:]) for s in kc.TWELVE]  # fmt: skip
+    return kc.fit_from(gsax_fits["fits"][provider], kc.rated(specs))
+
+
+def test_keeper_charts_themes_logo_deterministic(
+    gsax_fits: dict[str, Any], logo: Path, tmp_path: Path
+) -> None:
+    """``keeper_charts``: one canvas per ``viz.THEMES`` named ``gsax-keepers-{theme}.png``
+    (``-no-team`` before the theme in drop mode); StatsBomb named, with the logo and the caveat
+    of the ``TABLE_MIN_SHOTS`` tier as subtitle; WhoScored unnamed, no logo; the same PNG bytes
+    twice (deterministic)."""
+    import charts_cases as cc
+    import keeper_cases as kc
     from football_core import viz
 
+    gsax, cards = _gsax(), _cards()
+    g = _keeper_fit(gsax_fits)
+    names = kc.names(gsax.keeper_rows(g)["gk_id"].to_list())
+    charts = cards.keeper_charts(g, names=names, logo=logo)
+    assert sorted(charts) == sorted(f"gsax-keepers-{t}.png" for t in viz.THEMES)
+    tier = next(t for t in g.tiers if t.tier == gsax.TABLE_MIN_SHOTS)
+    for name, c in charts.items():
+        assert c.theme.name in name and cc.by_gid(c, viz.LOGO_GID)
+        assert viz.check(c) == []
+        assert cc.collapse(" ".join(t.get_text() for t in cc.by_gid(c, "subtitle"))) == (
+            cc.collapse(cards.caveat(tier))
+        )
+        assert kc.name_of(names, "sb:g71") in cc.all_text(c)
+        # integration census: the † number reaches the footer from the card's row
+        gap = cards.team_gap_100(g)
+        assert gap is not None and gap > 0  # precondition: a selected-side row
+        note = cc.collapse(" ".join(t.get_text() for t in cc.by_gid(c, viz.NOTE_GID)))
+        assert f"sit {gap:.1f} per 100 above it" in note
+    # integration census: a "noise" verdict at TABLE_MIN_SHOTS (the real-data branch) reaches
+    # the subtitle through keeper_charts, chosen over an "empty" tier below the threshold
+    noise = _tier(gsax_fits, gsax.TABLE_MIN_SHOTS, 111, (0.06, -0.12, 0.25), (0.2, 0.05, 0.4))
+    low = dataclasses.replace(g.tiers[0], tier=gsax.TABLE_MIN_SHOTS - 1, keepers=0)
+    gn = dataclasses.replace(g, tiers=(low, noise, *g.tiers[1:]))
+    assert cards.stability_branch(noise) == "noise"  # precondition
+    for c in cards.keeper_charts(gn, names=names, logo=logo).values():
+        subtitle = cc.collapse(" ".join(t.get_text() for t in cc.by_gid(c, "subtitle")))
+        assert subtitle == cc.collapse(cards.caveat(noise))
+    again = cards.keeper_charts(g, names=names, logo=logo)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    for name in charts:
+        a = viz.save(charts[name], tmp_path / "a" / name).read_bytes()
+        b = viz.save(again[name], tmp_path / "b" / name).read_bytes()
+        assert a == b, name
+    drop = cards.keeper_charts(g, names=names, logo=logo, team_selected="drop")
+    assert sorted(drop) == sorted(f"gsax-keepers-no-team-{t}.png" for t in viz.THEMES)
+    ws = cards.keeper_charts(_keeper_fit(gsax_fits, "whoscored"), names=None, logo=None)
+    for c in ws.values():
+        assert not cc.by_gid(c, viz.LOGO_GID) and viz.check(c) == []
+        assert viz.ATTRIBUTION["whoscored"] in cc.all_text(c)
+        assert re.search(r"ws:|\b86\d{2,}\b", cc.all_text(c)) is None
+
+
+def test_keeper_charts_refusals(gsax_fits: dict[str, Any], logo: Path, tmp_path: Path) -> None:
+    """``ValueError``: names for a WhoScored fit (Rule 1), a keeper missing from ``names``;
+    a missing logo: ``FileNotFoundError`` before anything is drawn."""
+    import keeper_cases as kc
+
+    gsax, cards = _gsax(), _cards()
+    g = _keeper_fit(gsax_fits)
+    names = kc.names(gsax.keeper_rows(g)["gk_id"].to_list())
+    ws = _keeper_fit(gsax_fits, "whoscored")
+    with pytest.raises(ValueError):
+        cards.keeper_charts(ws, names=kc.names(gsax.keeper_rows(ws)["gk_id"].to_list()),
+                            logo=logo)  # fmt: skip
+    with pytest.raises(ValueError):
+        cards.keeper_charts(g, names=names.filter(pl.col("player_id") != "sb:g02"), logo=logo)
+    with pytest.raises(FileNotFoundError):
+        cards.keeper_charts(g, names=names, logo=tmp_path / "no-logo.png")
+
+
+def test_keeper_charts_provider_names(gsax_fits: dict[str, Any], logo: Path) -> None:
+    """Ratify R11: ``keeper_charts`` itself refuses a StatsBomb fit without names and a WhoScored
+    fit with names (the provider is the fit's, never inferred from ``names``)."""
+    import keeper_cases as kc
+
+    gsax, cards = _gsax(), _cards()
+    g = _keeper_fit(gsax_fits)
+    ws = _keeper_fit(gsax_fits, "whoscored")
+    assert g.xgot.provider == "statsbomb" and ws.xgot.provider == "whoscored"  # precondition
+    with pytest.raises(ValueError, match="keeper_charts: statsbomb charts need names"):
+        cards.keeper_charts(g, names=None, logo=logo)
+    ws_names = kc.names(gsax.keeper_rows(ws)["gk_id"].to_list())
+    with pytest.raises(ValueError, match="keeper_charts: whoscored charts take no names"):
+        cards.keeper_charts(ws, names=ws_names, logo=None)
+
+
+def _fmt_r(s: Any) -> str:
+    """``+0.11 [−0.21, +0.40]`` (U+2212, 2 dp); "n/a" for None."""
+    if s.r is None:
+        return "n/a"
+    return f"{s.r:+.2f} [{s.low:+.2f}, {s.high:+.2f}]".replace("-", "−")
+
+
+def test_caveat_branches(gsax_fits: dict[str, Any]) -> None:
+    """``caveat``: one sentence per ``stability_branch``, printing the statistic the rule read
+    (for noise / repeatable the binding one of ``first_sb`` and ``all_shots_sb``: the smaller
+    ``low``, with its scope); counts with a comma; ``stability_sentence``'s text is unchanged."""
     cards = _cards()
-    svg = cards.chart(sb["table"], names=sb["names"], logo=logo)
-    assert isinstance(svg, str) and "<svg" in svg and viz.LOGO_GID in svg
-    assert cards.chart(sb["table"], names=sb["names"], logo=logo) == svg
-    ws = sb["table"].with_columns(
-        gk_id=pl.when(pl.int_range(pl.len()) == 1).then(pl.lit("ws:860101"))
-        .otherwise(pl.col("gk_id"))
-    )  # fmt: skip
-    with pytest.raises(ValueError):
-        cards.chart(ws, names=sb["names"], logo=logo)
-    gone = sb["names"].filter(pl.col("player_id") != sb["table"]["gk_id"][1])
-    with pytest.raises(ValueError):
-        cards.chart(sb["table"], names=gone, logo=logo)
-    with pytest.raises((FileNotFoundError, ValueError)):
-        cards.chart(sb["table"], names=sb["names"], logo=tmp_path / "no-logo.png")
-    empty = cards.chart(sb["table"].clear(), names=sb["names"], logo=logo)
-    assert "<svg" in empty and viz.LOGO_GID in empty and empty != svg
+    none = (None, None, None)
+    cases = [
+        (_tier(gsax_fits, 500, 0, none, none), "empty",
+         "No keeper reaches 500 shots: keeper reliability cannot be shown.",
+         "no keeper reaches 500 shots (empty tier)"),
+        (_tier(gsax_fits, 250, 3, none, none), "estimate",
+         "3 keepers reach 250 shots: too few to estimate keeper reliability.",
+         "3 keepers reach 250 shots: too few to estimate"),
+        (_tier(gsax_fits, 250, 9, (0.83, 0.05, 0.98), (0.73, -0.21, 0.97)), "few",
+         "9 keepers reach 250 shots: too few to judge (split-half r +0.83 [+0.05, +0.98]).",
+         "9 keepers reach 250 shots: too few to judge (r +0.83 [+0.05, +0.98])"),
+    ]  # fmt: skip
+    for tier, branch, caveat, old in cases:
+        assert cards.stability_branch(tier) == branch
+        assert cards.caveat(tier) == caveat
+        assert cards.stability_sentence(tier) == old
+    first = _tier(gsax_fits, 100, 1111, (0.06, -0.12, 0.25), (0.19, 0.01, 0.37))
+    assert first.first_sb.low < first.all_shots_sb.low  # precondition: first_sb binds
+    assert cards.stability_branch(first) == "noise"
+    assert cards.caveat(first) == (
+        f"Not distinguishable from noise at 100 shots: stepped-up split-half r "
+        f"{_fmt_r(first.first_sb)} on the first 100 shots of 1,111 keepers."
+    )
+    assert cards.stability_sentence(first) == "not distinguishable from noise at 100 shots"
+    alls = _tier(gsax_fits, 100, 111, (0.3, 0.05, 0.5), (0.2, -0.1, 0.4))
+    assert alls.all_shots_sb.low < alls.first_sb.low  # precondition: all_shots_sb binds
+    assert cards.caveat(alls).endswith(
+        f"split-half r {_fmt_r(alls.all_shots_sb)} on all shots of 111 keepers."
+    )
+    assert "−" in _fmt_r(alls.all_shots_sb)  # precondition: a negative low prints U+2212
+    rep = _tier(gsax_fits, 250, 1111, (0.6, 0.3, 0.8), (0.5, 0.2, 0.7))
+    assert cards.stability_branch(rep) == "repeatable"
+    assert cards.caveat(rep) == (
+        "Keeper and defence repeatable at 250 shots: stepped-up "
+        f"split-half r {_fmt_r(rep.all_shots_sb)} on all shots of 1,111 keepers."
+    )
+    assert cards.stability_sentence(rep) == (
+        "keeper records are repeatable beyond chance at 250 shots; this measures the keeper "
+        "and the defence in front of him, not the keeper alone"
+    )
+
+
+def _chart_sentence(top_n: int, charts: Mapping[str, str] | None) -> str:
+    head = (
+        f"The chart shows the highest and lowest {top_n} keeper-seasons by shrunken GSAx per "
+        "100 shots with 90% keeper-model intervals; `make gsax` writes them to `data/charts/` "
+        "(git-ignored: they embed the StatsBomb logo, PM E3)"
+    )
+    if not charts:
+        return head + "."
+    parts = " and ".join(f"`{n}` (SHA-256 `{s}`)" for n, s in sorted(charts.items()))
+    return f"{head} as {parts}, so `make reproduce` checks the charts through this card."
+
+
+def test_card_chart_sentence(
+    sb: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§3.4: the keeper-table paragraph is the unchanged names sentence plus the new chart
+    sentence (``TOP_N``, ``CI_LEVEL``, ``CHART_FOLDER``, file names sorted with their SHA-256);
+    "." without charts; ``CHART_FOLDER`` is printed when ``CHART_DIR`` is moved; no other line
+    mentions an SVG."""
+    from football_shot_charts import keepers
+
+    cards = _cards()
+    assert cards.CHART_FOLDER == "data/charts"
+    assert cards.CHART_NAME == "gsax-keepers-{theme}.png"
+    monkeypatch.setattr(cards, "CHART_DIR", tmp_path / "elsewhere")
+    digests = {"gsax-keepers-light.png": "a" * 64, "gsax-keepers-dark.png": "b" * 64}
+    n = sb["table"].height
+    k = int((sb["names"].join(sb["table"].select(player_id="gk_id"), on="player_id",
+                              how="semi")["names"] > 1).sum())  # fmt: skip
+    lead = (
+        f"{n:,} keeper-seasons. Names are the lineup display names (the nickname when StatsBomb "
+        f"gives one); {k:,} table keeper(s) appear under two spellings, resolved to the latest "
+        "match. "
+    )
+    for charts in (digests, None):
+        kw = {} if charts is None else {"charts": charts}
+        card = cards.render(sb["g"], names=sb["names"], **kw)["gsax"]
+        para = next(x for x in card.splitlines() if x.startswith(f"{n:,} keeper-seasons. Names"))
+        assert para == lead + _chart_sentence(keepers.TOP_N, charts)
+        assert "elsewhere" not in card and ".svg" not in card
+
+
+@pytest.fixture
+def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A throwaway git repo (cwd) ignoring ``data/``."""
+    import subprocess
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / ".gitignore").write_text("data/\n")
+    monkeypatch.chdir(root)
+    return root
+
+
+def test_write_charts_all_or_nothing(gsax_fits: dict[str, Any], logo: Path, repo: Path) -> None:
+    """``write_charts`` guards every chart before saving any: a chart failing ``viz.check``, a
+    tracked folder or a WhoScored canvas in the mapping → ``ValueError`` and no file at all; a
+    clean mapping writes every file under the ignored folder and returns the paths."""
+    import keeper_cases as kc
+    from football_core import viz
+
+    gsax, cards = _gsax(), _cards()
+    g = _keeper_fit(gsax_fits)
+    names = kc.names(gsax.keeper_rows(g)["gk_id"].to_list())
+
+    def fresh() -> dict[str, Any]:
+        return dict(cards.keeper_charts(g, names=names, logo=logo))
+
+    bad = fresh()
+    c = bad["gsax-keepers-dark.png"]
+    for word in ("Overlapping", "Underneath"):
+        c.fig.text(0.5, 0.5, word, fontsize=14)
+    ws = fresh()
+    ws["ws-gsax-keepers-light.png"] = next(iter(cards.keeper_charts(
+        _keeper_fit(gsax_fits, "whoscored"), names=None, logo=None).values()))  # fmt: skip
+    for charts, folder in ((bad, repo / "data" / "charts"), (fresh(), repo / "charts"),
+                           (ws, repo / "data" / "charts")):  # fmt: skip
+        with pytest.raises(ValueError):
+            cards.write_charts(charts, chart_dir=folder)
+        assert [p for p in repo.rglob("*.png")] == []
+    out = cards.write_charts(fresh(), chart_dir=repo / "data" / "charts")
+    assert sorted(Path(p).name for p in out) == sorted(f"gsax-keepers-{t}.png" for t in viz.THEMES)
+    assert all(Path(p).is_file() for p in out)
+
+
+def test_run_from_digests(
+    gsax_fits: dict[str, Any],
+    sb: dict[str, Any],
+    logo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``run_from`` (StatsBomb): the keeper charts go to ``CHART_DIR`` read when called, each
+    file's SHA-256 (of its bytes) is on the card next to its name, ``GsaxRun.charts`` maps the
+    names to the paths; WhoScored: no chart, ``charts`` empty."""
+    import hashlib
+
+    from football_core.io import statsbomb
+
+    gsax, cards = _gsax(), _cards()
+    g = at_table_min(sb["g"])
+
+    def names(checkout: Path, match_ids: Any, *, player_ids: list[str]) -> pl.DataFrame:
+        return _names(pl.DataFrame({"gk_id": sorted(set(player_ids))}))
+
+    monkeypatch.setattr(gsax, "fit", lambda f: g if f.provider == "statsbomb"
+                        else gsax_fits["fits"]["whoscored"])  # fmt: skip
+    monkeypatch.setattr(statsbomb, "player_names", names)
+    monkeypatch.setattr(statsbomb, "logo_file", lambda *a, **k: logo)
+    monkeypatch.setattr(cards, "CHART_DIR", tmp_path / "charts")
+    run = cards.run_from(gsax_fits["xgot"]["statsbomb"], docs_dir=tmp_path / "docs",
+                         raw=tmp_path / "raw")  # fmt: skip
+    assert sorted(run.charts) == ["gsax-keepers-dark.png", "gsax-keepers-light.png"]
+    card = (tmp_path / "docs" / "gsax.md").read_text(encoding="utf-8")
+    assert card == run.cards["gsax"]
+    for name, path in run.charts.items():
+        assert Path(path) == tmp_path / "charts" / name and Path(path).is_file()
+        sha = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        assert f"`{name}` (SHA-256 `{sha}`)" in card
+    ws = cards.run_from(gsax_fits["xgot"]["whoscored"], docs_dir=tmp_path / "ws-docs",
+                        raw=tmp_path / "raw")  # fmt: skip
+    assert dict(ws.charts) == {}
+    assert sorted(p.name for p in (tmp_path / "charts").iterdir()) == sorted(run.charts)
 
 
 def _like(proto: Any, r: float | None, low: float | None, high: float | None) -> Any:
@@ -325,10 +587,10 @@ def test_cards_band_section(gsax_fits: dict[str, Any], sb: dict[str, Any],
         assert f"{r['feature']} {r['band']} ({r['source']}): {r['shots']:,} shots" in card
 
 
-def test_team_selected_flag(sb: dict[str, Any], logo: Path) -> None:
-    """Team-selected keeper-seasons are flagged († after the family) in the StatsBomb table and
-    the chart labels; without team-selected rows there is no flag. (The split by side moved to
-    ``test_team_lines_count_only``, PR1.)"""
+def test_team_selected_flag(sb: dict[str, Any]) -> None:
+    """Team-selected keeper-seasons are flagged († after the family) in the StatsBomb table;
+    without team-selected rows there is no flag. (The split by side moved to
+    ``test_team_lines_count_only``, PR1; the chart's flag to ``test_charts_keepers``, CH1.)"""
     gsax, cards = _gsax(), _cards()
     g = sb["g"]
     assert not (g.keepers[gsax.WITHOUT]["family"] == gsax.TEAM_SELECTED).any()  # precondition
@@ -351,9 +613,6 @@ def test_team_selected_flag(sb: dict[str, Any], logo: Path) -> None:
         if hits:
             team = rows[hits[0]] == gsax.TEAM_SELECTED
             assert (f"{gsax.TEAM_SELECTED} {cards.FLAG} |" in line) == team, line
-    svg = cards.chart(table, names=sb["names"], logo=logo)
-    assert cards.FLAG in svg
-    assert cards.FLAG not in cards.chart(sb["table"], names=sb["names"], logo=logo)
 
 
 def test_distribution_with_and_without_penalties(
@@ -690,3 +949,52 @@ def test_line_paragraph_statsbomb_only(
         assert f"Over the {s20.keeper_seasons:,} keeper-seasons" in sec3
         assert (f"Left out of both summaries: {s20.at_zero:,} keeper-seasons" in sec3
                 and f"median |shift| {s20.at_zero_median_abs:.2f}" in sec3)  # fmt: skip
+
+
+def test_team_lines_unchanged(gsax_census: dict[str, Any], gsax_fits: dict[str, Any]) -> None:
+    """CH1 §3.3: ``team_split`` is the frame ``_team_lines`` printed before the extraction
+    (``team_selected_split`` of the team-selected, not E2-small seasons' keeper-seasons,
+    recomputed here); ``team_gap_100`` is 100 · GSAx / shots of its "selected side" row, None
+    without one; ``_team_lines`` prints that frame's numbers."""
+    from football_shot_models.cards import signed
+
+    gsax, cards = _gsax(), _cards()
+    g = gsax_census["g"]
+    seasons = g.rated.filter(pl.col("zero_family") & ~pl.col("small")).select(gsax.SEASON_KEY)
+    table = g.keepers[gsax.WITHOUT].join(seasons.unique(), on=gsax.SEASON_KEY, how="semi")
+    want = gsax.team_selected_split(table)
+    got = cards.team_split(g)
+    assert got.equals(want)
+    sel = want.filter(pl.col("side") == "selected side").row(0, named=True)
+    assert cards.team_gap_100(g) == pytest.approx(100 * sel["gsax"] / sel["shots"], abs=1e-12)
+    line = next(x for x in cards._team_lines(g) if "δ = 0 removes" in x)
+    for r in got.iter_rows(named=True):
+        assert f"{r['shots']:,} shots, GSAx {signed(r['gsax'])} (SD {r['sd']:.1f})" in line
+    assert cards.team_gap_100(gsax_fits["fits"]["statsbomb"]) is None
+    assert cards._team_lines(gsax_fits["fits"]["statsbomb"]) == []
+
+
+def test_keeper_names_wiring(
+    sb: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ratify R12: ``keeper_names(g, raw)`` reads ``<raw>/<OPEN_DATA_COMMIT>`` with the fit's
+    match ids in date order and the table keepers' ids (``keeper_rows``), and returns what the
+    reader returns."""
+    from football_core.io import statsbomb
+
+    gsax, cards = _gsax(), _cards()
+    g = sb["g"]
+    seen: list[tuple[Path, list[str], list[str]]] = []
+    out = pl.DataFrame({"player_id": ["sb:x"], "player_name": ["X"], "names": [1]})
+
+    def reader(checkout: Path, ids: Any, *, player_ids: Any) -> pl.DataFrame:
+        seen.append((Path(checkout), list(ids), list(player_ids)))
+        return out
+
+    monkeypatch.setattr(statsbomb, "player_names", reader)
+    assert cards.keeper_names(g, tmp_path / "raw") is out
+    ((checkout, ids, players),) = seen
+    assert checkout == tmp_path / "raw" / statsbomb.OPEN_DATA_COMMIT
+    want = g.xgot.xg.matches.sort("match_date", "match_id")["match_id"].to_list()
+    assert ids == want and want != sorted(want, reverse=True)
+    assert sorted(players) == sorted(gsax.keeper_rows(g)["gk_id"].to_list()) and players

@@ -162,7 +162,7 @@ Team-selected competition-seasons (†) not E2-small: 22, at δ = 0 (PM 2026-10-
 
 ## Keeper-seasons with >= 100 shots (without penalties, sorted by GSAx)
 
-97 keeper-seasons. Names are the lineup display names (the nickname when StatsBomb gives one); 1 table keeper(s) appear under two spellings, resolved to the latest match. The chart is written by `make gsax` to `data/charts/gsax-keepers.svg` (git-ignored: it embeds the StatsBomb logo, PM E3); its SHA-256 is `9dd6c0513418edaaf004048fa8250dbb057956f57a4c2aa1bb3ddcf5ebdbba3c`, so `make reproduce` checks the chart through this card.
+97 keeper-seasons. Names are the lineup display names (the nickname when StatsBomb gives one); 1 table keeper(s) appear under two spellings, resolved to the latest match. The chart shows the highest and lowest 3 keeper-seasons by shrunken GSAx per 100 shots with 90% keeper-model intervals; `make gsax` writes them to `data/charts/` (git-ignored: they embed the StatsBomb logo, PM E3) as `gsax-keepers-dark.png` (SHA-256 `a0640046ec92be352f050e45f090f545f3f6cf118caf440985cf2e4b71c60735`) and `gsax-keepers-light.png` (SHA-256 `b0ca0ef0421c5f887247804ebd7f39e364176e2bfc5f1e8d7a5b134a13e2868a`), so `make reproduce` checks the charts through this card.
 
 | # | Keeper | Family | Competition season | Shots | Goals | Open goals | Open-goal GSAx | GSAx raw | GSAx | SD | 90% CI | Shrunken GSAx | GSAx with penalties |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
